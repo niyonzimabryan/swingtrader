@@ -55,6 +55,35 @@ class MessageQueue:
         """Send a plain text message (no MarkdownV2)."""
         return await self._send_with_retry(chat_id, text, reply_markup=reply_markup, parse_mode=None)
 
+    async def send_document(
+        self,
+        chat_id: int | str,
+        document_path: str,
+        caption: str = "",
+        parse_mode: str = None,
+    ) -> int | None:
+        """Send a document (file) via Telegram. Returns message_id."""
+        for attempt in range(3):
+            try:
+                with open(document_path, "rb") as f:
+                    msg = await self.bot.send_document(
+                        chat_id=chat_id,
+                        document=f,
+                        caption=caption[:1024] if caption else None,  # Telegram caption limit
+                        parse_mode=parse_mode,
+                    )
+                    return msg.message_id
+            except FileNotFoundError:
+                log.error("document_not_found", path=document_path)
+                return None
+            except Exception as e:
+                wait = (2 ** attempt) * 1
+                log.warning("send_document_retry", attempt=attempt + 1, wait=wait, error=str(e)[:200])
+                await asyncio.sleep(wait)
+
+        log.error("send_document_failed_all_retries", chat_id=chat_id, path=document_path)
+        return None
+
     async def _send_with_retry(
         self, chat_id, text, reply_markup=None, parse_mode="MarkdownV2", max_retries=3
     ) -> int | None:

@@ -24,6 +24,7 @@ TASK_MODEL_MAP = {
     "pattern_interpret": SONNET,
     "sentiment_synthesis": SONNET,
     "memo_draft": SONNET,
+    "web_research": SONNET,
     "test_analyze": SONNET,
     "ask_query": SONNET,
     # Tier 3 — Opus (portfolio manager — judgment & scoring)

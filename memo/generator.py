@@ -1,5 +1,6 @@
 """
 IC Memo Generator — assembles all signal data into a structured memo.
+V2: Web research replaces sentiment. Includes web research in narratives.
 Calls Sonnet for thesis + bear case, computes trade parameters.
 """
 
@@ -30,7 +31,7 @@ class MemoGenerator:
         catalyst: AgentOutput,
         fundamental: AgentOutput,
         pattern: AgentOutput,
-        sentiment: AgentOutput,
+        web_research: AgentOutput,
         regime: dict,
     ) -> dict:
         """Generate a full IC memo. Returns memo data dict and persists to DB."""
@@ -57,7 +58,7 @@ class MemoGenerator:
         bear_case = ""
         if self.client:
             thesis, bear_case = self._generate_narratives(
-                ticker, catalyst, fundamental, pattern, sentiment, regime, scoring_result
+                ticker, catalyst, fundamental, pattern, web_research, regime, scoring_result
             )
 
         # Assemble memo data
@@ -69,13 +70,13 @@ class MemoGenerator:
             "direction_raw": scoring_result.get("direction", "bullish"),
             "composite_score": scoring_result.get("final_score", 0),
             "classification": scoring_result.get("classification", "unknown"),
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": datetime.utcnow().isoformat() + "Z",
             "thesis": thesis,
             "bear_case": bear_case,
             "catalyst": {**catalyst.raw_data, "confidence": catalyst.confidence, "direction": catalyst.direction},
             "fundamental": fundamental.raw_data,
-            "pattern": {**pattern.raw_data, "confidence": pattern.confidence, "direction": pattern.direction},
-            "sentiment": sentiment.raw_data,
+            "pattern": {**pattern.raw_data, "confidence": pattern.confidence, "direction": pattern.direction, "reasoning": pattern.reasoning},
+            "web_research": web_research.raw_data,
             "regime": regime,
             "trade_params": trade_params,
             "signal_breakdown": scoring_result.get("signal_breakdown", {}),
@@ -144,23 +145,30 @@ class MemoGenerator:
             "vol_adjustment": vol_adjustment,
         }
 
-    def _generate_narratives(self, ticker, catalyst, fundamental, pattern, sentiment, regime, scoring_result):
+    def _generate_narratives(self, ticker, catalyst, fundamental, pattern, web_research, regime, scoring_result):
         """Use Sonnet to draft thesis and bear case."""
         try:
             model = get_model("memo_draft", self.settings)
             opus_eval = scoring_result.get("opus_evaluation", {})
 
+            # V2: Include web research key finding in narrative context
+            web_key = web_research.raw_data.get("key_finding", "") if web_research else ""
+            web_synthesis = web_research.reasoning if web_research else ""
+
             prompt = (
                 f"You are drafting an IC (Investment Committee) memo for a swing trade on {ticker}.\n\n"
                 f"CATALYST: {catalyst.reasoning}\n"
                 f"FUNDAMENTALS: {fundamental.reasoning}\n"
+                f"WEB RESEARCH: {web_synthesis[:300]}\n"
+                f"KEY FINDING: {web_key}\n"
                 f"MACRO REGIME: {regime.get('regime', 'neutral')}\n"
                 f"COMPOSITE SCORE: {scoring_result.get('final_score', 0):.2f}\n"
                 f"OPUS ASSESSMENT: {opus_eval.get('reasoning', 'N/A')}\n"
                 f"OPUS STRESS TEST: {opus_eval.get('stress_test', 'N/A')}\n"
                 f"KEY RISK: {opus_eval.get('key_risk', 'N/A')}\n\n"
                 "Write two sections:\n"
-                "1. THESIS: 2-3 sentences summarizing why this is a compelling swing trade right now.\n"
+                "1. THESIS: 2-3 sentences summarizing why this is a compelling swing trade right now. "
+                "Incorporate the most relevant web research finding.\n"
                 "2. BEAR_CASE: 2-3 sentences on what could go wrong, incorporating Opus's stress test.\n\n"
                 'Respond with JSON: {"thesis": "...", "bear_case": "..."}'
             )

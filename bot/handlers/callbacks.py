@@ -1,8 +1,9 @@
 """
 Inline keyboard callback handlers.
-Handles: approve, reject, modify, watchlist actions on IC memos.
+Handles: approve, reject, modify, watchlist, deep research actions on IC memos.
 """
 
+import asyncio
 import json
 from datetime import datetime
 from telegram import Update
@@ -36,6 +37,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_modify(query, context, int(data.split("_")[1]))
     elif data.startswith("watchlist_"):
         await handle_watchlist(query, context, int(data.split("_")[1]))
+    elif data.startswith("deep_research_"):
+        await handle_deep_research(query, context, int(data.split("_")[2]))
     elif data.startswith("back_"):
         await handle_back(query, context, int(data.split("_")[1]))
     elif data.startswith("close_confirm_"):
@@ -111,16 +114,40 @@ async def handle_modify(query, context, memo_id: int):
 
 
 async def handle_watchlist(query, context, memo_id: int):
-    """Add to watchlist."""
+    """Add to watchlist — V2: actually persists to WatchlistTicker table."""
     log.info("memo_watchlisted", memo_id=memo_id)
+
+    ticker_symbol = None
+    sector = ""
+
     with get_session() as session:
         memo = session.query(Memo).filter_by(id=memo_id).first()
         if memo:
             memo.status = "watchlisted"
             memo.responded_at = datetime.utcnow()
+            ticker_symbol = memo.ticker.symbol if memo.ticker else None
+            sector = memo.ticker.sector if memo.ticker else ""
+
+    # V2: Actually add to watchlist table for lower-threshold re-scanning
+    status_msg = "Added to watchlist"
+    if ticker_symbol:
+        from orchestrator.universe import add_to_watchlist
+        added = add_to_watchlist(
+            ticker_symbol,
+            reason=f"Operator watchlisted from memo #{memo_id}",
+            source="operator",
+            sector=sector,
+        )
+        if not added:
+            status_msg = "Already on watchlist"
+    else:
+        status_msg = "Could not determine ticker"
 
     await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text("👀 Added to watchlist. Will alert if score changes materially.", parse_mode=None)
+    await query.message.reply_text(
+        f"👀 {status_msg}. Will re-scan with lower threshold on next scan cycle.",
+        parse_mode=None,
+    )
 
 
 async def handle_back(query, context, memo_id: int):
@@ -140,6 +167,80 @@ async def handle_close_confirm(query, context, ticker: str):
             await query.edit_message_text(f"❌ Failed to close {ticker}: {str(e)[:200]}", parse_mode=None)
     else:
         await query.edit_message_text(f"✅ {ticker} close acknowledged (execution engine not connected).", parse_mode=None)
+
+
+async def handle_deep_research(query, context, memo_id: int):
+    """
+    Operator-triggered deep research from Telegram button.
+    Allows deep research on /test results where auto-trigger is disabled.
+    """
+    log.info("deep_research_requested", memo_id=memo_id)
+
+    pipeline = context.bot_data.get("pipeline")
+    if not pipeline or not pipeline.deep_research_agent:
+        await query.message.reply_text(
+            "⚠️ Deep research not available (Gemini API key not configured).",
+            parse_mode=None,
+        )
+        return
+
+    # Get memo details from DB
+    ticker_symbol = None
+    scoring_result = {}
+    catalyst_reasoning = ""
+    web_research_reasoning = ""
+
+    with get_session() as session:
+        memo = session.query(Memo).filter_by(id=memo_id).first()
+        if not memo:
+            await query.message.reply_text("Memo not found.", parse_mode=None)
+            return
+
+        ticker_symbol = memo.ticker.symbol if memo.ticker else None
+        if not ticker_symbol:
+            await query.message.reply_text("Could not determine ticker.", parse_mode=None)
+            return
+
+        # Reconstruct scoring result from memo data
+        scoring_result = {
+            "final_score": memo.composite_score,
+            "direction": memo.direction,
+            "classification": memo.classification,
+            "opus_evaluation": json.loads(memo.opus_critique) if memo.opus_critique and memo.opus_critique.startswith("{") else {},
+        }
+        catalyst_reasoning = memo.thesis or ""
+        web_research_reasoning = ""
+
+    # Check if deep research client is available
+    if not pipeline.deep_research_agent.dr_client.is_available:
+        await query.message.reply_text(
+            "⚠️ Deep research client not initialized (check Gemini API key).",
+            parse_mode=None,
+        )
+        return
+
+    await query.message.reply_text(
+        f"🔬 Deep research starting for {ticker_symbol}...\n"
+        f"This will take 5-20 minutes. You'll be notified when it's complete.",
+        parse_mode=None,
+    )
+
+    # Build notification callback
+    async def _notify(msg: str):
+        if pipeline.notification_manager:
+            await pipeline.notification_manager.deep_research_update(ticker_symbol, msg)
+
+    # Run deep research in background
+    asyncio.create_task(
+        pipeline._run_deep_research_async(
+            ticker=ticker_symbol,
+            memo_id=memo_id,
+            scoring_result=scoring_result,
+            catalyst_reasoning=catalyst_reasoning,
+            web_research_reasoning=web_research_reasoning,
+            notify=_notify,
+        )
+    )
 
 
 async def execute_trade(query, context, memo_id: int):

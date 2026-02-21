@@ -50,6 +50,7 @@ class EscalationManager:
         """
         Sonnet deep analysis: What does this catalyst mean for the stock?
         Called when Haiku score >= threshold.
+        V2: Returns materiality + direction_confidence instead of single confidence.
         """
         model = get_model("catalyst_analyze", self.settings)
         system = (
@@ -69,19 +70,32 @@ class EscalationManager:
             '  "catalyst_summary": "2-3 sentence summary",\n'
             '  "magnitude": 1-5,\n'
             '  "direction": "bullish|bearish|ambiguous",\n'
+            '  "materiality": 0.0-1.0,\n'
+            '  "direction_confidence": 0.0-1.0,\n'
             '  "expected_impact_pct": {"low": float, "mid": float, "high": float},\n'
             '  "time_horizon_days": int,\n'
-            '  "confidence": 0.0-1.0,\n'
             '  "reasoning": "detailed analysis (3-5 sentences)",\n'
             '  "counter_arguments": "what could go wrong (2-3 sentences)"\n'
-            "}"
+            "}\n\n"
+            "SCORING GUIDANCE:\n"
+            "- materiality: How significant/confirmed is this event? "
+            "(0.9+ = major confirmed event like earnings beat, FDA approval; "
+            "0.5-0.8 = notable but uncertain; <0.5 = minor/unconfirmed)\n"
+            "- direction_confidence: How confident in the price direction? "
+            "(0.8+ = clear directional signal; 0.5-0.7 = likely but uncertain; "
+            "<0.5 = genuinely ambiguous)"
         )
         result = self.client.analyze_json(model, system, prompt, max_tokens=1500)
+        # Backwards compatibility: if model returns 'confidence' instead of new fields
+        if "confidence" in result and "materiality" not in result:
+            result["materiality"] = result["confidence"]
+            result["direction_confidence"] = result["confidence"]
         log.info(
             "sonnet_analyze",
             ticker=ticker,
             magnitude=result.get("magnitude"),
-            confidence=result.get("confidence"),
+            materiality=result.get("materiality"),
+            direction_confidence=result.get("direction_confidence"),
         )
         return result
 
@@ -89,11 +103,12 @@ class EscalationManager:
         """
         Opus final evaluation: Is this actually a good trade?
         Receives all signal layers and stress-tests the thesis.
+        V2: Uses extended thinking for deeper reasoning when budget > 0.
         """
         model = get_model("trade_score", self.settings)
         system = (
             "You are a portfolio manager making the final decision on whether to take a swing trade. "
-            "You receive analysis from your research team (catalyst, fundamental, pattern, sentiment) "
+            "You receive analysis from your research team (catalyst, fundamental, pattern, web research) "
             "and the current macro regime. Your job is to:\n"
             "1. Assign a final conviction score (0.0-1.0)\n"
             "2. Stress-test the bull case — actively look for weaknesses\n"
@@ -107,7 +122,7 @@ class EscalationManager:
             f"CATALYST:\n{_format_signal(all_signals.get('catalyst', {}))}\n\n"
             f"FUNDAMENTALS:\n{_format_signal(all_signals.get('fundamental', {}))}\n\n"
             f"HISTORICAL PATTERN:\n{_format_signal(all_signals.get('pattern', {}))}\n\n"
-            f"REDDIT SENTIMENT:\n{_format_signal(all_signals.get('sentiment', {}))}\n\n"
+            f"WEB RESEARCH:\n{_format_signal(all_signals.get('web_research', {}))}\n\n"
             f"MACRO REGIME:\n{_format_signal(all_signals.get('macro', {}))}\n\n"
             f"PORTFOLIO CONTEXT:\n{portfolio_context}\n\n"
             "Respond with JSON:\n"
@@ -122,12 +137,91 @@ class EscalationManager:
             '  "reasoning": "3-5 sentences on your overall assessment"\n'
             "}"
         )
-        result = self.client.analyze_json_with_fallback(model, system, prompt, max_tokens=2000)
+
+        # V2: Use extended thinking when budget is configured
+        thinking_budget = getattr(self.settings, "opus_thinking_budget", 0) if self.settings else 0
+
+        if thinking_budget > 0:
+            log.info("opus_evaluate_with_thinking", ticker=ticker, budget=thinking_budget)
+            result = self.client.analyze_json_with_thinking_and_fallback(
+                model, system, prompt,
+                budget_tokens=thinking_budget,
+                max_tokens=max(16000, thinking_budget + 4096),
+            )
+        else:
+            result = self.client.analyze_json_with_fallback(model, system, prompt, max_tokens=2000)
+
         log.info(
             "opus_evaluate",
             ticker=ticker,
             final_score=result.get("final_score"),
             conviction=result.get("conviction"),
+            recommendation=result.get("recommendation"),
+        )
+        return result
+
+    def opus_reevaluate(
+        self, ticker: str, original_evaluation: dict,
+        deep_research_report: str, original_score: float,
+    ) -> dict:
+        """
+        Opus re-evaluation after deep research completes.
+        Can confirm, upgrade, or downgrade the original recommendation.
+        """
+        model = get_model("trade_score", self.settings)
+        system = (
+            "You are a portfolio manager reviewing a trade proposal that has been enhanced with "
+            "deep research findings. You previously evaluated this trade and now have significantly "
+            "more information. Re-evaluate your original decision.\n\n"
+            "You may:\n"
+            "1. CONFIRM your original recommendation (with added confidence)\n"
+            "2. UPGRADE from watchlist/pass to proceed/reduce_size\n"
+            "3. DOWNGRADE from proceed to reduce_size/watchlist/pass\n"
+            "4. ADJUST position size or trade parameters\n\n"
+            "Be specific about what the deep research changed in your assessment."
+        )
+        prompt = (
+            f"Ticker: {ticker}\n\n"
+            f"=== ORIGINAL EVALUATION ===\n"
+            f"Score: {original_score:.2f}\n"
+            f"Conviction: {original_evaluation.get('conviction', '?')}\n"
+            f"Recommendation: {original_evaluation.get('recommendation', '?')}\n"
+            f"Key Risk: {original_evaluation.get('key_risk', 'N/A')}\n"
+            f"Reasoning: {original_evaluation.get('reasoning', 'N/A')}\n\n"
+            f"=== DEEP RESEARCH FINDINGS ===\n"
+            f"{deep_research_report[:8000]}\n\n"
+            "Based on the deep research findings, re-evaluate this trade.\n"
+            "Respond with JSON:\n"
+            "{\n"
+            '  "final_score": 0.0-1.0,\n'
+            '  "conviction": "high|moderate|low|pass",\n'
+            '  "recommendation": "proceed|reduce_size|watchlist|pass",\n'
+            '  "recommendation_changed": true/false,\n'
+            '  "position_size_adjustment": 0.5-1.5,\n'
+            '  "key_insight_from_research": "most impactful finding from deep research",\n'
+            '  "updated_key_risk": "revised key risk based on new information",\n'
+            '  "reasoning": "3-5 sentences explaining what changed and why"\n'
+            "}"
+        )
+        # V2: Use extended thinking for re-evaluation (same budget as initial eval)
+        thinking_budget = getattr(self.settings, "opus_thinking_budget", 0) if self.settings else 0
+
+        if thinking_budget > 0:
+            log.info("opus_reevaluate_with_thinking", ticker=ticker, budget=thinking_budget)
+            result = self.client.analyze_json_with_thinking_and_fallback(
+                model, system, prompt,
+                budget_tokens=thinking_budget,
+                max_tokens=max(16000, thinking_budget + 4096),
+            )
+        else:
+            result = self.client.analyze_json_with_fallback(model, system, prompt, max_tokens=2000)
+
+        log.info(
+            "opus_reevaluate",
+            ticker=ticker,
+            original_score=original_score,
+            new_score=result.get("final_score"),
+            changed=result.get("recommendation_changed"),
             recommendation=result.get("recommendation"),
         )
         return result

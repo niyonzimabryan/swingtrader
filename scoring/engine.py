@@ -1,10 +1,11 @@
 """
 Scoring Engine — aggregates signals, applies weights, gets Opus evaluation.
+V2: Web research replaces sentiment. Opus clamping. Confidence-weighted alignment.
 """
 
 import json
 from agents.base_agent import AgentOutput
-from scoring.weights import SIGNAL_WEIGHTS, DIRECTION_PENALTY_PARTIAL, DIRECTION_PENALTY_MAJOR, SCORE_THRESHOLDS
+from scoring.weights import SIGNAL_WEIGHTS, OPUS_MAX_DELTA, DIRECTION_PENALTY_PARTIAL, DIRECTION_PENALTY_MAJOR, SCORE_THRESHOLDS
 from utils.escalation_manager import EscalationManager
 from utils.logger import get_logger
 
@@ -23,13 +24,13 @@ class ScoringEngine:
         catalyst: AgentOutput,
         fundamental: AgentOutput,
         pattern: AgentOutput,
-        sentiment: AgentOutput,
+        web_research: AgentOutput,
         regime: dict,
         portfolio_context: str = "",
     ) -> dict:
         """
         Compute composite score and get Opus evaluation.
-        Returns full scoring result dict.
+        V2: web_research replaces sentiment. Opus delta clamped. Confidence-weighted alignment.
         """
         log.info("scoring_start", ticker=ticker)
 
@@ -38,37 +39,25 @@ class ScoringEngine:
             catalyst.score * SIGNAL_WEIGHTS["catalyst"]
             + fundamental.score * SIGNAL_WEIGHTS["fundamental"]
             + pattern.score * SIGNAL_WEIGHTS["pattern"]
-            + sentiment.score * SIGNAL_WEIGHTS["sentiment"]
+            + web_research.score * SIGNAL_WEIGHTS["web_research"]
         )
 
-        # 2. Handle contrarian flag (flip sentiment contribution)
-        contrarian = sentiment.raw_data.get("contrarian_flag", False)
-        if contrarian:
-            # Recalculate with flipped sentiment
-            sentiment_contribution = (1 - sentiment.score) * SIGNAL_WEIGHTS["sentiment"]
-            raw_score = (
-                catalyst.score * SIGNAL_WEIGHTS["catalyst"]
-                + fundamental.score * SIGNAL_WEIGHTS["fundamental"]
-                + pattern.score * SIGNAL_WEIGHTS["pattern"]
-                + sentiment_contribution
-            )
-
-        # 3. Direction alignment check
-        # Normalize: treat "ambiguous" as "neutral" everywhere
+        # 2. Confidence-weighted direction alignment
         def _normalize_dir(d):
             return "neutral" if d in ("neutral", "ambiguous") else d
 
-        directions = {
-            "catalyst": _normalize_dir(catalyst.direction),
-            "fundamental": _normalize_dir(fundamental.direction),
-            "pattern": _normalize_dir(pattern.direction),
-            "sentiment": _normalize_dir(sentiment.direction),
+        agents = {
+            "catalyst": (catalyst, SIGNAL_WEIGHTS["catalyst"]),
+            "fundamental": (fundamental, SIGNAL_WEIGHTS["fundamental"]),
+            "pattern": (pattern, SIGNAL_WEIGHTS["pattern"]),
+            "web_research": (web_research, SIGNAL_WEIGHTS["web_research"]),
         }
 
-        # Derive primary_direction from highest-confidence non-neutral signal
-        # Priority order: catalyst > fundamental > pattern > sentiment
+        directions = {name: _normalize_dir(agent.direction) for name, (agent, _) in agents.items()}
+
+        # Derive primary_direction from highest-weight non-neutral signal
         primary_direction = "neutral"
-        for agent_name in ("catalyst", "fundamental", "pattern", "sentiment"):
+        for agent_name in ("catalyst", "fundamental", "pattern", "web_research"):
             if directions[agent_name] not in ("neutral",):
                 primary_direction = directions[agent_name]
                 break
@@ -76,24 +65,39 @@ class ScoringEngine:
         if primary_direction == "neutral":
             primary_direction = "bullish"
 
-        disagreements = sum(
-            1 for agent, d in directions.items()
-            if d not in ("neutral",) and d != primary_direction
-        )
+        # V2: Confidence-weighted disagreement penalty
+        # Instead of binary counting, weight disagreements by confidence * weight
+        disagreement_penalty = 0.0
+        total_non_neutral_weight = 0.0
 
-        if disagreements >= 2:
-            alignment_modifier = DIRECTION_PENALTY_MAJOR
-            signal_agreement = "conflicting"
-        elif disagreements == 1:
-            alignment_modifier = DIRECTION_PENALTY_PARTIAL
-            signal_agreement = "mostly_aligned"
+        for agent_name, (agent, weight) in agents.items():
+            d = directions[agent_name]
+            if d == "neutral":
+                continue
+            total_non_neutral_weight += weight
+            if d != primary_direction:
+                # Penalty proportional to confidence and weight
+                disagreement_penalty += agent.confidence * weight
+
+        # Convert to alignment modifier
+        if total_non_neutral_weight > 0 and disagreement_penalty > 0:
+            disagreement_ratio = disagreement_penalty / total_non_neutral_weight
+            if disagreement_ratio > 0.4:
+                alignment_modifier = DIRECTION_PENALTY_MAJOR
+                signal_agreement = "conflicting"
+            elif disagreement_ratio > 0.15:
+                alignment_modifier = DIRECTION_PENALTY_PARTIAL
+                signal_agreement = "mostly_aligned"
+            else:
+                alignment_modifier = 1.0
+                signal_agreement = "all_aligned"
         else:
             alignment_modifier = 1.0
             signal_agreement = "all_aligned"
 
         adjusted_score = raw_score * alignment_modifier
 
-        # 4. Opus evaluation (final score + stress test)
+        # 3. Opus evaluation (final score + stress test)
         opus_result = {}
         final_score = adjusted_score
 
@@ -118,22 +122,53 @@ class ScoringEngine:
                     "confidence": pattern.confidence,
                     "direction": pattern.direction,
                     "reasoning": pattern.reasoning,
+                    # V2: similarity-weighted stats for Opus evaluation
+                    "total_instances": pattern.raw_data.get("total_instances"),
+                    "weighted_win_rate_t10": pattern.raw_data.get("weighted_win_rate_t10"),
+                    "hs_count": pattern.raw_data.get("hs_count"),
+                    "hs_win_rate_t10": pattern.raw_data.get("hs_win_rate_t10"),
+                    "hs_median_return_t10": pattern.raw_data.get("hs_median_return_t10"),
+                    "most_similar_instance": pattern.raw_data.get("most_similar_instance"),
                 },
-                "sentiment": {
-                    "score": sentiment.score,
-                    "confidence": sentiment.confidence,
-                    "direction": sentiment.direction,
-                    "reasoning": sentiment.reasoning,
-                    "contrarian_flag": contrarian,
+                "web_research": {
+                    "score": web_research.score,
+                    "confidence": web_research.confidence,
+                    "direction": web_research.direction,
+                    "reasoning": web_research.reasoning,
+                    "key_finding": web_research.raw_data.get("key_finding", ""),
                 },
                 "macro": regime,
             }
             opus_result = self.escalation.opus_evaluate(ticker, all_signals, portfolio_context)
-            # Opus can override the score
-            if "final_score" in opus_result and not opus_result.get("error"):
-                final_score = opus_result["final_score"]
 
-        # 5. Classify
+            # V2: Opus delta clamping
+            if "final_score" in opus_result and not opus_result.get("error"):
+                opus_score = opus_result["final_score"]
+                opus_delta = opus_score - adjusted_score
+                clamped = False
+
+                if abs(opus_delta) > OPUS_MAX_DELTA:
+                    clamped_delta = max(-OPUS_MAX_DELTA, min(OPUS_MAX_DELTA, opus_delta))
+                    final_score = adjusted_score + clamped_delta
+                    log.warning(
+                        "opus_delta_clamped",
+                        ticker=ticker,
+                        original_delta=round(opus_delta, 4),
+                        clamped_delta=round(clamped_delta, 4),
+                        adjusted=round(adjusted_score, 4),
+                        final=round(final_score, 4),
+                    )
+                    clamped = True
+                    opus_result["delta_clamped"] = True
+                    opus_result["original_opus_score"] = opus_score
+                    opus_result["clamped_delta"] = round(clamped_delta, 4)
+                else:
+                    final_score = opus_score
+
+        # Ensure final_score is clamped to [0, 1]
+        final_score = max(0.0, min(1.0, final_score))
+
+        # 4. Classify
         classification = self._classify(final_score)
 
         result = {
@@ -145,12 +180,11 @@ class ScoringEngine:
             "signal_agreement": signal_agreement,
             "direction": primary_direction,
             "directions": directions,
-            "contrarian_flag": contrarian,
             "signal_breakdown": {
                 "catalyst": {"score": round(catalyst.score, 3), "weight": SIGNAL_WEIGHTS["catalyst"], "direction": catalyst.direction, "confidence": catalyst.confidence},
                 "fundamental": {"score": round(fundamental.score, 3), "weight": SIGNAL_WEIGHTS["fundamental"], "direction": fundamental.direction, "confidence": fundamental.confidence},
                 "pattern": {"score": round(pattern.score, 3), "weight": SIGNAL_WEIGHTS["pattern"], "direction": pattern.direction, "confidence": pattern.confidence},
-                "sentiment": {"score": round(sentiment.score, 3), "weight": SIGNAL_WEIGHTS["sentiment"], "direction": sentiment.direction, "confidence": sentiment.confidence},
+                "web_research": {"score": round(web_research.score, 3), "weight": SIGNAL_WEIGHTS["web_research"], "direction": web_research.direction, "confidence": web_research.confidence},
             },
             "regime": regime,
             "opus_evaluation": opus_result,
@@ -159,7 +193,7 @@ class ScoringEngine:
 
         log.info(
             "scoring_result", ticker=ticker,
-            raw=raw_score, final=final_score,
+            raw=raw_score, adjusted=adjusted_score, final=final_score,
             classification=classification,
             agreement=signal_agreement,
         )

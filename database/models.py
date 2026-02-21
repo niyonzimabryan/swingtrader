@@ -259,3 +259,105 @@ class RedditSentiment(Base):
     raw_data = Column(Text, default="{}")  # JSON
 
     ticker = relationship("Ticker", back_populates="reddit_sentiments")
+
+
+# --- V2 Tables ---
+
+class DiscoveredTicker(Base):
+    """Tickers found by the Discovery Agent via web search."""
+    __tablename__ = "discovered_tickers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    catalyst_summary = Column(Text, default="")
+    catalyst_type = Column(String(50), default="")
+    relevance_score = Column(Float, default=0)
+    direction_hint = Column(String(20), default="neutral")  # bullish, bearish, neutral
+    discovery_context = Column(Text, default="")  # Full context from Discovery Agent
+    model_used = Column(String(50), default="")
+    run_id = Column(String(50), default="")
+    progressed_to_pipeline = Column(Boolean, default=False)
+    pipeline_score = Column(Float, nullable=True)
+    discovered_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WebResearch(Base):
+    """Web research results from the Web Research Agent."""
+    __tablename__ = "web_research"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker_id = Column(Integer, ForeignKey("tickers.id"), nullable=False)
+    synthesis = Column(Text, default="")
+    catalyst_context = Column(Text, default="")
+    competitive_dynamics = Column(Text, default="")
+    management_signals = Column(Text, default="")
+    bull_bear_debate = Column(Text, default="")
+    institutional_positioning = Column(Text, default="")
+    key_finding = Column(Text, default="")
+    information_score = Column(Float, default=0)
+    confidence = Column(Float, default=0)
+    direction = Column(String(20), default="neutral")
+    sources_summary = Column(Text, default="")
+    model_used = Column(String(50), default="")
+    run_id = Column(String(50), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    ticker = relationship("Ticker")
+
+
+class WatchlistTicker(Base):
+    """Operator or Opus-recommended tickers for lower-threshold re-scanning."""
+    __tablename__ = "watchlist_tickers"
+    __table_args__ = (
+        Index("ix_watchlist_active", "active"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    sector = Column(String(100), default="")
+    reason = Column(Text, default="")
+    source = Column(String(30), default="")  # "opus_recommendation", "operator", "discovery"
+    active = Column(Boolean, default=True)
+    added_at = Column(DateTime, default=datetime.utcnow)
+    deactivated_at = Column(DateTime, nullable=True)
+
+
+class HistoricalContext(Base):
+    """Contextual data for historical pattern instances — enables similarity scoring."""
+    __tablename__ = "historical_contexts"
+    __table_args__ = (
+        UniqueConstraint("pattern_id", name="uq_context_pattern"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pattern_id = Column(Integer, ForeignKey("historical_patterns.id"), nullable=False, index=True)
+    macro_regime = Column(String(20), default="")  # risk-on, neutral, risk-off
+    vix_level = Column(Float, nullable=True)
+    fwd_pe_ratio = Column(Float, nullable=True)
+    momentum_20d = Column(Float, nullable=True)  # 20-day price return (%)
+    sp500_distance_200ma = Column(Float, nullable=True)  # S&P 500 distance from 200-day MA (%)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    pattern = relationship("HistoricalPattern")
+
+
+class DeepResearchRequest(Base):
+    """Tracks async deep research tasks for high-conviction ideas."""
+    __tablename__ = "deep_research_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    memo_id = Column(Integer, ForeignKey("memos.id"), nullable=False)
+    ticker = Column(String(10), nullable=False, index=True)
+    task_id = Column(String(200), default="")  # Provider's task ID
+    provider = Column(String(30), default="gemini")
+    status = Column(String(30), default="submitted")  # submitted, in_progress, completed, failed, timeout
+    original_score = Column(Float, default=0)
+    research_report = Column(Text, default="")
+    reevaluation_result = Column(Text, default="{}")  # JSON: Opus re-evaluation
+    updated_score = Column(Float, nullable=True)
+    updated_recommendation = Column(String(30), nullable=True)
+    duration_s = Column(Float, nullable=True)
+    pdf_path = Column(String(500), nullable=True)
+    submitted_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    error = Column(Text, default="")

@@ -9,6 +9,7 @@ from bot.handlers.commands import (
     help_command, status_command, positions_command, regime_command,
     agents_command, exposure_command, risk_command,
     watchlist_command, upcoming_command, pause_command, resume_command, config_command,
+    scan_command,
 )
 from bot.handlers.test_idea import test_command, score_command
 from bot.handlers.callbacks import handle_callback
@@ -57,11 +58,12 @@ class SwingTraderBot:
         self.app.add_handler(CommandHandler("pause", pause_command))
         self.app.add_handler(CommandHandler("resume", resume_command))
         self.app.add_handler(CommandHandler("config", config_command))
+        self.app.add_handler(CommandHandler("scan", scan_command))
 
         # Inline keyboard callbacks
         self.app.add_handler(CallbackQueryHandler(handle_callback))
 
-        log.info("telegram_bot_built", commands=20)
+        log.info("telegram_bot_built", commands=21)
         return self.app
 
     async def start(self):

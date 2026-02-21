@@ -16,6 +16,7 @@ from orchestrator.universe import seed_universe
 from bot.telegram_bot import SwingTraderBot
 from bot.message_queue import MessageQueue
 from bot.notifications import NotificationManager
+from execution.order_monitor import OrderMonitor
 from utils.logger import setup_logging, get_logger
 
 
@@ -62,6 +63,10 @@ async def main():
     mq = MessageQueue(app.bot)
     notifications = NotificationManager(mq, settings.telegram_chat_id)
     pipeline.notification_manager = notifications
+    pipeline.bot_loop = asyncio.get_running_loop()  # For deep research async scheduling
+
+    # Initialize order monitor
+    order_monitor = OrderMonitor(pipeline.alpaca, notifications, settings)
 
     # Initialize scheduler
     scheduler = PipelineScheduler(pipeline, settings)
@@ -73,12 +78,18 @@ async def main():
     print("\n✅ Swing Trader is running!")
     print(f"   Telegram bot active — send /help to your bot")
     print(f"   Scheduler: 3 daily scans at {settings.pre_market_hour}:00, {settings.midday_hour}:00, {settings.post_market_hour}:00 ET")
+    print(f"   Order monitor: polling every 30s")
     from config.tickers import UNIVERSE
     print(f"   Universe: {len(UNIVERSE)} tickers")
     print(f"   Press Ctrl+C to stop\n")
 
     try:
         await bot.start()
+
+        # Start order monitor (runs as async background task)
+        await order_monitor.start()
+        log.info("order_monitor_started")
+
         # Keep running
         stop_event = asyncio.Event()
 
@@ -93,6 +104,7 @@ async def main():
         pass
     finally:
         log.info("shutting_down")
+        await order_monitor.stop()
         scheduler.stop()
         await bot.stop()
         log.info("swing_trader_stopped")

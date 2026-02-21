@@ -75,6 +75,56 @@ class NotificationManager:
             text += f"Next retry: {escape_md(next_retry)}"
         await self.mq.send(self.chat_id, text)
 
+    async def deep_research_update(self, ticker: str, message: str):
+        """
+        Notify operator of deep research progress/completion.
+        Messages come pre-formatted from DeepResearchAgent.
+        """
+        await self.mq.send_plain(self.chat_id, message)
+
+    async def deep_research_started(self, ticker: str, score: float):
+        """Notify that deep research has been triggered."""
+        text = (
+            f"🔬 Deep research generating for {escape_md(ticker)}\\.\\.\\.\n"
+            f"Score: `{score:.2f}` \\(threshold: 0\\.75\\)\n"
+            f"Estimated time: 5\\-20 minutes"
+        )
+        await self.mq.send(self.chat_id, text)
+
+    async def send_deep_research_pdf(self, ticker: str, pdf_path: str):
+        """Send the deep research PDF report as a Telegram document."""
+        caption = f"📄 Deep Research Report: {ticker}"
+        await self.mq.send_document(self.chat_id, pdf_path, caption=caption)
+
+    async def scan_complete(
+        self,
+        scan_type: str,
+        duration_s: float,
+        total_scanned: int,
+        escalated: int,
+        memos_generated: int,
+        memo_details: list = None,
+    ):
+        """Notify operator of scan completion with summary."""
+        mins = int(duration_s // 60)
+        secs = int(duration_s % 60)
+        text = (
+            f"*Scan Complete \\({escape_md(scan_type)}\\)*\n\n"
+            f"Duration: `{mins}m {secs}s`\n"
+            f"Scanned: `{total_scanned}` tickers\n"
+            f"Escalated to Sonnet: `{escalated}`\n"
+            f"Memos generated: `{memos_generated}`\n"
+        )
+        if memo_details:
+            for md in memo_details:
+                score = md.get("score", 0)
+                ticker = md.get("ticker", "?")
+                classification = md.get("classification", "")
+                text += f"  `{escape_md(ticker)}` \\(`{score:.2f}`\\) — {escape_md(classification)}\n"
+        if memos_generated == 0:
+            text += "\nNo opportunities met the memo threshold\\."
+        await self.mq.send(self.chat_id, text)
+
     async def system_message(self, message: str):
         """Send a generic system notification."""
         text = f"ℹ️ {escape_md(message)}"

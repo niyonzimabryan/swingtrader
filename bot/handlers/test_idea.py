@@ -4,10 +4,12 @@
 /score TICKER — quick fundamental snapshot
 """
 
+import asyncio
+
 from telegram import Update
 from telegram.ext import ContextTypes
 from bot.auth import authorized
-from bot.formatters import escape_md, format_memo
+from bot.formatters import escape_md, format_memo, split_message
 from bot.keyboards import memo_approval_keyboard
 from utils.logger import get_logger
 
@@ -33,21 +35,39 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("System not initialized yet.")
         return
 
-    # Send "analyzing" message
+    # Send initial status message (will be edited with progress)
     status_msg = await update.message.reply_text(
-        f"🔍 Analyzing {ticker}... This may take 1-3 minutes.\n"
-        f"Running: Haiku pre-screen → Sonnet analysis → Opus scoring → Memo generation",
+        f"Analyzing {ticker}...\n\nStarting pipeline...",
         parse_mode=None,
     )
 
+    # Progress callback — called from sync executor, edits status message
+    chat_id = update.effective_chat.id
+    msg_id = status_msg.message_id
+    bot = context.bot
+    bot_loop = asyncio.get_event_loop()
+
+    def progress_cb(stage_text: str):
+        try:
+            asyncio.run_coroutine_threadsafe(
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text=f"Analyzing {ticker}...\n\n{stage_text}",
+                ),
+                bot_loop,
+            )
+        except Exception:
+            pass
+
     try:
-        memo_data = await pipeline.run_ad_hoc_async(ticker, thesis)
+        memo_data = await pipeline.run_ad_hoc_async(ticker, thesis, progress_cb=progress_cb)
 
         if not memo_data:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=status_msg.message_id,
-                text=f"❌ Analysis complete for {ticker} — no actionable opportunity found (score below threshold or insufficient data).",
+                text=f"Analysis complete for {ticker} — no actionable opportunity found (score below threshold or insufficient data).",
             )
             return
 
@@ -60,27 +80,33 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # Send the formatted memo
+        # Send the formatted memo (split if >4096 chars, keyboard on last chunk)
         memo_text = format_memo(memo_data)
         memo_id = memo_data.get("memo_id", 0)
         keyboard = memo_approval_keyboard(memo_id)
 
         # Try MarkdownV2 first, fall back to plain text
         try:
-            await update.message.reply_text(
-                memo_text,
-                parse_mode="MarkdownV2",
-                reply_markup=keyboard,
-            )
+            chunks = split_message(memo_text)
+            for i, chunk in enumerate(chunks):
+                is_last = i == len(chunks) - 1
+                await update.message.reply_text(
+                    chunk,
+                    parse_mode="MarkdownV2",
+                    reply_markup=keyboard if is_last else None,
+                )
         except Exception:
             # Fallback: send as plain text
             from memo.templates.ic_memo import format_memo_plain
             plain_text = format_memo_plain(memo_data)
-            await update.message.reply_text(
-                plain_text,
-                parse_mode=None,
-                reply_markup=keyboard,
-            )
+            chunks = split_message(plain_text)
+            for i, chunk in enumerate(chunks):
+                is_last = i == len(chunks) - 1
+                await update.message.reply_text(
+                    chunk,
+                    parse_mode=None,
+                    reply_markup=keyboard if is_last else None,
+                )
 
     except Exception as e:
         log.error("test_command_failed", ticker=ticker, error=str(e))
@@ -88,10 +114,10 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=status_msg.message_id,
-                text=f"❌ Analysis failed for {ticker}: {str(e)[:300]}",
+                text=f"Analysis failed for {ticker}: {str(e)[:300]}",
             )
         except Exception:
-            await update.message.reply_text(f"❌ Analysis failed: {str(e)[:300]}")
+            await update.message.reply_text(f"Analysis failed: {str(e)[:300]}")
 
 
 @authorized
@@ -107,14 +133,14 @@ async def score_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("System not initialized yet.")
         return
 
-    await update.message.reply_text(f"📊 Scoring {ticker}...", parse_mode=None)
+    await update.message.reply_text(f"Scoring {ticker}...", parse_mode=None)
 
     try:
         result = pipeline.fundamental_agent.analyze(ticker=ticker, sector=pipeline.get_sector(ticker))
         rd = result.raw_data
 
         text = (
-            f"*📊 FUNDAMENTAL SNAPSHOT: {escape_md(ticker)}*\n\n"
+            f"*FUNDAMENTAL SNAPSHOT: {escape_md(ticker)}*\n\n"
             f"Quality: `{rd.get('quality_score', 0):.2f}`\n"
             f"Balance Sheet: `{rd.get('balance_sheet_score', 0):.2f}`\n"
             f"Valuation: `{rd.get('valuation_score', 0):.2f}`\n"

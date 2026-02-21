@@ -15,36 +15,106 @@ log = get_logger("bot_performance")
 
 @authorized
 async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Performance summary."""
+    """Enhanced performance dashboard: live Alpaca + DB closed trades."""
+    pipeline = context.bot_data.get("pipeline")
+    if not pipeline:
+        await update.message.reply_text("System initializing...")
+        return
+
     try:
+        sections = []
+
+        # --- ACCOUNT section (live from Alpaca) ---
+        account = pipeline.alpaca.get_account_info() if pipeline.alpaca else {}
+        equity = account.get("equity", 0)
+        cash = account.get("cash", 0)
+        day_pnl = account.get("pnl_today", 0)
+        day_pnl_pct = account.get("pnl_today_pct", 0)
+        day_emoji = "🟢" if day_pnl >= 0 else "🔴"
+
+        sections.append(
+            f"*📈 PERFORMANCE DASHBOARD*\n\n"
+            f"*ACCOUNT*\n"
+            f"  Equity: `${equity:,.0f}` \\| Cash: `${cash:,.0f}`\n"
+            f"  Day P&L: {day_emoji} `${day_pnl:+,.0f}` \\(`{day_pnl_pct:+.2f}%`\\)"
+        )
+
+        # --- OPEN POSITIONS section (live from Alpaca) ---
+        positions = pipeline.alpaca.get_positions_detail() if pipeline.alpaca else []
+        if positions:
+            open_pnl = sum(p.get("pnl_abs", 0) for p in positions)
+            open_emoji = "🟢" if open_pnl >= 0 else "🔴"
+            pos_lines = [f"\n*OPEN POSITIONS \\({len(positions)}\\)*"]
+
+            # Match positions with DB trades to get stop-loss info
+            with get_session() as session:
+                open_trades = session.query(Trade).filter(Trade.status == "open").all()
+                stop_map = {}
+                for t in open_trades:
+                    if t.ticker:
+                        stop_map[t.ticker.symbol] = t.stop_loss
+
+            for p in positions:
+                ticker = p["ticker"]
+                pnl_pct = p.get("pnl_pct", 0)
+                p_emoji = "🟢" if pnl_pct >= 0 else "🔴"
+                stop = stop_map.get(ticker, 0)
+                stop_str = f" \\| Stop: `${stop:,.2f}`" if stop > 0 else ""
+                pos_lines.append(
+                    f"  `{escape_md(ticker)}`: {p.get('qty', 0)} shares "
+                    f"@ `${p.get('entry_price', 0):,.2f}` → `${p.get('current_price', 0):,.2f}` "
+                    f"\\| {p_emoji} `{pnl_pct:+.1f}%`{stop_str}"
+                )
+            pos_lines.append(f"  Open P&L: {open_emoji} `${open_pnl:+,.2f}`")
+            sections.append("\n".join(pos_lines))
+        else:
+            sections.append("\n*OPEN POSITIONS \\(0\\)*\n  No open positions\\.")
+
+        # --- CLOSED TRADES section (from DB) ---
         with get_session() as session:
             closed = session.query(Trade).filter(Trade.status == "closed").all()
 
-            if not closed:
-                await update.message.reply_text("No closed trades yet. Performance tracking begins after first trade.", parse_mode=None)
-                return
-
+        if closed:
             total_pnl = sum(t.pnl_absolute or 0 for t in closed)
             wins = [t for t in closed if (t.pnl_absolute or 0) > 0]
             losses = [t for t in closed if (t.pnl_absolute or 0) <= 0]
             win_rate = len(wins) / len(closed) * 100 if closed else 0
             avg_win = sum(t.pnl_pct or 0 for t in wins) / len(wins) if wins else 0
             avg_loss = sum(t.pnl_pct or 0 for t in losses) / len(losses) if losses else 0
-            profit_factor = abs(sum(t.pnl_absolute or 0 for t in wins) / sum(t.pnl_absolute or 0 for t in losses)) if losses and sum(t.pnl_absolute or 0 for t in losses) != 0 else 0
+            gross_wins = sum(t.pnl_absolute or 0 for t in wins)
+            gross_losses = abs(sum(t.pnl_absolute or 0 for t in losses))
+            profit_factor = gross_wins / gross_losses if gross_losses > 0 else 0
+
+            # Best and worst trades
+            best = max(closed, key=lambda t: t.pnl_pct or 0)
+            worst = min(closed, key=lambda t: t.pnl_pct or 0)
+            best_sym = best.ticker.symbol if best.ticker else "?"
+            worst_sym = worst.ticker.symbol if worst.ticker else "?"
+
+            # Average holding period
+            hold_days = []
+            for t in closed:
+                if t.entry_date and t.exit_date:
+                    hold_days.append((t.exit_date - t.entry_date).days)
+            avg_hold = sum(hold_days) / len(hold_days) if hold_days else 0
 
             pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
-
-            text = (
-                f"*📈 PERFORMANCE SUMMARY*\n\n"
-                f"Total Trades: `{len(closed)}`\n"
-                f"Total P&L: {pnl_emoji} `${total_pnl:+,.2f}`\n"
-                f"Win Rate: `{win_rate:.1f}%`\n"
-                f"Avg Winner: `{avg_win:+.2f}%`\n"
-                f"Avg Loser: `{avg_loss:+.2f}%`\n"
-                f"Profit Factor: `{profit_factor:.2f}`\n"
-                f"Wins: `{len(wins)}` \\| Losses: `{len(losses)}`\n"
+            sections.append(
+                f"\n*CLOSED TRADES \\({len(closed)}\\)*\n"
+                f"  Win Rate: `{win_rate:.0f}%` \\(`{len(wins)}W` / `{len(losses)}L`\\)\n"
+                f"  Total P&L: {pnl_emoji} `${total_pnl:+,.2f}`\n"
+                f"  Avg Win: `{avg_win:+.1f}%` \\| Avg Loss: `{avg_loss:+.1f}%`\n"
+                f"  Profit Factor: `{profit_factor:.1f}`\n"
+                f"  Best: `{escape_md(best_sym)}` `{best.pnl_pct or 0:+.1f}%` \\| "
+                f"Worst: `{escape_md(worst_sym)}` `{worst.pnl_pct or 0:+.1f}%`\n"
+                f"  Avg Hold: `{avg_hold:.1f}` days"
             )
-            await update.message.reply_text(text, parse_mode="MarkdownV2")
+        else:
+            sections.append("\n*CLOSED TRADES \\(0\\)*\n  No closed trades yet\\.")
+
+        text = "\n".join(sections)
+        await update.message.reply_text(text, parse_mode="MarkdownV2")
+
     except Exception as e:
         log.error("performance_failed", error=str(e))
         await update.message.reply_text(f"Error: {str(e)[:200]}")

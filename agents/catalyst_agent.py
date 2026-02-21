@@ -2,6 +2,11 @@
 Catalyst Agent — primary trade idea generator.
 Scans for actionable catalysts using Haiku→Sonnet escalation.
 Detects: earnings surprises, insider buying, analyst revisions, M&A, product/regulatory, etc.
+
+V2 changes:
+- Materiality/direction_confidence split (replaces single 'confidence')
+- skip_haiku support for Discovery-sourced tickers
+- haiku_threshold_override for Watchlist tickers
 """
 
 import re
@@ -28,6 +33,28 @@ CATALYST_KEYWORDS = re.compile(
 )
 
 
+def _compute_catalyst_score(sonnet_result: dict) -> tuple:
+    """
+    V2 scoring: materiality * 0.7 + direction_confidence * 0.3
+    Returns (score, materiality, direction_confidence)
+    If Sonnet returned an error response, returns low scores to signal failure.
+    """
+    # Guard: failed Sonnet response should not look like a valid neutral signal
+    if "error" in sonnet_result:
+        return (0.1, 0.1, 0.1)
+
+    materiality = sonnet_result.get("materiality", 0.5)
+    direction_confidence = sonnet_result.get("direction_confidence", 0.5)
+
+    # Backwards compat: if model returns old 'confidence' field
+    if "confidence" in sonnet_result and "materiality" not in sonnet_result:
+        materiality = sonnet_result["confidence"]
+        direction_confidence = sonnet_result["confidence"]
+
+    catalyst_score = materiality * 0.7 + direction_confidence * 0.3
+    return catalyst_score, materiality, direction_confidence
+
+
 class CatalystAgent(BaseAgent):
     agent_type = "catalyst"
 
@@ -41,10 +68,13 @@ class CatalystAgent(BaseAgent):
     def analyze(self, ticker: str = None, **kwargs) -> AgentOutput:
         """
         Scan for catalysts for a single ticker.
-        1. Fetch news + filings
-        2. Keyword pre-filter
-        3. Haiku pre-screen (relevance 1-5)
-        4. Sonnet deep analysis for score >= threshold
+
+        V2 kwargs:
+        - skip_haiku (bool): Skip Haiku pre-screen (Discovery-sourced tickers)
+        - discovery_context (str): Pre-validated catalyst context from Discovery
+        - direction_hint (str): Direction hint from Discovery
+        - haiku_threshold_override (int): Override Haiku threshold (Watchlist tickers)
+        - thesis (str): Operator-provided thesis (ad-hoc /test)
         """
         if not ticker:
             return AgentOutput(agent_type=self.agent_type, reasoning="No ticker provided")
@@ -53,6 +83,12 @@ class CatalystAgent(BaseAgent):
 
         # Allow passing a thesis directly (for /test command)
         provided_thesis = kwargs.get("thesis", "")
+
+        # V2: Discovery-sourced tickers skip Haiku
+        skip_haiku = kwargs.get("skip_haiku", False)
+        discovery_context = kwargs.get("discovery_context", "")
+        direction_hint = kwargs.get("direction_hint", "bullish")
+        haiku_threshold_override = kwargs.get("haiku_threshold_override", None)
 
         # Gather raw data
         news = self.news_data.get_company_news(ticker, days=2)
@@ -69,6 +105,12 @@ class CatalystAgent(BaseAgent):
         # If a thesis was provided (ad-hoc /test), skip Haiku and go straight to Sonnet
         if provided_thesis and self.escalation:
             return self._analyze_provided_thesis(ticker, provided_thesis, company_context, price_data)
+
+        # V2: If skipping Haiku (Discovery-sourced), go straight to Sonnet with discovery context
+        if skip_haiku and discovery_context and self.escalation:
+            return self._analyze_discovery_context(
+                ticker, discovery_context, direction_hint, company_context
+            )
 
         # Collect candidate items
         candidates = []
@@ -106,6 +148,9 @@ class CatalystAgent(BaseAgent):
         best_catalyst = None
         best_haiku_score = 0
 
+        # V2: Use overridden threshold for watchlist tickers
+        effective_threshold = haiku_threshold_override or self.settings.catalyst_escalation_threshold
+
         for candidate in candidates[:10]:  # Cap at 10 to manage API costs
             if not self.escalation:
                 continue
@@ -115,20 +160,20 @@ class CatalystAgent(BaseAgent):
             score = haiku_result.get("score", 1)
 
             # Save every catalyst to DB for analysis
-            self._save_catalyst(ticker, candidate, haiku_result, escalated=score >= self.settings.catalyst_escalation_threshold)
+            self._save_catalyst(ticker, candidate, haiku_result, escalated=score >= effective_threshold)
 
             if score > best_haiku_score:
                 best_haiku_score = score
                 best_catalyst = {**candidate, "haiku_result": haiku_result}
 
         # If best candidate doesn't meet threshold, return low score
-        if not best_catalyst or best_haiku_score < self.settings.catalyst_escalation_threshold:
+        if not best_catalyst or best_haiku_score < effective_threshold:
             return AgentOutput(
                 agent_type=self.agent_type, ticker=ticker,
                 score=best_haiku_score / 5.0 * 0.5,  # Scale to 0-0.5 range
                 confidence=0.4,
                 direction=best_catalyst["haiku_result"].get("direction", "neutral") if best_catalyst else "neutral",
-                reasoning=f"Haiku pre-screen: best score {best_haiku_score}/5, below escalation threshold.",
+                reasoning=f"Haiku pre-screen: best score {best_haiku_score}/5, below escalation threshold ({effective_threshold}).",
                 raw_data={"haiku_score": best_haiku_score, "candidates_found": len(candidates)},
                 run_id=self.run_id,
             )
@@ -138,10 +183,12 @@ class CatalystAgent(BaseAgent):
             ticker, best_catalyst["text"], best_catalyst["haiku_result"], company_context
         )
 
-        # Map Sonnet's output to agent score
-        magnitude = sonnet_result.get("magnitude", 1)
-        confidence = sonnet_result.get("confidence", 0.5)
-        catalyst_score = (magnitude / 5.0) * confidence  # 0-1 range
+        # V2: Materiality/direction confidence split
+        catalyst_score, materiality, direction_confidence = _compute_catalyst_score(sonnet_result)
+
+        # If Sonnet failed, propagate error clearly
+        if "error" in sonnet_result:
+            log.warning("sonnet_analyze_failed", ticker=ticker, error=sonnet_result.get("error", "")[:200])
 
         direction = sonnet_result.get("direction", "neutral")
 
@@ -149,18 +196,68 @@ class CatalystAgent(BaseAgent):
             agent_type=self.agent_type,
             ticker=ticker,
             score=catalyst_score,
-            confidence=confidence,
+            confidence=(materiality + direction_confidence) / 2,
             direction=direction,
-            reasoning=sonnet_result.get("reasoning", ""),
+            reasoning=sonnet_result.get("reasoning", sonnet_result.get("error", "")),
             raw_data={
                 "catalyst_type": sonnet_result.get("catalyst_type", ""),
                 "catalyst_summary": sonnet_result.get("catalyst_summary", ""),
-                "magnitude": magnitude,
+                "magnitude": sonnet_result.get("magnitude", 1),
+                "materiality": materiality,
+                "direction_confidence": direction_confidence,
                 "expected_impact_pct": sonnet_result.get("expected_impact_pct", {}),
                 "time_horizon_days": sonnet_result.get("time_horizon_days", 10),
                 "counter_arguments": sonnet_result.get("counter_arguments", ""),
                 "haiku_score": best_haiku_score,
                 "source": best_catalyst.get("source", ""),
+                "sonnet_error": sonnet_result.get("error"),
+            },
+            run_id=self.run_id,
+        )
+
+    def _analyze_discovery_context(
+        self, ticker: str, discovery_context: str, direction_hint: str, company_context: str
+    ) -> AgentOutput:
+        """
+        V2: Handle Discovery-sourced tickers — skip Haiku, go straight to Sonnet.
+        Discovery Agent has already validated this as a quality idea.
+        """
+        haiku_result = {
+            "score": 5,
+            "category": "discovery_validated",
+            "summary": discovery_context[:200],
+            "direction": direction_hint,
+            "relevant": True,
+        }
+        sonnet_result = self.escalation.sonnet_analyze(
+            ticker, discovery_context, haiku_result, company_context
+        )
+
+        catalyst_score, materiality, direction_confidence = _compute_catalyst_score(sonnet_result)
+
+        if "error" in sonnet_result:
+            log.warning("sonnet_analyze_failed_discovery", ticker=ticker, error=sonnet_result.get("error", "")[:200])
+
+        return AgentOutput(
+            agent_type=self.agent_type,
+            ticker=ticker,
+            score=catalyst_score,
+            confidence=(materiality + direction_confidence) / 2,
+            direction=sonnet_result.get("direction", direction_hint),
+            reasoning=sonnet_result.get("reasoning", sonnet_result.get("error", "")),
+            raw_data={
+                "catalyst_type": sonnet_result.get("catalyst_type", "discovery"),
+                "catalyst_summary": sonnet_result.get("catalyst_summary", ""),
+                "magnitude": sonnet_result.get("magnitude", 3),
+                "materiality": materiality,
+                "direction_confidence": direction_confidence,
+                "expected_impact_pct": sonnet_result.get("expected_impact_pct", {}),
+                "time_horizon_days": sonnet_result.get("time_horizon_days", 10),
+                "counter_arguments": sonnet_result.get("counter_arguments", ""),
+                "haiku_score": 5,
+                "source": "discovery",
+                "discovery_context": discovery_context,
+                "sonnet_error": sonnet_result.get("error"),
             },
             run_id=self.run_id,
         )
@@ -176,27 +273,31 @@ class CatalystAgent(BaseAgent):
         }
         sonnet_result = self.escalation.sonnet_analyze(ticker, thesis, haiku_result, company_context)
 
-        magnitude = sonnet_result.get("magnitude", 3)
-        confidence = sonnet_result.get("confidence", 0.6)
-        catalyst_score = (magnitude / 5.0) * confidence
+        catalyst_score, materiality, direction_confidence = _compute_catalyst_score(sonnet_result)
+
+        if "error" in sonnet_result:
+            log.warning("sonnet_analyze_failed_thesis", ticker=ticker, error=sonnet_result.get("error", "")[:200])
 
         return AgentOutput(
             agent_type=self.agent_type,
             ticker=ticker,
             score=catalyst_score,
-            confidence=confidence,
+            confidence=(materiality + direction_confidence) / 2,
             direction=sonnet_result.get("direction", "bullish"),
-            reasoning=sonnet_result.get("reasoning", ""),
+            reasoning=sonnet_result.get("reasoning", sonnet_result.get("error", "")),
             raw_data={
                 "catalyst_type": sonnet_result.get("catalyst_type", "operator_provided"),
                 "catalyst_summary": sonnet_result.get("catalyst_summary", thesis[:200]),
-                "magnitude": magnitude,
+                "magnitude": sonnet_result.get("magnitude", 3),
+                "materiality": materiality,
+                "direction_confidence": direction_confidence,
                 "expected_impact_pct": sonnet_result.get("expected_impact_pct", {}),
                 "time_horizon_days": sonnet_result.get("time_horizon_days", 10),
                 "counter_arguments": sonnet_result.get("counter_arguments", ""),
                 "haiku_score": 5,
                 "source": "operator",
                 "provided_thesis": thesis,
+                "sonnet_error": sonnet_result.get("error"),
             },
             run_id=self.run_id,
         )

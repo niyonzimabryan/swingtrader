@@ -1,7 +1,9 @@
 """
-Core bot command handlers: /help, /status, /regime, /positions, /agents, /exposure, /risk
+Core bot command handlers: /help, /status, /regime, /positions, /agents, /exposure, /risk, /scan
 Plus stubs for: /watchlist, /upcoming, /pause, /resume, /config
 """
+
+import asyncio
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -36,6 +38,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/close TICKER` \\- Close a position\n"
         "`/adjust TICKER stop PRICE` \\- Adjust stop\\-loss\n\n"
         "*System*\n"
+        "`/scan` \\- Trigger full pipeline scan\n"
         "`/ask QUESTION` \\- Natural language query\n"
         "`/agents` \\- Agent health check\n"
         "`/pause` / `/resume` \\- Pause/resume scanning\n"
@@ -191,6 +194,29 @@ async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Max Stop\\-Loss: `{(pipeline.settings.max_stop_loss_pct * 100) if pipeline else 8:.0f}%`\n"
     )
     await update.message.reply_text(text, parse_mode="MarkdownV2")
+
+
+@authorized
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trigger a full pipeline scan from Telegram."""
+    pipeline = context.bot_data.get("pipeline")
+    if not pipeline:
+        await update.message.reply_text("System initializing...")
+        return
+
+    if pipeline.paused:
+        await update.message.reply_text("Pipeline is paused. Use /resume first.", parse_mode=None)
+        return
+
+    await update.message.reply_text("Full scan starting... this may take several minutes.", parse_mode=None)
+
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, pipeline.run_full_scan)
+        # Scan completion notification is sent by the pipeline itself
+    except Exception as e:
+        log.error("scan_command_failed", error=str(e))
+        await update.message.reply_text(f"Scan failed: {str(e)[:200]}", parse_mode=None)
 
 
 # --- Stub Commands ---

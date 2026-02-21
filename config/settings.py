@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     daily_loss_halt_pct: float = 0.03
 
     # --- Scoring ---
-    memo_threshold: float = 0.20  # Lowered from 0.55 for testing — restore before live
+    memo_threshold: float = 0.55  # Production threshold (override via .env for testing)
     high_conviction_threshold: float = 0.75
     catalyst_escalation_threshold: int = 3  # Haiku score 1-5 to trigger Sonnet
 
@@ -55,5 +55,25 @@ class Settings(BaseSettings):
     scoring_model: str = "claude-opus-4-6"
     analyst_model: str = "claude-sonnet-4-6"
     filter_model: str = "claude-haiku-4-5-20251001"
+
+    # --- V2: Web Search & Discovery ---
+    web_search_provider: str = "anthropic"  # "anthropic" (default)
+    discovery_max_tickers: int = 12
+    discovery_model: str = "claude-sonnet-4-6"  # Discovery uses Sonnet, NOT Haiku
+
+    # --- V2: Extended Thinking ---
+    discovery_thinking_budget: int = 10000  # Thinking tokens for discovery scan
+    opus_thinking_budget: int = 16000       # Thinking tokens for Opus evaluation
+
+    # --- V2: Deep Research (Phase C — empty for now) ---
+    gemini_api_key: str = ""
+    openai_api_key: str = ""
+    deep_research_provider: str = "gemini"  # "gemini" or "openai"
+    deep_research_score_threshold: float = 0.75
+
+    # --- V2: Watchlist ---
+    watchlist_haiku_threshold: int = 2  # Lower bar for watchlist tickers
+    watchlist_max_size: int = 25
+    watchlist_expiry_days: int = 30
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

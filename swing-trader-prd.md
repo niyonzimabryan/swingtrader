@@ -1747,5 +1747,194 @@ Once sufficient trade data accumulates (50+ closed trades), explore:
 
 ---
 
-*Last updated: February 2026*
-*Version: 1.2 — Phase 1 Build + Initial Testing + RL Roadmap*
+---
+
+## 16. V2 Upgrade — Implemented (Feb 2026)
+
+V2 is a comprehensive upgrade across all four phases (A-D), replacing stubs with production agents and adding new capabilities. All phases are **implemented and tested**.
+
+### 16.1 Architecture Changes (V2)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       ORCHESTRATOR (V2)                          │
+│    Scheduler + Source-Aware Router + Signal Aggregator            │
+└──┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬─────────────┘
+   │      │      │      │      │      │      │      │
+   ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼
+┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌───────────┐
+│Macro ││Cata- ││Funda-││Hist. ││Web   ││Disc- ││Deep  ││ Scoring   │
+│Regime││lyst  ││mental││Match ││Rsrch ││overy ││Rsrch ││ Engine    │
+│Agent ││Agent ││Agent ││Agent ││Agent ││Agent ││Agent ││           │
+│      ││      ││      ││(V2)  ││(NEW) ││(NEW) ││(NEW) ││           │
+└──────┘└──────┘└──────┘└──────┘└──────┘└──────┘└──────┘└───────────┘
+```
+
+**Key replacements:**
+- Reddit Sentiment Agent → **Web Research Agent** (Sonnet + `web_search_20250305` tool)
+- Static 20-ticker universe → **S&P 500 universe + Discovery Agent + Watchlist**
+- Equal-weighted pattern stats → **Contextual similarity-weighted pattern scoring**
+- No deep research → **Gemini Deep Research async loop** (for high-conviction ideas)
+- No extended thinking → **Extended thinking on Discovery scan + Opus evaluation**
+
+### 16.2 New Agents
+
+#### Discovery Agent
+- **Purpose:** Finds 8-12 actionable swing trade catalysts via web search, beyond the static S&P 500 universe
+- **Model:** Sonnet 4.6 + `web_search_20250305` + extended thinking (10K budget)
+- **Output:** `DiscoveryOutput` with validated tickers, catalyst summaries, relevance scores
+- **Source routing:** Discovered tickers skip Haiku pre-screen (already validated)
+- **File:** `agents/discovery_agent.py`
+
+#### Web Research Agent (replaces Reddit)
+- **Purpose:** Real-time web research for sentiment, institutional positioning, bull/bear debates
+- **Model:** Sonnet 4.6 + `web_search_20250305` (up to 8 searches per ticker)
+- **Output:** Structured JSON with: key_finding, catalyst_context, competitive_dynamics, management_signals, bull_bear_debate, institutional_positioning
+- **Scoring weight:** 0.20 (replaces Reddit's former 0.15, redistributed from pattern)
+- **File:** `agents/web_research_agent.py`
+
+#### Deep Research Agent (async, background)
+- **Purpose:** Extended 5-20 min research for ideas scoring >= 0.75
+- **Provider:** Gemini `deep-research-pro-preview-12-2025` (Interactions API)
+- **Flow:** Triggered post-memo → async poll → generate report → Opus re-evaluation → PDF → Telegram notification
+- **Trigger:** Automatic on scheduled scans (score >= threshold), or operator-initiated via Telegram button
+- **Files:** `agents/deep_research_agent.py`, `utils/deep_research_client.py`
+
+### 16.3 Signal Weights (V2)
+
+| Signal | V1 Weight | V2 Weight | Notes |
+|--------|-----------|-----------|-------|
+| Catalyst | 0.40 | 0.35 | Reduced to make room for web research |
+| Fundamental | 0.30 | 0.25 | Slight reduction |
+| Pattern | 0.22 | 0.20 | Now uses similarity-weighted stats |
+| Reddit/Web Research | 0.08 (stubbed) | 0.20 | Real web research replaces stub |
+
+### 16.4 Source-Aware Pipeline Routing
+
+The pipeline now routes tickers differently based on their source:
+
+| Source | Haiku Threshold | Notes |
+|--------|----------------|-------|
+| `discovery` | Skip (0) | Already validated by Discovery Agent |
+| `watchlist` | 2 | Lower bar — operator expressed interest |
+| `universe` (S&P 500) | 3 | Standard threshold |
+
+### 16.5 Scoring Refinements (V2)
+
+- **Catalyst materiality/direction split:** Separate `materiality` (0-1) and `direction_confidence` (0-1) instead of single `confidence`
+- **Opus delta clamping:** `OPUS_MAX_DELTA = 0.30` — prevents Opus from swinging scores more than ±0.30 from the composite
+- **Confidence-weighted alignment bonus:** Signal agreement bonus weighted by each agent's confidence, not flat
+
+### 16.6 Pattern Agent Similarity Scoring (V2 — Phase D)
+
+Historical instances are now weighted by contextual similarity to the current setup:
+
+**5 Similarity Dimensions:**
+| Dimension | Weight | Metric |
+|-----------|--------|--------|
+| Valuation regime | 0.30 | Forward P/E proximity |
+| Beat magnitude | 0.20 | Catalyst magnitude similarity |
+| Macro regime | 0.20 | risk-on / neutral / risk-off match |
+| Momentum | 0.15 | Prior 20-day price momentum |
+| VIX | 0.15 | Market sentiment proximity |
+
+**Scoring hierarchy:**
+1. If >= 5 highly similar instances (similarity >= 0.60): use their stats directly
+2. Else: use similarity-weighted stats across full sample
+3. Fallback: raw equal-weighted stats
+
+**Memo display:** Shows both raw and weighted stats, highlights divergences, and displays the single most similar historical instance.
+
+**Reconstruction script:** `scripts/reconstruct_historical_contexts.py` backfills VIX, P/E, momentum, macro regime for existing cached patterns using yfinance. Macro regime is **inferred** from VIX + S&P 500 distance from 200MA (not from DB — macro agent only has forward data).
+
+### 16.7 IC Memo Layout (V2)
+
+Three-section layout:
+1. **Sonnet Proposal** — Thesis, catalyst, fundamentals, historical precedent (with similarity data), web research, risk analysis, draft trade params, signal agreement
+2. **Opus Evaluation** — Extended thinking verdict, stress test, key risk, score adjustment (with delta clamping), position size adjustment
+3. **Final Trade Parameters** — Entry, stop, targets, position size, R:R, max hold, regime context
+
+### 16.8 Extended Thinking
+
+| Where | Budget | Purpose |
+|-------|--------|---------|
+| Discovery scan | 10,000 tokens | Deeper reasoning about which catalysts are truly actionable |
+| Opus evaluation | 16,000 tokens | Thorough stress-testing before proceed/pass decisions |
+| Opus re-evaluation | 16,000 tokens | Careful integration of deep research findings |
+
+Configurable via `settings.discovery_thinking_budget` and `settings.opus_thinking_budget`. Set to 0 to disable.
+
+Fallback: On timeout/rate-limit, gracefully degrades to non-thinking call on Sonnet.
+
+### 16.9 Deep Research Flow (V2)
+
+```
+Score >= 0.75 (scheduled scan)
+  └→ Async: Gemini deep-research-pro-preview-12-2025
+       └→ Poll every 30s (up to 25 min timeout)
+            └→ Report complete
+                 └→ Opus re-evaluation (with extended thinking)
+                      └→ Generate PDF report
+                           └→ Telegram notification + PDF upload
+                                └→ Update DB with pdf_path + new score
+```
+
+Operator can also trigger manually via "🔬 Run Deep Research" button on any memo.
+
+### 16.10 Database Tables Added (V2)
+
+| Table | Purpose |
+|-------|---------|
+| `discovered_tickers` | Tickers found by Discovery Agent |
+| `watchlist_tickers` | Operator-curated watchlist |
+| `deep_research_requests` | Async deep research tracking |
+| `historical_contexts` | VIX, P/E, momentum, macro for similarity scoring |
+
+### 16.11 File Manifest (V2 additions)
+
+| File | New/Modified | Purpose |
+|------|-------------|---------|
+| `agents/discovery_agent.py` | New | Web search-based idea sourcing |
+| `agents/web_research_agent.py` | New | Real-time web research per ticker |
+| `agents/deep_research_agent.py` | New | Async Gemini deep research |
+| `utils/web_search_client.py` | New | Abstraction over Anthropic web_search tool |
+| `utils/deep_research_client.py` | New | Gemini Interactions API client |
+| `utils/pdf_generator.py` | New | Deep research PDF generation |
+| `scripts/update_sp500.py` | New | Fetch/update S&P 500 constituents |
+| `scripts/reconstruct_historical_contexts.py` | New | Backfill historical context data |
+| `utils/anthropic_client.py` | Modified | Extended thinking + tool use methods |
+| `utils/escalation_manager.py` | Modified | Extended thinking for Opus eval/reeval |
+| `agents/pattern_agent.py` | Modified | Contextual similarity scoring |
+| `scoring/engine.py` | Modified | New weights, confidence-weighted alignment |
+| `scoring/weights.py` | Modified | V2 signal weights |
+| `orchestrator/pipeline.py` | Modified | Source-aware routing, deep research trigger |
+| `memo/templates/ic_memo.py` | Modified | 3-section layout, similarity data display |
+| `bot/keyboards.py` | Modified | Deep research button |
+| `bot/handlers/callbacks.py` | Modified | Deep research callback handler |
+| `bot/notifications.py` | Modified | Deep research notifications |
+| `bot/message_queue.py` | Modified | Document upload support |
+
+### 16.12 Autonomous Operation (V2.1)
+
+| Component | File | Status |
+|-----------|------|--------|
+| Order Monitor | `execution/order_monitor.py` | Live — polls Alpaca every 30s for fills, stops, targets, time exits |
+| `/scan` command | `bot/handlers/commands.py` | Live — triggers `run_full_scan()` from Telegram |
+| Enhanced `/performance` | `bot/handlers/performance.py` | Live — Alpaca equity/cash/P&L + DB closed trades |
+| Scan notifications | `bot/notifications.py` | Live — fires at end of every `run_full_scan()` |
+| Progress updates | `orchestrator/pipeline.py` | Live — `progress_cb` at each pipeline stage, edits Telegram message |
+| Message splitting | `bot/handlers/test_idea.py` | Live — chunks memos >4096 chars for Telegram |
+| Memo approval buttons | `bot/keyboards.py` | Live — Approve/Reject/Deep Research inline keyboard |
+
+### 16.13 Known Issues & Technical Debt
+
+1. **Datetime inconsistency:** Mix of `datetime.now()` and `datetime.utcnow()` across pipeline vs DB models. Non-blocking since everything runs in one timezone, but should standardize to UTC everywhere.
+2. **Dead code:** `agents/reddit_agent.py` and `data/reddit_data.py` are stubs — replaced by Web Research Agent. `RedditSentiment` DB model still exists. Clean up when convenient.
+3. **Forward P/E approximation:** `_get_current_context()` uses `yfinance.info.forwardPE` which can be None/stale for some tickers. Gracefully handles missing data but quality varies.
+4. **Deep research OpenAI path:** Settings allow `deep_research_provider: "openai"` but only Gemini is implemented. OpenAI path will create a non-functional client.
+5. **Opus thinking mode deprecated:** `utils/anthropic_client.py` uses `thinking.type=enabled`, should migrate to `thinking.type=adaptive` for better performance.
+
+---
+
+*Last updated: February 21, 2026*
+*Version: 2.1 — Autonomous Operation (Order monitor, /scan, enhanced /performance, progress updates, scan notifications)*
