@@ -158,7 +158,6 @@ class AnthropicClient:
             temperature=1,  # Required for extended thinking
             thinking={
                 "type": "adaptive",
-                "budget_tokens": budget_tokens,
             },
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
@@ -282,7 +281,6 @@ class AnthropicClient:
                 temperature=1,  # Required for extended thinking
                 thinking={
                     "type": "adaptive",
-                    "budget_tokens": budget_tokens,
                 },
                 system=system_prompt,
                 tools=tools,

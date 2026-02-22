@@ -74,7 +74,7 @@
 - [x] **Opus API calls taking 30+ minutes** — ✅ Added `analyze_with_fallback()` to `utils/anthropic_client.py` with Sonnet fallback on timeout/rate-limit. Reduced retry attempts (3→2), added 120s client timeout. Pipeline now completes in ~50s.
 - [x] **Model upgrade to Sonnet 4.6 + Opus 4.6** — ✅ Updated all model IDs: `claude-sonnet-4-6`, `claude-opus-4-6`. Haiku stays at `claude-haiku-4-5-20251001`. Updated `model_selector.py`, `settings.py`, `anthropic_client.py`.
 - [x] **Message too long for Telegram** — ✅ Fixed: `test_command()` in `bot/handlers/test_idea.py` now uses `split_message()` to chunk memos >4096 chars. Keyboard (approve/reject buttons) attached to last chunk only. Both MarkdownV2 and plain text fallback paths handle splitting.
-- [ ] **Opus thinking mode deprecation** — `utils/anthropic_client.py:155` uses `thinking.type=enabled` which is deprecated. Should switch to `thinking.type=adaptive` per Anthropic docs for better performance.
+- [x] **Opus thinking mode deprecation** — ✅ Fixed: switched `thinking.type` from `enabled` to `adaptive` in both occurrences in `utils/anthropic_client.py`. Committed & deployed.
 - [ ] **Trade params contradict SHORT direction** — entry/stop/target are always computed as LONG params (stop below entry, targets above). If direction is actually short, these need to be inverted. For Phase 1 long-only this is cosmetic but will matter later.
 
 ---
@@ -87,7 +87,7 @@
 - [x] **Scan completion notifications** — `NotificationManager.scan_complete()` fires at end of every `run_full_scan()`. Shows duration, tickers scanned, memos generated with scores.
 - [x] **Order monitor wired to main.py** — Starts after bot init, stops on shutdown. Runs as async background task.
 - [x] **Railway deployment** — ✅ Deployed to Railway with Dockerfile, volume mount at `/data` for SQLite persistence, tzdata for scheduler, polling conflict retry (10 attempts with backoff). GitHub auto-deploy connected — `git push` to `main` triggers deploy. Project: `e556a6d9-2023-4c81-a031-e32e160a33be`.
-- [ ] **Fund Alpaca paper account** — Need to fund with $100K paper money to start live paper trading. Alpaca client is wired.
+- [x] **Fund Alpaca paper account** — ✅ Confirmed: $100K cash, $200K buying power, 0 positions. Ready for live paper trading.
 - [ ] **First autonomous scan** — Run `/scan` from Telegram, verify memos arrive, approve one, verify order submitted + monitored.
 
 ---
