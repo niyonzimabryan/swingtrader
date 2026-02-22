@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
@@ -9,6 +12,14 @@ SessionLocal = None
 
 def init_db(database_url: str = "sqlite:///swing_trader.db"):
     global engine, SessionLocal
+
+    # Ensure parent directory exists for SQLite (needed for Railway volume mounts)
+    if database_url.startswith("sqlite:///"):
+        db_path = database_url.replace("sqlite:///", "")
+        parent = Path(db_path).parent
+        if parent != Path("."):
+            parent.mkdir(parents=True, exist_ok=True)
+
     engine = create_engine(
         database_url,
         echo=False,
