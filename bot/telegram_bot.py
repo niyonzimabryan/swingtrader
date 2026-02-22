@@ -73,7 +73,7 @@ class SwingTraderBot:
         log.info("telegram_bot_starting")
         await self.app.initialize()
         await self.app.start()
-        await self.app.updater.start_polling()
+        await self.app.updater.start_polling(drop_pending_updates=True)
 
     async def stop(self):
         """Stop the bot."""
