@@ -50,6 +50,17 @@ UNSTRUCTURED_SETUP_TYPES = {
 
 ALL_SETUP_TYPES = STRUCTURED_SETUP_TYPES | UNSTRUCTURED_SETUP_TYPES
 
+# Fallback chain: when a sub-type has < MIN_FALLBACK_INSTANCES, try broader types
+SETUP_TYPE_FALLBACKS = {
+    "earnings_beat_guide_down": ["earnings_beat_guide_flat", "earnings_beat_guide_up"],
+    "earnings_beat_guide_flat": ["earnings_beat_guide_up", "earnings_beat_guide_down"],
+    "earnings_miss": ["earnings_beat_guide_down"],
+    "revenue_acceleration": ["earnings_beat_guide_up"],
+    "buyback_announcement": ["earnings_beat_guide_up"],
+    "dividend_initiation": ["earnings_beat_guide_up"],
+}
+MIN_FALLBACK_INSTANCES = 5
+
 # Max historical instances to process (ticker + peers combined)
 MAX_INSTANCES = 30
 
@@ -96,10 +107,17 @@ class PatternAgent(BaseAgent):
         setup_type = setup.get("setup_type", "general_positive_catalyst")
         log.info("setup_classified", ticker=ticker, setup_type=setup_type)
 
-        # Step 2: Search for historical instances
+        # Step 2: Search for historical instances (with fallback chain)
         peers = get_peers(ticker)
         all_tickers = [ticker] + peers
         instances = self._find_historical_instances(ticker, setup_type, setup, all_tickers)
+
+        # Extract fallback metadata before processing instances
+        fallback_note = None
+        setup_type_used = setup_type
+        if instances:
+            fallback_note = instances[0].pop("_fallback_note", None)
+            setup_type_used = instances[0].pop("_setup_type_used", setup_type)
 
         if not instances:
             log.info("no_historical_instances", ticker=ticker, setup_type=setup_type)
@@ -112,6 +130,8 @@ class PatternAgent(BaseAgent):
                 reasoning=f"No historical instances found for setup type '{setup_type}'. Insufficient data for pattern analysis.",
                 raw_data={
                     "setup_type": setup_type,
+                    "setup_type_used": setup_type,
+                    "fallback_note": None,
                     "same_ticker_instances": 0,
                     "peer_instances": 0,
                     "sample_size_warning": True,
@@ -159,6 +179,8 @@ class PatternAgent(BaseAgent):
             reasoning=interpretation,
             raw_data={
                 "setup_type": setup_type,
+                "setup_type_used": setup_type_used,
+                "fallback_note": fallback_note,
                 "setup_params": setup.get("setup_params", {}),
                 "same_ticker_instances": stats.get("same_ticker_count", 0),
                 "peer_instances": stats.get("peer_count", 0),
@@ -223,46 +245,44 @@ class PatternAgent(BaseAgent):
 
     # ── Step 2: Historical Search ────────────────────────────────────
 
+    def _run_search_for_type(self, ticker: str, setup_type: str, setup: dict,
+                             all_tickers: list[str]) -> list[dict]:
+        """Route to the correct search function for a given setup type."""
+        EARNINGS_ROUTED = {
+            "earnings_beat_guide_up", "earnings_beat_guide_flat",
+            "earnings_beat_guide_down", "earnings_miss",
+            "revenue_acceleration", "buyback_announcement", "dividend_initiation",
+        }
+
+        if setup_type in EARNINGS_ROUTED:
+            return self._search_earnings_patterns(ticker, setup_type, setup, all_tickers)
+        elif setup_type == "insider_cluster_buy":
+            return self._search_insider_patterns(ticker, all_tickers)
+        elif setup_type in ("analyst_upgrade_cluster", "analyst_downgrade"):
+            return self._search_analyst_patterns(ticker, setup_type, all_tickers)
+        else:
+            # Unstructured types: use earnings beats as rough proxy
+            return self._search_earnings_patterns(
+                ticker, "earnings_beat_guide_up", setup, all_tickers
+            )
+
     def _find_historical_instances(self, ticker: str, setup_type: str, setup: dict,
                                     all_tickers: list[str]) -> list[dict]:
         """
         Find historical instances of the setup type for ticker + peers.
         Uses cached data first, then fetches from FMP + computes returns via yfinance.
+        Falls back to broader setup types if insufficient data.
         """
         # Check cache first
         cached = self.pattern_data.get_cached_patterns(setup_type, all_tickers)
         if cached:
             log.info("cache_hit", ticker=ticker, setup_type=setup_type, count=len(cached))
             valid = [c for c in cached if c.get("return_t10") is not None]
-            if len(valid) >= 5:
+            if len(valid) >= MIN_FALLBACK_INSTANCES:
                 return valid[:MAX_INSTANCES]
 
-        # Fetch fresh data from FMP based on setup type
-        instances = []
-
-        # Route to the right search function based on setup type
-        EARNINGS_ROUTED = {
-            "earnings_beat_guide_up", "earnings_beat_guide_flat",
-            "earnings_beat_guide_down", "earnings_miss",
-            "revenue_acceleration",  # Shows up in earnings beats + guidance raises
-            "buyback_announcement",  # Often coincides with earnings
-            "dividend_initiation",   # Often coincides with earnings
-        }
-
-        if setup_type in EARNINGS_ROUTED:
-            instances = self._search_earnings_patterns(ticker, setup_type, setup, all_tickers)
-
-        elif setup_type == "insider_cluster_buy":
-            instances = self._search_insider_patterns(ticker, all_tickers)
-
-        elif setup_type in ("analyst_upgrade_cluster", "analyst_downgrade"):
-            instances = self._search_analyst_patterns(ticker, setup_type, all_tickers)
-
-        else:
-            # For unstructured types, use earnings beats as a rough proxy
-            instances = self._search_earnings_patterns(
-                ticker, "earnings_beat_guide_up", setup, all_tickers
-            )
+        # Fetch fresh data based on setup type
+        instances = self._run_search_for_type(ticker, setup_type, setup, all_tickers)
 
         # Merge with any partial cache
         if cached:
@@ -272,8 +292,44 @@ class PatternAgent(BaseAgent):
                     cached.append(inst)
             instances = cached
 
-        # Filter to valid instances and cap
+        # Filter to valid instances
         instances = [i for i in instances if i.get("return_t10") is not None]
+
+        # Fallback chain: if insufficient instances, try broader types
+        fallback_used = None
+        original_count = len(instances)
+        if len(instances) < MIN_FALLBACK_INSTANCES and setup_type in SETUP_TYPE_FALLBACKS:
+            for fallback_type in SETUP_TYPE_FALLBACKS[setup_type]:
+                log.info("pattern_fallback_attempt", ticker=ticker,
+                         original=setup_type, fallback=fallback_type)
+
+                fallback_instances = self._run_search_for_type(
+                    ticker, fallback_type, setup, all_tickers
+                )
+                fallback_instances = [i for i in fallback_instances
+                                      if i.get("return_t10") is not None]
+
+                if fallback_instances:
+                    # Tag fallback instances
+                    for inst in fallback_instances:
+                        inst["is_fallback"] = True
+                    instances.extend(fallback_instances)
+                    fallback_used = fallback_type
+                    log.info("pattern_fallback_success", ticker=ticker,
+                             fallback=fallback_type, added=len(fallback_instances),
+                             total=len(instances))
+
+                    if len(instances) >= MIN_FALLBACK_INSTANCES:
+                        break
+
+        # Attach fallback metadata for downstream use
+        if fallback_used and instances:
+            instances[0]["_fallback_note"] = (
+                f"Only {original_count} instances for '{setup_type.replace('_', ' ')}'. "
+                f"Augmented with '{fallback_used.replace('_', ' ')}' data."
+            )
+            instances[0]["_setup_type_used"] = fallback_used
+
         return instances[:MAX_INSTANCES]
 
     def _search_earnings_patterns(self, ticker: str, setup_type: str, setup: dict,

@@ -122,6 +122,9 @@ def format_memo_telegram(memo_data: dict) -> str:
         most_similar = pattern.get("most_similar", {})
 
         lines.append(f"Setup: `{pattern.get('setup_type', 'N/A').replace('_', ' ').title()}`")
+        fallback_note = pattern.get("fallback_note")
+        if fallback_note:
+            lines.append(f"_{esc(fallback_note)}_")
 
         # V2: Show highly similar count in instances line
         if hs_count > 0:
@@ -367,6 +370,9 @@ def format_memo_plain(memo_data: dict) -> str:
         most_similar = pattern.get("most_similar", {})
 
         lines.append(f"Setup: {pattern.get('setup_type', 'N/A')}")
+        fallback_note = pattern.get("fallback_note")
+        if fallback_note:
+            lines.append(f"  Note: {fallback_note}")
         if hs_count > 0:
             lines.append(f"Instances: {total} ({hs_count} highly similar) | Win rate (T+10): {win_rate:.0%} | Median return: {median_ret:+.1f}%")
         else:

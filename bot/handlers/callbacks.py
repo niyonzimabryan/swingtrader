@@ -348,28 +348,35 @@ async def handle_view_memo(query, context, memo_id: int):
 
         full_text = memo.full_text or ""
 
-    from bot.formatters import format_memo, split_message
+    from bot.formatters import format_memo, split_message, strip_markdown
     from bot.keyboards import memo_approval_keyboard
     keyboard = memo_approval_keyboard(memo_id, opus_recommendation=opus_rec)
 
     if memo_data and memo_data.get("ticker"):
-        # Full re-render with MarkdownV2
-        try:
-            memo_text = format_memo(memo_data)
-            chunks = split_message(memo_text)
-            for i, chunk in enumerate(chunks):
-                is_last = i == len(chunks) - 1
+        # Full re-render — per-chunk MarkdownV2 with fallback
+        memo_text = format_memo(memo_data)
+        chunks = split_message(memo_text)
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            try:
                 await query.message.reply_text(
                     chunk, parse_mode="MarkdownV2",
                     reply_markup=keyboard if is_last else None,
                 )
-            return
-        except Exception:
-            pass  # Fall through to plain text
+            except Exception:
+                plain_chunk = strip_markdown(chunk)
+                try:
+                    await query.message.reply_text(
+                        plain_chunk, parse_mode=None,
+                        reply_markup=keyboard if is_last else None,
+                    )
+                except Exception:
+                    log.error("view_memo_chunk_failed", memo_id=memo_id, chunk_index=i)
+        return
 
-    # Fallback: send stored plain text
+    # Fallback: send stored plain text (old memos without memo_data_json)
     if full_text:
-        chunks = split_message(full_text) if len(full_text) > 4096 else [full_text]
+        chunks = split_message(full_text)
         for i, chunk in enumerate(chunks):
             is_last = i == len(chunks) - 1
             await query.message.reply_text(

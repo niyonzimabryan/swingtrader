@@ -44,6 +44,7 @@
 - [x] **Watchlist with alerts** — ✅ Full stack: CRUD backend (`orchestrator/universe.py`), lower Haiku threshold for re-scanning, "Watchlist" button on memos, `/watchlist` command (view list, add/remove tickers, inline remove buttons). Remaining idea: dedicated alert notifications when catalysts strengthen between scans.
 - [ ] **Multi-timeframe analysis** — Current system is swing-focused (3-15 day). Could add day-trade and position-trade modes
 - [ ] **Portfolio rebalancing** — Auto-suggest trimming winners and adding to conviction positions based on drift from target allocation
+- [ ] **WATCHLIST/PASS override: Opus-adjusted params** — When Opus recommends watchlist or pass, have Opus still generate adjusted trade params (reduced size, tighter stops) as an "if you must trade" fallback, instead of showing Sonnet's raw draft params. Currently override shows Sonnet's unmodified params which defeats the purpose of the Opus layer.
 - [ ] **Pattern Agent: incorporate own trade history** — Once 30+ closed trades exist, add our own trade outcomes as additional pattern data alongside historical market data. Our trades are higher-signal because they went through the full scoring pipeline.
 - [ ] **RL / training loop for scoring** — Explore reinforcement learning or fine-tuning on top of pattern data + trade outcomes. Use closed trade P&L as reward signal to optimize scoring weights, agent prompts, and setup classification. Could start simple (Bayesian weight optimization from attribution data) and graduate to more sophisticated RL as data accumulates.
 

@@ -9,7 +9,7 @@ import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 from bot.auth import authorized
-from bot.formatters import escape_md, format_memo, split_message
+from bot.formatters import escape_md, format_memo, split_message, strip_markdown
 from bot.keyboards import memo_approval_keyboard
 from utils.logger import get_logger
 
@@ -86,28 +86,27 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         opus_rec = memo_data.get("opus_evaluation", {}).get("recommendation", "proceed")
         keyboard = memo_approval_keyboard(memo_id, opus_recommendation=opus_rec)
 
-        # Try MarkdownV2 first, fall back to plain text
-        try:
-            chunks = split_message(memo_text)
-            for i, chunk in enumerate(chunks):
-                is_last = i == len(chunks) - 1
+        # Send each chunk individually — per-chunk fallback to plain text
+        chunks = split_message(memo_text)
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            try:
                 await update.message.reply_text(
                     chunk,
                     parse_mode="MarkdownV2",
                     reply_markup=keyboard if is_last else None,
                 )
-        except Exception:
-            # Fallback: send as plain text
-            from memo.templates.ic_memo import format_memo_plain
-            plain_text = format_memo_plain(memo_data)
-            chunks = split_message(plain_text)
-            for i, chunk in enumerate(chunks):
-                is_last = i == len(chunks) - 1
-                await update.message.reply_text(
-                    chunk,
-                    parse_mode=None,
-                    reply_markup=keyboard if is_last else None,
-                )
+            except Exception as e:
+                log.warning("md2_chunk_failed", chunk_index=i, error=str(e)[:200])
+                plain_chunk = strip_markdown(chunk)
+                try:
+                    await update.message.reply_text(
+                        plain_chunk,
+                        parse_mode=None,
+                        reply_markup=keyboard if is_last else None,
+                    )
+                except Exception as e2:
+                    log.error("plain_chunk_also_failed", chunk_index=i, error=str(e2)[:200])
 
     except Exception as e:
         log.error("test_command_failed", ticker=ticker, error=str(e))
