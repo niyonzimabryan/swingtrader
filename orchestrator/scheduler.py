@@ -21,7 +21,7 @@ class PipelineScheduler:
         # Pre-market scan
         self.scheduler.add_job(
             self._run_scan,
-            CronTrigger(hour=self.settings.pre_market_hour, timezone="US/Eastern"),
+            CronTrigger(hour=self.settings.pre_market_hour, timezone="America/New_York"),
             id="pre_market",
             name="Pre-market scan",
         )
@@ -29,7 +29,7 @@ class PipelineScheduler:
         # Midday scan
         self.scheduler.add_job(
             self._run_scan,
-            CronTrigger(hour=self.settings.midday_hour, timezone="US/Eastern"),
+            CronTrigger(hour=self.settings.midday_hour, timezone="America/New_York"),
             id="midday",
             name="Midday scan",
         )
@@ -37,7 +37,7 @@ class PipelineScheduler:
         # Post-market scan
         self.scheduler.add_job(
             self._run_scan,
-            CronTrigger(hour=self.settings.post_market_hour, timezone="US/Eastern"),
+            CronTrigger(hour=self.settings.post_market_hour, timezone="America/New_York"),
             id="post_market",
             name="Post-market scan",
         )
