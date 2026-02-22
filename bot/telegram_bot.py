@@ -3,7 +3,9 @@ Telegram bot — main entry point.
 Registers all command handlers and starts polling.
 """
 
+import asyncio
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.error import Conflict
 from bot.auth import init_auth
 from bot.handlers.commands import (
     help_command, status_command, positions_command, regime_command,
@@ -67,12 +69,24 @@ class SwingTraderBot:
         return self.app
 
     async def start(self):
-        """Start the bot in polling mode."""
+        """Start the bot in polling mode with retry on conflict."""
         if not self.app:
             self.build()
         log.info("telegram_bot_starting")
         await self.app.initialize()
         await self.app.start()
+
+        # Retry polling start — handles deploy overlap where old instance is still polling
+        for attempt in range(10):
+            try:
+                await self.app.updater.start_polling(drop_pending_updates=True)
+                return
+            except Conflict:
+                wait = min(5 * (attempt + 1), 30)
+                log.warning("telegram_polling_conflict", attempt=attempt + 1, retry_in=wait)
+                await asyncio.sleep(wait)
+
+        # Final attempt — let it raise if still conflicting
         await self.app.updater.start_polling(drop_pending_updates=True)
 
     async def stop(self):
