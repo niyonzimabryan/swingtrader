@@ -74,6 +74,5 @@ class Settings(BaseSettings):
     # --- V2: Watchlist ---
     watchlist_haiku_threshold: int = 2  # Lower bar for watchlist tickers
     watchlist_max_size: int = 25
-    watchlist_expiry_days: int = 30
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

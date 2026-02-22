@@ -4,7 +4,7 @@ Phase 1: loads from static config.
 V2: adds watchlist management (operator/Opus-driven lower-threshold re-scanning).
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from config.tickers import UNIVERSE
 from database.db import get_session
@@ -109,23 +109,3 @@ def remove_from_watchlist(ticker: str) -> bool:
         return False
 
 
-def expire_watchlist():
-    """Deactivate watchlist items older than expiry threshold."""
-    from config.settings import Settings
-    settings = Settings()
-    cutoff = datetime.utcnow() - timedelta(days=settings.watchlist_expiry_days)
-
-    with get_session() as session:
-        expired = (
-            session.query(WatchlistTicker)
-            .filter(
-                WatchlistTicker.active == True,  # noqa: E712
-                WatchlistTicker.added_at < cutoff,
-            )
-            .all()
-        )
-        for item in expired:
-            item.active = False
-            item.deactivated_at = datetime.utcnow()
-        if expired:
-            log.info("watchlist_expired", count=len(expired))
