@@ -75,4 +75,21 @@ class Settings(BaseSettings):
     watchlist_haiku_threshold: int = 2  # Lower bar for watchlist tickers
     watchlist_max_size: int = 25
 
+    # --- Pipeline Parallelization ---
+    parallel_agents_enabled: bool = True
+    parallel_agents_scope: str = "both"  # "ad_hoc" | "scan" | "both"
+    parallel_workers_default: int = 3
+    parallel_workers_degraded: int = 2
+    parallel_timeout_fundamental_s: int = 180
+    parallel_timeout_pattern_s: int = 300
+    parallel_timeout_web_research_s: int = 300
+
+    # --- Parallel Stability Controller ---
+    parallel_auto_degrade_enabled: bool = True
+    parallel_bad_run_window: int = 12
+    parallel_bad_run_count_trigger: int = 3
+    parallel_cooldown_runs: int = 20
+    parallel_recovery_good_runs: int = 8
+    parallel_alert_on_state_change: bool = True
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

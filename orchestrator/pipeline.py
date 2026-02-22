@@ -8,9 +8,13 @@ V2: Source-aware routing (Discovery → Watchlist → Universe),
 
 import asyncio
 import json
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import datetime
 
+from agents.base_agent import AgentOutput
 from config.tickers import UNIVERSE
 from agents.macro_agent import MacroRegimeAgent
 from agents.catalyst_agent import CatalystAgent
@@ -105,6 +109,14 @@ class TradingPipeline:
         # Telegram notification manager (set after bot starts)
         self.notification_manager = None
         self.bot_loop = None  # asyncio event loop for scheduling deep research from sync context
+
+        # Parallel stage execution stability state
+        self._parallel_health = {
+            "mode": "normal",  # normal | degraded
+            "history": deque(maxlen=max(1, int(self.settings.parallel_bad_run_window))),
+            "runs_since_degrade": 0,
+            "consecutive_good": 0,
+        }
 
         log.info("pipeline_initialized")
 
@@ -293,19 +305,12 @@ class TradingPipeline:
         if catalyst.score < 0.3:
             return None
 
-        # Run remaining agents
-        fundamental = self.fundamental_agent.analyze(ticker=item.ticker, sector=item.sector)
-        pattern = self.pattern_agent.analyze(
-            ticker=item.ticker,
-            catalyst_data=catalyst.raw_data,
-            catalyst_reasoning=catalyst.reasoning,
-        )
-        web_research = self.web_research_agent.analyze(
+        # Run remaining agents (parallelized with stability controller)
+        fundamental, pattern, web_research, _, _ = self._run_post_catalyst_agents(
             ticker=item.ticker,
             sector=item.sector,
-            catalyst_data=catalyst.raw_data,
-            catalyst_reasoning=catalyst.reasoning,
-            direction_hint=catalyst.direction,
+            catalyst=catalyst,
+            run_context="scan",
         )
 
         # Score opportunity
@@ -341,6 +346,236 @@ class TradingPipeline:
                 return memo_data
 
         return None
+
+    def _run_post_catalyst_agents(
+        self,
+        ticker: str,
+        sector: str,
+        catalyst: AgentOutput,
+        run_context: str,
+        progress_cb=None,
+    ) -> tuple[AgentOutput, AgentOutput, AgentOutput, dict, int]:
+        """
+        Run fundamental + pattern + web_research stages with optional parallelism.
+        Returns (fundamental, pattern, web_research, stage_statuses, workers_used).
+        """
+        stage_fns = {
+            "fundamental": lambda: self.fundamental_agent.analyze(ticker=ticker, sector=sector),
+            "pattern": lambda: self.pattern_agent.analyze(
+                ticker=ticker,
+                catalyst_data=catalyst.raw_data,
+                catalyst_reasoning=catalyst.reasoning,
+            ),
+            "web_research": lambda: self.web_research_agent.analyze(
+                ticker=ticker,
+                sector=sector,
+                catalyst_data=catalyst.raw_data,
+                catalyst_reasoning=catalyst.reasoning,
+                direction_hint=catalyst.direction,
+            ),
+        }
+        stage_timeouts = {
+            "fundamental": max(1, int(self.settings.parallel_timeout_fundamental_s)),
+            "pattern": max(1, int(self.settings.parallel_timeout_pattern_s)),
+            "web_research": max(1, int(self.settings.parallel_timeout_web_research_s)),
+        }
+        stage_order = ("fundamental", "pattern", "web_research")
+
+        use_parallel = self._parallel_scope_enabled(run_context)
+        workers = self._get_parallel_workers() if use_parallel else 1
+        workers = max(1, min(3, workers))
+
+        if progress_cb:
+            if workers > 1:
+                progress_cb(
+                    f"Running fundamental, pattern, and web research in parallel ({workers} workers)..."
+                )
+            else:
+                progress_cb("Running fundamental, pattern, and web research...")
+
+        futures = {}
+        submitted_at = {}
+        outputs = {}
+        statuses = {}
+        status_details = {}
+        executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="post_catalyst")
+
+        try:
+            for stage in stage_order:
+                submitted_at[stage] = time.perf_counter()
+                futures[stage] = executor.submit(stage_fns[stage])
+
+            for stage in stage_order:
+                if progress_cb and workers == 1:
+                    progress_cb(f"Running {stage.replace('_', ' ')}...")
+
+                timeout_s = stage_timeouts[stage]
+                try:
+                    outputs[stage] = futures[stage].result(timeout=timeout_s)
+                    statuses[stage] = "ok"
+                    status_details[stage] = ""
+                except FutureTimeoutError:
+                    futures[stage].cancel()
+                    statuses[stage] = "timeout"
+                    detail = f"Stage timed out after {timeout_s}s"
+                    status_details[stage] = detail
+                    outputs[stage] = self._fallback_stage_output(
+                        stage=stage,
+                        ticker=ticker,
+                        status="timeout",
+                        reason=detail,
+                    )
+                except Exception as exc:
+                    statuses[stage] = "error"
+                    detail = str(exc)[:300]
+                    status_details[stage] = detail
+                    outputs[stage] = self._fallback_stage_output(
+                        stage=stage,
+                        ticker=ticker,
+                        status="error",
+                        reason=detail,
+                    )
+
+                elapsed_s = round(time.perf_counter() - submitted_at[stage], 2)
+                log.info(
+                    "post_catalyst_stage_result",
+                    run_context=run_context,
+                    ticker=ticker,
+                    stage=stage,
+                    status=statuses[stage],
+                    elapsed_s=elapsed_s,
+                    timeout_s=timeout_s,
+                    workers=workers,
+                    parallel=workers > 1,
+                    status_detail=status_details[stage],
+                )
+        finally:
+            # Do not block the pipeline waiting for timed-out threads to finish.
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        bad_stage_count = sum(1 for s in statuses.values() if s in ("timeout", "error"))
+        self._update_parallel_health(
+            run_context=run_context,
+            ticker=ticker,
+            workers=workers,
+            bad_stage_count=bad_stage_count,
+        )
+
+        return (
+            outputs["fundamental"],
+            outputs["pattern"],
+            outputs["web_research"],
+            statuses,
+            workers,
+        )
+
+    def _fallback_stage_output(self, stage: str, ticker: str, status: str, reason: str) -> AgentOutput:
+        """Build a controlled fallback output when an agent stage fails."""
+        trimmed = (reason or "unknown error")[:300]
+        return AgentOutput(
+            agent_type=stage,
+            ticker=ticker,
+            score=0.5,
+            confidence=0.1,
+            direction="neutral",
+            reasoning=f"{stage} stage fallback ({status}): {trimmed}",
+            raw_data={
+                "status": status,
+                "fallback": True,
+                "error": trimmed,
+            },
+        )
+
+    def _parallel_scope_enabled(self, run_context: str) -> bool:
+        """Check if parallel agent execution is enabled for this context."""
+        if not bool(getattr(self.settings, "parallel_agents_enabled", True)):
+            return False
+        scope = str(getattr(self.settings, "parallel_agents_scope", "both")).strip().lower()
+        return scope == "both" or scope == run_context
+
+    def _get_parallel_workers(self) -> int:
+        """Return current worker limit (normal vs degraded mode)."""
+        default_workers = max(1, int(getattr(self.settings, "parallel_workers_default", 3)))
+        degraded_workers = max(1, int(getattr(self.settings, "parallel_workers_degraded", 2)))
+        if self._parallel_health["mode"] == "degraded":
+            return min(default_workers, degraded_workers)
+        return default_workers
+
+    def _update_parallel_health(self, run_context: str, ticker: str, workers: int, bad_stage_count: int):
+        """
+        Update rolling health and auto-adjust worker mode.
+        Bad run: 2+ stage failures/timeouts.
+        """
+        if not self._parallel_scope_enabled(run_context):
+            return
+        if workers <= 1:
+            return
+        if not bool(getattr(self.settings, "parallel_auto_degrade_enabled", True)):
+            return
+
+        is_bad_run = bad_stage_count >= 2
+        state = self._parallel_health
+        history = state["history"]
+        history.append(1 if is_bad_run else 0)
+
+        cooldown_runs = max(1, int(getattr(self.settings, "parallel_cooldown_runs", 20)))
+        recovery_good_runs = max(1, int(getattr(self.settings, "parallel_recovery_good_runs", 8)))
+        trigger_bad_runs = max(1, int(getattr(self.settings, "parallel_bad_run_count_trigger", 3)))
+
+        if state["mode"] == "degraded":
+            state["runs_since_degrade"] += 1
+            state["consecutive_good"] = 0 if is_bad_run else state["consecutive_good"] + 1
+
+            if (
+                state["runs_since_degrade"] >= cooldown_runs
+                and state["consecutive_good"] >= recovery_good_runs
+            ):
+                state["mode"] = "normal"
+                state["runs_since_degrade"] = 0
+                state["consecutive_good"] = 0
+                reason = (
+                    f"Recovered after {cooldown_runs}+ runs with "
+                    f"{recovery_good_runs} consecutive healthy runs."
+                )
+                self._announce_parallel_mode_change("normal", reason)
+            return
+
+        # Normal mode
+        state["consecutive_good"] = 0 if is_bad_run else state["consecutive_good"] + 1
+        bad_in_window = sum(history)
+
+        if bad_in_window >= trigger_bad_runs and len(history) >= trigger_bad_runs:
+            state["mode"] = "degraded"
+            state["runs_since_degrade"] = 0
+            state["consecutive_good"] = 0
+            reason = (
+                f"{bad_in_window} bad runs in last {len(history)} runs "
+                f"(latest ticker: {ticker})"
+            )
+            self._announce_parallel_mode_change("degraded", reason)
+
+    def _announce_parallel_mode_change(self, mode: str, reason: str):
+        """Log + optionally notify operator when parallel worker mode changes."""
+        workers = self._get_parallel_workers()
+        log.warning("parallel_mode_changed", mode=mode, workers=workers, reason=reason)
+
+        if not bool(getattr(self.settings, "parallel_alert_on_state_change", True)):
+            return
+        if not self.notification_manager or not self.bot_loop or self.bot_loop.is_closed():
+            return
+
+        mode_label = "DEGRADED" if mode == "degraded" else "NORMAL"
+        msg = (
+            f"Parallel stability mode changed: {mode_label} "
+            f"({workers} workers). Reason: {reason}"
+        )
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.notification_manager.system_message(msg),
+                self.bot_loop,
+            )
+        except Exception as e:
+            log.error("parallel_mode_alert_failed", error=str(e))
 
     def _maybe_trigger_deep_research(
         self,
@@ -456,24 +691,15 @@ class TradingPipeline:
         _progress("Running catalyst analysis (Haiku + Sonnet)...")
         catalyst = self.catalyst_agent.analyze(ticker=ticker, sector=sector, thesis=thesis)
 
-        _progress("Running fundamental analysis...")
-        fundamental = self.fundamental_agent.analyze(ticker=ticker, sector=sector)
-
-        _progress("Running pattern analysis (historical instances)...")
-        pattern = self.pattern_agent.analyze(
-            ticker=ticker,
-            catalyst_data=catalyst.raw_data,
-            catalyst_reasoning=catalyst.reasoning,
-        )
-
-        _progress("Running web research...")
-        web_research = self.web_research_agent.analyze(
+        fundamental, pattern, web_research, _, workers = self._run_post_catalyst_agents(
             ticker=ticker,
             sector=sector,
-            catalyst_data=catalyst.raw_data,
-            catalyst_reasoning=catalyst.reasoning,
-            direction_hint=catalyst.direction,
+            catalyst=catalyst,
+            run_context="ad_hoc",
+            progress_cb=_progress,
         )
+        if workers > 1:
+            _progress(f"Parallel stage complete ({workers} workers)")
 
         # 3. Score
         _progress("Scoring with Opus evaluation...")

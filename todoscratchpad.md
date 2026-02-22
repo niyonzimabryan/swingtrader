@@ -102,8 +102,11 @@
 
 ## Architecture Review Follow-ups (Feb 22, 2026)
 
-- [ ] **Offload blocking bot handlers from event loop** — `/ask`, `/regime`, `/score`, and `/performance` still execute sync I/O inline in async handlers. Move heavy work to executor/background jobs to keep Telegram responses snappy under concurrent usage.
-- [ ] **Parallelize independent agent stages in ad-hoc pipeline** — After catalyst completes, run fundamental + pattern + web research in parallel (bounded concurrency) to reduce `/test` latency.
-- [ ] **Add cache-first reads for repeat analyses** — Reuse fresh fundamentals/web-research outputs (TTL-based) before refetching APIs/LLM responses to cut repeated request latency and token/API cost.
+- [x] **Create architecture trigger guide doc** — Added `/ARCHITECTURE_EVOLUTION_TRIGGERS.md` with measurable thresholds for when to implement handler offloading, parallelization, SQLite hardening, Postgres migration, and Redis.
+- [x] **Create implementation handoff doc** — Added `/claudehandoff.md` with decision context, per-file changes, env vars, fallback behavior, validation notes, rollback steps, and trigger-linked follow-ups.
+- [x] **Offload blocking bot handlers from event loop** — Implemented shared blocking helper and moved `/ask`, `/regime`, `/score`, `/performance` heavy sync work to executor with immediate ack + timeout-safe fallback responses.
+- [x] **Parallelize independent agent stages in ad-hoc pipeline** — Implemented shared post-catalyst parallel helper and applied to both `/test` and `/scan` flows (fundamental + pattern + web research).
+- [x] **Add automatic parallel stability controller** — Implemented rolling health tracker with auto degrade/recover (3 bad runs in 12 → workers 3→2, cooldown + healthy streak recovery), plus Telegram/log alerts on mode change.
+- [ ] **(Deferred / potential) Add cache-first reads for repeat analyses** — Keep as an optional optimization later; only implement if repeated same-day ticker analysis becomes common enough to justify added cache complexity.
 - [ ] **Harden SQLite for concurrent workload** — Enable WAL mode + busy_timeout; add indexes for hot filters (`trades.status`, `trades.exit_date`, `memos.status`, `memos.created_at`) to prevent future slowdowns in order monitor and performance/history views.
 - [ ] **Define DB migration path trigger to Postgres** — Keep SQLite now, but migrate when multi-replica/worker deployment or persistent lock contention appears.

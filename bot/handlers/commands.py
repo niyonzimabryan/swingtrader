@@ -8,10 +8,12 @@ import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 from bot.auth import authorized
+from bot.handlers._blocking_utils import run_blocking, BlockingCallTimeout
 from bot.formatters import escape_md, format_portfolio_status, format_positions_detail
 from utils.logger import get_logger
 
 log = get_logger("bot_commands")
+REGIME_TIMEOUT_S = 120
 
 
 @authorized
@@ -105,30 +107,45 @@ async def regime_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("System initializing...")
         return
 
+    await update.message.reply_text("Refreshing macro regime...", parse_mode=None)
+
     try:
-        # Run fresh regime analysis
-        result = pipeline.macro_agent.analyze()
-        rd = result.raw_data
-
-        regime = rd.get("regime", "unknown")
-        emoji = "🟢" if regime == "risk-on" else "🟡" if regime == "neutral" else "🔴"
-
-        text = (
-            f"{emoji} *MACRO REGIME: {escape_md(regime.upper())}*\n\n"
-            f"Confidence: `{result.confidence:.2f}`\n"
-            f"Position Multiplier: `{rd.get('position_size_multiplier', 1.0)}x`\n"
-            f"Max Positions: `{rd.get('max_positions', 5)}`\n\n"
-            f"*Indicator Scores:*\n"
+        text = await run_blocking(
+            operation="regime_command",
+            fn=lambda: _build_regime_text(pipeline),
+            timeout_s=REGIME_TIMEOUT_S,
         )
-        for k, v in rd.get("scores", {}).items():
-            indicator_emoji = "🟢" if v > 0 else "🔴" if v < 0 else "⚪"
-            text += f"  {indicator_emoji} {escape_md(k)}: `{v:+d}`\n"
-
-        text += f"\n{escape_md(result.reasoning)}"
         await update.message.reply_text(text, parse_mode="MarkdownV2")
+    except BlockingCallTimeout:
+        await update.message.reply_text(
+            f"Regime refresh timed out after {REGIME_TIMEOUT_S}s. Try again shortly.",
+            parse_mode=None,
+        )
     except Exception as e:
         log.error("regime_command_failed", error=str(e))
         await update.message.reply_text(f"Error: {str(e)[:200]}")
+
+
+def _build_regime_text(pipeline) -> str:
+    """Sync helper for regime command to run in executor."""
+    result = pipeline.macro_agent.analyze()
+    rd = result.raw_data
+
+    regime = rd.get("regime", "unknown")
+    emoji = "🟢" if regime == "risk-on" else "🟡" if regime == "neutral" else "🔴"
+
+    text = (
+        f"{emoji} *MACRO REGIME: {escape_md(regime.upper())}*\n\n"
+        f"Confidence: `{result.confidence:.2f}`\n"
+        f"Position Multiplier: `{rd.get('position_size_multiplier', 1.0)}x`\n"
+        f"Max Positions: `{rd.get('max_positions', 5)}`\n\n"
+        f"*Indicator Scores:*\n"
+    )
+    for k, v in rd.get("scores", {}).items():
+        indicator_emoji = "🟢" if v > 0 else "🔴" if v < 0 else "⚪"
+        text += f"  {indicator_emoji} {escape_md(k)}: `{v:+d}`\n"
+    text += f"\n{escape_md(result.reasoning)}"
+    return text
 
 
 @authorized

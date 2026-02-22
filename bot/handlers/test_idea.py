@@ -9,11 +9,13 @@ import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 from bot.auth import authorized
+from bot.handlers._blocking_utils import run_blocking, BlockingCallTimeout
 from bot.formatters import escape_md, format_memo, split_message, strip_markdown
 from bot.keyboards import memo_approval_keyboard
 from utils.logger import get_logger
 
 log = get_logger("bot_test_idea")
+SCORE_TIMEOUT_S = 120
 
 
 @authorized
@@ -136,33 +138,47 @@ async def score_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Scoring {ticker}...", parse_mode=None)
 
     try:
-        result = pipeline.fundamental_agent.analyze(ticker=ticker, sector=pipeline.get_sector(ticker))
-        rd = result.raw_data
-
-        text = (
-            f"*FUNDAMENTAL SNAPSHOT: {escape_md(ticker)}*\n\n"
-            f"Quality: `{rd.get('quality_score', 0):.2f}`\n"
-            f"Balance Sheet: `{rd.get('balance_sheet_score', 0):.2f}`\n"
-            f"Valuation: `{rd.get('valuation_score', 0):.2f}`\n"
-            f"Growth: `{rd.get('growth_score', 0):.2f}`\n"
-            f"*Composite: `{rd.get('composite_score', 0):.2f}`*\n\n"
+        text = await run_blocking(
+            operation="score_command",
+            fn=lambda: _build_score_text(pipeline, ticker),
+            timeout_s=SCORE_TIMEOUT_S,
         )
-        flags = rd.get("flags", [])
-        if flags:
-            text += f"Flags: {escape_md(', '.join(flags))}\n\n"
-
-        ratios = rd.get("ratios", {})
-        if ratios:
-            text += (
-                f"P/E: `{ratios.get('pe_forward', 'N/A')}`\n"
-                f"EV/EBITDA: `{ratios.get('ev_ebitda', 'N/A')}`\n"
-                f"PEG: `{ratios.get('peg', 'N/A')}`\n"
-            )
-
-        if rd.get("peer_comparison"):
-            text += f"\n{escape_md(rd['peer_comparison'][:300])}"
-
         await update.message.reply_text(text, parse_mode="MarkdownV2")
+    except BlockingCallTimeout:
+        await update.message.reply_text(
+            f"Score request timed out after {SCORE_TIMEOUT_S}s. Try again shortly.",
+            parse_mode=None,
+        )
     except Exception as e:
         log.error("score_command_failed", ticker=ticker, error=str(e))
         await update.message.reply_text(f"Error: {str(e)[:300]}")
+
+
+def _build_score_text(pipeline, ticker: str) -> str:
+    """Sync helper for /score so it can run in executor."""
+    result = pipeline.fundamental_agent.analyze(ticker=ticker, sector=pipeline.get_sector(ticker))
+    rd = result.raw_data
+
+    text = (
+        f"*FUNDAMENTAL SNAPSHOT: {escape_md(ticker)}*\n\n"
+        f"Quality: `{rd.get('quality_score', 0):.2f}`\n"
+        f"Balance Sheet: `{rd.get('balance_sheet_score', 0):.2f}`\n"
+        f"Valuation: `{rd.get('valuation_score', 0):.2f}`\n"
+        f"Growth: `{rd.get('growth_score', 0):.2f}`\n"
+        f"*Composite: `{rd.get('composite_score', 0):.2f}`*\n\n"
+    )
+    flags = rd.get("flags", [])
+    if flags:
+        text += f"Flags: {escape_md(', '.join(flags))}\n\n"
+
+    ratios = rd.get("ratios", {})
+    if ratios:
+        text += (
+            f"P/E: `{ratios.get('pe_forward', 'N/A')}`\n"
+            f"EV/EBITDA: `{ratios.get('ev_ebitda', 'N/A')}`\n"
+            f"PEG: `{ratios.get('peg', 'N/A')}`\n"
+        )
+
+    if rd.get("peer_comparison"):
+        text += f"\n{escape_md(rd['peer_comparison'][:300])}"
+    return text

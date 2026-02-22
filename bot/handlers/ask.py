@@ -3,14 +3,15 @@
 Uses Sonnet with full portfolio context.
 """
 
-import json
 from telegram import Update
 from telegram.ext import ContextTypes
 from bot.auth import authorized
+from bot.handlers._blocking_utils import run_blocking, BlockingCallTimeout
 from utils.model_selector import get_model
 from utils.logger import get_logger
 
 log = get_logger("bot_ask")
+ASK_TIMEOUT_S = 210
 
 
 @authorized
@@ -37,23 +38,34 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤔 Thinking...", parse_mode=None)
 
     try:
-        # Build portfolio context
-        portfolio_context = _build_portfolio_context(pipeline)
-
-        model = get_model("ask_query", pipeline.settings)
-        system = (
-            "You are an AI assistant for a swing trading system. You have access to the full portfolio state, "
-            "recent trades, and system configuration. Answer the operator's question concisely and accurately. "
-            "Use specific numbers, prices, and dates when available. Keep responses under 300 words."
+        response = await run_blocking(
+            operation="ask_command",
+            fn=lambda: _run_ask_sync(pipeline, question),
+            timeout_s=ASK_TIMEOUT_S,
         )
-        prompt = f"PORTFOLIO STATE:\n{portfolio_context}\n\nOPERATOR QUESTION: {question}"
-
-        response = pipeline.anthropic_client.analyze(model, system, prompt, max_tokens=1000)
         await update.message.reply_text(response, parse_mode=None)
-
+    except BlockingCallTimeout:
+        await update.message.reply_text(
+            f"Request timed out after {ASK_TIMEOUT_S}s. Please retry with a shorter question.",
+            parse_mode=None,
+        )
     except Exception as e:
         log.error("ask_failed", question=question, error=str(e))
         await update.message.reply_text(f"Error processing question: {str(e)[:300]}", parse_mode=None)
+
+
+def _run_ask_sync(pipeline, question: str) -> str:
+    """Build context + call Sonnet in a sync function for executor use."""
+    portfolio_context = _build_portfolio_context(pipeline)
+
+    model = get_model("ask_query", pipeline.settings)
+    system = (
+        "You are an AI assistant for a swing trading system. You have access to the full portfolio state, "
+        "recent trades, and system configuration. Answer the operator's question concisely and accurately. "
+        "Use specific numbers, prices, and dates when available. Keep responses under 300 words."
+    )
+    prompt = f"PORTFOLIO STATE:\n{portfolio_context}\n\nOPERATOR QUESTION: {question}"
+    return pipeline.anthropic_client.analyze(model, system, prompt, max_tokens=1000)
 
 
 def _build_portfolio_context(pipeline) -> str:
