@@ -83,7 +83,8 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Send the formatted memo (split if >4096 chars, keyboard on last chunk)
         memo_text = format_memo(memo_data)
         memo_id = memo_data.get("memo_id", 0)
-        keyboard = memo_approval_keyboard(memo_id)
+        opus_rec = memo_data.get("opus_evaluation", {}).get("recommendation", "proceed")
+        keyboard = memo_approval_keyboard(memo_id, opus_recommendation=opus_rec)
 
         # Try MarkdownV2 first, fall back to plain text
         try:

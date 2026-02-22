@@ -41,6 +41,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_deep_research(query, context, int(data.split("_")[2]))
     elif data.startswith("back_"):
         await handle_back(query, context, int(data.split("_")[1]))
+    elif data.startswith("override_"):
+        await handle_override(query, context, int(data.split("_")[1]))
+    elif data.startswith("dismiss_"):
+        await handle_dismiss(query, context, int(data.split("_")[1]))
+    elif data.startswith("viewmemo_"):
+        await handle_view_memo(query, context, int(data.split("_")[1]))
     elif data.startswith("wl_remove_"):
         await handle_wl_remove(query, context, data.split("wl_remove_")[1])
     elif data.startswith("close_confirm_"):
@@ -153,8 +159,17 @@ async def handle_watchlist(query, context, memo_id: int):
 
 
 async def handle_back(query, context, memo_id: int):
-    """Go back to main approval keyboard."""
-    keyboard = memo_approval_keyboard(memo_id)
+    """Go back to main approval keyboard, preserving opus recommendation."""
+    opus_rec = "proceed"
+    with get_session() as session:
+        memo = session.query(Memo).filter_by(id=memo_id).first()
+        if memo and memo.opus_critique:
+            try:
+                opus_data = json.loads(memo.opus_critique)
+                opus_rec = opus_data.get("recommendation", "proceed")
+            except (json.JSONDecodeError, TypeError):
+                pass
+    keyboard = memo_approval_keyboard(memo_id, opus_recommendation=opus_rec)
     await query.edit_message_reply_markup(reply_markup=keyboard)
 
 
@@ -255,6 +270,114 @@ async def handle_deep_research(query, context, memo_id: int):
             notify=_notify,
         )
     )
+
+
+async def handle_override(query, context, memo_id: int):
+    """Override Opus watchlist/pass — show Sonnet's draft params for confirmation."""
+    log.info("memo_override_requested", memo_id=memo_id)
+
+    with get_session() as session:
+        memo = session.query(Memo).filter_by(id=memo_id).first()
+        if not memo:
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("Memo not found.", parse_mode=None)
+            return
+        trade_params = memo.trade_params_dict
+        ticker = memo.ticker.symbol if memo.ticker else "?"
+        opus_rec = "WATCHLIST"
+        if memo.opus_critique:
+            try:
+                opus_data = json.loads(memo.opus_critique)
+                opus_rec = opus_data.get("recommendation", "watchlist").upper()
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    from bot.keyboards import confirm_keyboard
+    params_text = (
+        f"⚠️ OVERRIDE: Opus recommended {opus_rec} for {ticker}.\n\n"
+        f"Sonnet's draft parameters:\n"
+        f"Entry: ${trade_params.get('entry_price', 0):,.2f}\n"
+        f"Stop: ${trade_params.get('stop_loss', 0):,.2f} ({trade_params.get('stop_pct', 0):.1f}%)\n"
+        f"Target 1: ${trade_params.get('target_1', 0):,.2f}\n"
+        f"Target 2: ${trade_params.get('target_2', 0):,.2f}\n"
+        f"Position: {trade_params.get('position_pct', 0):.1f}% (${trade_params.get('dollar_amount', 0):,.0f})\n"
+        f"Shares: {trade_params.get('shares', '?')}\n\n"
+        f"Proceed with these parameters?"
+    )
+    keyboard = confirm_keyboard("approve", memo_id)
+    await query.message.reply_text(params_text, parse_mode=None, reply_markup=keyboard)
+
+
+async def handle_dismiss(query, context, memo_id: int):
+    """Dismiss a watchlisted/passed memo."""
+    log.info("memo_dismissed", memo_id=memo_id)
+    with get_session() as session:
+        memo = session.query(Memo).filter_by(id=memo_id).first()
+        if memo:
+            memo.status = "dismissed"
+            memo.responded_at = datetime.utcnow()
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text("Dismissed. Logged for signal calibration.", parse_mode=None)
+
+
+async def handle_view_memo(query, context, memo_id: int):
+    """Deliver a full memo from scan results, with action buttons."""
+    log.info("view_memo_requested", memo_id=memo_id)
+
+    with get_session() as session:
+        memo = session.query(Memo).filter_by(id=memo_id).first()
+        if not memo:
+            await query.message.reply_text("Memo not found.", parse_mode=None)
+            return
+
+        # Try to load full memo_data from JSON column (v2.1+)
+        memo_data = {}
+        if hasattr(memo, "memo_data_json") and memo.memo_data_json:
+            try:
+                memo_data = json.loads(memo.memo_data_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        opus_rec = "proceed"
+        if memo.opus_critique:
+            try:
+                opus_rec = json.loads(memo.opus_critique).get("recommendation", "proceed")
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        full_text = memo.full_text or ""
+
+    from bot.formatters import format_memo, split_message
+    from bot.keyboards import memo_approval_keyboard
+    keyboard = memo_approval_keyboard(memo_id, opus_recommendation=opus_rec)
+
+    if memo_data and memo_data.get("ticker"):
+        # Full re-render with MarkdownV2
+        try:
+            memo_text = format_memo(memo_data)
+            chunks = split_message(memo_text)
+            for i, chunk in enumerate(chunks):
+                is_last = i == len(chunks) - 1
+                await query.message.reply_text(
+                    chunk, parse_mode="MarkdownV2",
+                    reply_markup=keyboard if is_last else None,
+                )
+            return
+        except Exception:
+            pass  # Fall through to plain text
+
+    # Fallback: send stored plain text
+    if full_text:
+        chunks = split_message(full_text) if len(full_text) > 4096 else [full_text]
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            await query.message.reply_text(
+                chunk, parse_mode=None,
+                reply_markup=keyboard if is_last else None,
+            )
+    else:
+        await query.message.reply_text("Memo data not available.", parse_mode=None)
 
 
 async def execute_trade(query, context, memo_id: int):

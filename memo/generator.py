@@ -82,6 +82,7 @@ class MemoGenerator:
             "signal_breakdown": scoring_result.get("signal_breakdown", {}),
             "signal_agreement": scoring_result.get("signal_agreement", "unknown"),
             "opus_evaluation": scoring_result.get("opus_evaluation", {}),
+            "risk_analysis": catalyst.raw_data.get("risk_analysis", {}),
         }
 
         # Save to DB
@@ -200,6 +201,7 @@ class MemoGenerator:
                     trade_params=json.dumps(memo_data.get("trade_params", {})),
                     signal_breakdown=json.dumps(memo_data.get("signal_breakdown", {})),
                     opus_critique=json.dumps(memo_data.get("opus_evaluation", {})),
+                    memo_data_json=json.dumps(memo_data),
                     thesis=memo_data.get("thesis", ""),
                     bear_case=memo_data.get("bear_case", ""),
                     status="pending",

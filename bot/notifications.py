@@ -2,6 +2,7 @@
 Proactive push notifications — order fills, stop triggers, regime changes, etc.
 """
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.message_queue import MessageQueue
 from bot.formatters import escape_md
 from utils.logger import get_logger
@@ -115,15 +116,29 @@ class NotificationManager:
             f"Escalated to Sonnet: `{escalated}`\n"
             f"Memos generated: `{memos_generated}`\n"
         )
+        keyboard = None
         if memo_details:
+            rows = []
             for md in memo_details:
                 score = md.get("score", 0)
                 ticker = md.get("ticker", "?")
                 classification = md.get("classification", "")
-                text += f"  `{escape_md(ticker)}` \\(`{score:.2f}`\\) — {escape_md(classification)}\n"
+                memo_id = md.get("memo_id", 0)
+                opus_rec = md.get("opus_recommendation", "")
+                rec_emoji = {"proceed": "✅", "reduce_size": "⚠️", "watchlist": "👀", "pass": "❌"}.get(opus_rec, "")
+                text += f"  {rec_emoji} `{escape_md(ticker)}` \\(`{score:.2f}`\\) — {escape_md(classification)}\n"
+                if memo_id:
+                    rows.append([
+                        InlineKeyboardButton(
+                            f"{rec_emoji} {ticker} ({score:.2f}) — View Memo",
+                            callback_data=f"viewmemo_{memo_id}",
+                        )
+                    ])
+            if rows:
+                keyboard = InlineKeyboardMarkup(rows)
         if memos_generated == 0:
             text += "\nNo opportunities met the memo threshold\\."
-        await self.mq.send(self.chat_id, text)
+        await self.mq.send(self.chat_id, text, reply_markup=keyboard)
 
     async def system_message(self, message: str):
         """Send a generic system notification."""

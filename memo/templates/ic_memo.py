@@ -64,6 +64,9 @@ def format_memo_telegram(memo_data: dict) -> str:
     # Catalyst
     lines.append("*CATALYST*")
     lines.append(f"Type: `{cat.get('catalyst_type', 'N/A')}`")
+    modifiers = cat.get('catalyst_modifiers', [])
+    if modifiers:
+        lines.append(f"Modifiers: `{esc(', '.join(modifiers))}`")
     lines.append(f"Summary: {esc(cat.get('catalyst_summary', 'N/A'))}")
     materiality = cat.get('materiality', cat.get('confidence', None))
     dir_conf = cat.get('direction_confidence', cat.get('confidence', None))
@@ -176,15 +179,28 @@ def format_memo_telegram(memo_data: dict) -> str:
                 lines.append(f"{esc(label)}: {esc(val[:200])}")
     lines.append("")
 
-    # Risk Analysis
-    risk_analysis = d.get("risk_analysis", "")
+    # Risk Analysis — structured (v2.1) or flat fallback
+    risk_data = d.get("risk_analysis", {})
     counter_args = cat.get("counter_arguments", "")
-    if risk_analysis or counter_args:
+    if isinstance(risk_data, dict) and risk_data.get("risks"):
         lines.append("*RISK ANALYSIS*")
-        if risk_analysis:
-            lines.append(esc(risk_analysis))
-        elif counter_args:
-            lines.append(esc(counter_args))
+        for risk in risk_data["risks"]:
+            prob = risk.get("probability", "?")
+            sev = risk.get("severity_pct", "?")
+            prob_emoji = {"likely": "🔴", "possible": "🟡", "unlikely": "🟢"}.get(prob, "⚪")
+            lines.append(f"{prob_emoji} {esc(risk.get('risk', 'N/A'))}")
+            lines.append(f"   {esc(prob)} \\| \\-`{fmt(sev, '.0f')}%` \\| Trigger: {esc(risk.get('trigger', 'N/A'))}")
+        failure = risk_data.get("failure_mode", "")
+        if failure:
+            lines.append(f"*Failure mode:* {esc(failure)}")
+        lines.append("")
+    elif isinstance(risk_data, str) and risk_data:
+        lines.append("*RISK ANALYSIS*")
+        lines.append(esc(risk_data))
+        lines.append("")
+    elif counter_args:
+        lines.append("*RISK ANALYSIS*")
+        lines.append(esc(counter_args))
         lines.append("")
 
     # Draft Trade Parameters
@@ -259,20 +275,47 @@ def format_memo_telegram(memo_data: dict) -> str:
 
         lines.append("")
 
-    # ═══ FINAL TRADE PARAMETERS ═══
-    lines.append("═══ *FINAL TRADE PARAMETERS* ═══")
-    lines.append("")
-    lines.append(f"Direction: `{d.get('direction', '?').upper()}`")
-    lines.append(f"Entry: `${fmt(params.get('entry_price', 0), ',.2f')}`")
-    lines.append(f"Stop\\-loss: `${fmt(params.get('stop_loss', 0), ',.2f')}` \\(`{fmt(params.get('stop_pct', 0), '.1f')}%`\\)")
-    lines.append(f"Target 1: `${fmt(params.get('target_1', 0), ',.2f')}` \\(`{fmt(params.get('target_1_pct', 0), '.1f')}%`\\)")
-    lines.append(f"Target 2: `${fmt(params.get('target_2', 0), ',.2f')}` \\(`{fmt(params.get('target_2_pct', 0), '.1f')}%`\\)")
-    lines.append(f"Position: `{fmt(params.get('position_pct', 0), '.1f')}%` \\(`${fmt(params.get('dollar_amount', 0), ',.0f')}`\\)")
-    lines.append(f"Shares: `{params.get('shares', '?')}` \\| R:R: `{fmt(params.get('risk_reward', 0), '.1f')}:1`")
-    lines.append(f"Max hold: `{params.get('max_hold_days', 20)}` trading days")
+    # ═══ FINAL SECTION — conditional on Opus recommendation ═══
+    opus_rec = opus.get("recommendation", "proceed") if opus else "proceed"
 
-    regime = d.get("regime", {})
-    lines.append(f"Regime: `{regime.get('regime', '?')}` \\| Multiplier: `{regime.get('position_size_multiplier', '?')}x`")
+    def _render_trade_params(label="FINAL TRADE PARAMETERS"):
+        lines.append(f"═══ *{label}* ═══")
+        lines.append("")
+        lines.append(f"Direction: `{d.get('direction', '?').upper()}`")
+        lines.append(f"Entry: `${fmt(params.get('entry_price', 0), ',.2f')}`")
+        lines.append(f"Stop\\-loss: `${fmt(params.get('stop_loss', 0), ',.2f')}` \\(`{fmt(params.get('stop_pct', 0), '.1f')}%`\\)")
+        lines.append(f"Target 1: `${fmt(params.get('target_1', 0), ',.2f')}` \\(`{fmt(params.get('target_1_pct', 0), '.1f')}%`\\)")
+        lines.append(f"Target 2: `${fmt(params.get('target_2', 0), ',.2f')}` \\(`{fmt(params.get('target_2_pct', 0), '.1f')}%`\\)")
+        lines.append(f"Position: `{fmt(params.get('position_pct', 0), '.1f')}%` \\(`${fmt(params.get('dollar_amount', 0), ',.0f')}`\\)")
+        lines.append(f"Shares: `{params.get('shares', '?')}` \\| R:R: `{fmt(params.get('risk_reward', 0), '.1f')}:1`")
+        lines.append(f"Max hold: `{params.get('max_hold_days', 20)}` trading days")
+        regime = d.get("regime", {})
+        lines.append(f"Regime: `{regime.get('regime', '?')}` \\| Multiplier: `{regime.get('position_size_multiplier', '?')}x`")
+
+    if opus_rec in ("proceed", "reduce_size"):
+        _render_trade_params()
+        if opus_rec == "reduce_size":
+            pos_adj = opus.get("position_size_adjustment", 1.0)
+            lines.append(f"⚠️ Opus: Reduce size to `{fmt(pos_adj, '.1f')}x`")
+    elif opus_rec == "watchlist":
+        lines.append("═══ *OPUS RECOMMENDATION: WATCHLIST* 👀 ═══")
+        lines.append("")
+        key_risk = opus.get("key_risk", "")
+        if key_risk:
+            lines.append(f"Key concern: {esc(key_risk)}")
+        lines.append("")
+        # Still show draft params so operator can override
+        _render_trade_params("DRAFT TRADE PARAMS \\(Sonnet\\)")
+    elif opus_rec == "pass":
+        lines.append("═══ *OPUS RECOMMENDATION: PASS* ❌ ═══")
+        lines.append("")
+        reasoning = opus.get("reasoning", "")
+        if reasoning:
+            lines.append(esc(reasoning[:300]))
+        lines.append("No trade parameters generated\\.")
+    else:
+        # Fallback for legacy memos
+        _render_trade_params()
 
     return "\n".join(lines)
 
@@ -293,6 +336,9 @@ def format_memo_plain(memo_data: dict) -> str:
     lines.append(f"\nTHESIS\n{d.get('thesis', 'N/A')}")
 
     lines.append(f"\nCATALYST\nType: {cat.get('catalyst_type', 'N/A')}")
+    modifiers = cat.get('catalyst_modifiers', [])
+    if modifiers:
+        lines.append(f"Modifiers: {', '.join(modifiers)}")
     lines.append(f"Summary: {cat.get('catalyst_summary', 'N/A')}")
     materiality = cat.get('materiality', cat.get('confidence', None))
     dir_conf = cat.get('direction_confidence', cat.get('confidence', None))
@@ -355,9 +401,21 @@ def format_memo_plain(memo_data: dict) -> str:
                 label = dim.replace("_", " ").title()
                 lines.append(f"{label}: {val[:200]}")
 
-    risk = d.get("risk_analysis", "") or cat.get("counter_arguments", "")
-    if risk:
-        lines.append(f"\nRISK ANALYSIS\n{risk}")
+    risk_data = d.get("risk_analysis", {})
+    counter_args = cat.get("counter_arguments", "")
+    if isinstance(risk_data, dict) and risk_data.get("risks"):
+        lines.append("\nRISK ANALYSIS")
+        for risk in risk_data["risks"]:
+            prob = risk.get("probability", "?")
+            sev = risk.get("severity_pct", "?")
+            lines.append(f"  [{prob.upper()}] {risk.get('risk', 'N/A')} | -{sev}% | Trigger: {risk.get('trigger', 'N/A')}")
+        failure = risk_data.get("failure_mode", "")
+        if failure:
+            lines.append(f"FAILURE MODE: {failure}")
+    elif isinstance(risk_data, str) and risk_data:
+        lines.append(f"\nRISK ANALYSIS\n{risk_data}")
+    elif counter_args:
+        lines.append(f"\nRISK ANALYSIS\n{counter_args}")
 
     opus = d.get("opus_evaluation", {})
     if opus and opus.get("conviction"):
@@ -368,14 +426,37 @@ def format_memo_plain(memo_data: dict) -> str:
         lines.append(f"Reasoning: {opus.get('reasoning', 'N/A')}")
 
     params = d.get("trade_params", {})
-    lines.append(f"\n{'=' * 20} FINAL TRADE PARAMETERS {'=' * 20}")
-    lines.append(f"Direction: {d.get('direction', '?').upper()}")
-    lines.append(f"Entry: ${params.get('entry_price', 0):,.2f}")
-    lines.append(f"Stop-loss: ${params.get('stop_loss', 0):,.2f} ({params.get('stop_pct', 0):.1f}%)")
-    lines.append(f"Target 1: ${params.get('target_1', 0):,.2f} ({params.get('target_1_pct', 0):.1f}%)")
-    lines.append(f"Target 2: ${params.get('target_2', 0):,.2f} ({params.get('target_2_pct', 0):.1f}%)")
-    lines.append(f"Position: {params.get('position_pct', 0):.1f}% (${params.get('dollar_amount', 0):,.0f})")
-    lines.append(f"Shares: {params.get('shares', '?')} | R:R: {params.get('risk_reward', 0):.1f}:1")
-    lines.append(f"Max hold: {params.get('max_hold_days', 20)} trading days")
+    opus_rec = opus.get("recommendation", "proceed") if opus else "proceed"
+
+    def _plain_params(label="FINAL TRADE PARAMETERS"):
+        lines.append(f"\n{'=' * 20} {label} {'=' * 20}")
+        lines.append(f"Direction: {d.get('direction', '?').upper()}")
+        lines.append(f"Entry: ${params.get('entry_price', 0):,.2f}")
+        lines.append(f"Stop-loss: ${params.get('stop_loss', 0):,.2f} ({params.get('stop_pct', 0):.1f}%)")
+        lines.append(f"Target 1: ${params.get('target_1', 0):,.2f} ({params.get('target_1_pct', 0):.1f}%)")
+        lines.append(f"Target 2: ${params.get('target_2', 0):,.2f} ({params.get('target_2_pct', 0):.1f}%)")
+        lines.append(f"Position: {params.get('position_pct', 0):.1f}% (${params.get('dollar_amount', 0):,.0f})")
+        lines.append(f"Shares: {params.get('shares', '?')} | R:R: {params.get('risk_reward', 0):.1f}:1")
+        lines.append(f"Max hold: {params.get('max_hold_days', 20)} trading days")
+
+    if opus_rec in ("proceed", "reduce_size"):
+        _plain_params()
+        if opus_rec == "reduce_size":
+            pos_adj = opus.get("position_size_adjustment", 1.0)
+            lines.append(f"⚠️ Opus: Reduce size to {pos_adj:.1f}x")
+    elif opus_rec == "watchlist":
+        lines.append(f"\n{'=' * 20} OPUS RECOMMENDATION: WATCHLIST {'=' * 20}")
+        key_risk = opus.get("key_risk", "")
+        if key_risk:
+            lines.append(f"Key concern: {key_risk}")
+        _plain_params("DRAFT TRADE PARAMS (Sonnet)")
+    elif opus_rec == "pass":
+        lines.append(f"\n{'=' * 20} OPUS RECOMMENDATION: PASS {'=' * 20}")
+        reasoning = opus.get("reasoning", "")
+        if reasoning:
+            lines.append(reasoning[:300])
+        lines.append("No trade parameters generated.")
+    else:
+        _plain_params()
 
     return "\n".join(lines)

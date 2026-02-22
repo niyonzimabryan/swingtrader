@@ -177,6 +177,7 @@ class Memo(Base):
     trade_params = Column(Text, default="{}")  # JSON: entry, stop, targets, size
     signal_breakdown = Column(Text, default="{}")  # JSON: per-agent scores
     opus_critique = Column(Text, default="")
+    memo_data_json = Column(Text, default="{}")  # Full memo_data dict for re-rendering (v2.1)
     thesis = Column(Text, default="")
     bear_case = Column(Text, default="")
     status = Column(String(20), default="pending")  # pending, approved, rejected, watchlisted, expired
@@ -199,6 +200,13 @@ class Memo(Base):
     def signal_breakdown_dict(self) -> dict:
         try:
             return json.loads(self.signal_breakdown)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @property
+    def memo_data_dict(self) -> dict:
+        try:
+            return json.loads(self.memo_data_json)
         except (json.JSONDecodeError, TypeError):
             return {}
 

@@ -160,17 +160,19 @@ class TradingPipeline:
                 memo_data = self._process_scan_item(item, regime)
                 if memo_data:
                     memos_generated += 1
+                    opus_eval = memo_data.get("opus_evaluation", {})
+                    opus_rec = opus_eval.get("recommendation", "")
                     memo_details.append({
                         "ticker": item.ticker,
-                        "score": memo_data.get("scoring", {}).get("final_score", 0),
-                        "classification": memo_data.get("scoring", {}).get("classification", ""),
+                        "score": memo_data.get("composite_score", 0),
+                        "classification": memo_data.get("classification", ""),
+                        "memo_id": memo_data.get("memo_id", 0),
+                        "opus_recommendation": opus_rec,
                     })
 
                     # If Opus recommends watchlist, add it
-                    opus_eval = memo_data.get("scoring", {}).get("opus_evaluation", {})
-                    opus_rec = opus_eval.get("recommendation", "")
                     if opus_rec == "watchlist" and item.source != "watchlist":
-                        final_score = memo_data.get("scoring", {}).get("final_score", 0)
+                        final_score = memo_data.get("composite_score", 0)
                         add_to_watchlist(
                             item.ticker,
                             reason=f"Opus watchlist rec (score: {final_score:.2f})",

@@ -201,6 +201,7 @@ class CatalystAgent(BaseAgent):
             reasoning=sonnet_result.get("reasoning", sonnet_result.get("error", "")),
             raw_data={
                 "catalyst_type": sonnet_result.get("catalyst_type", ""),
+                "catalyst_modifiers": sonnet_result.get("catalyst_modifiers", []),
                 "catalyst_summary": sonnet_result.get("catalyst_summary", ""),
                 "magnitude": sonnet_result.get("magnitude", 1),
                 "materiality": materiality,
@@ -208,6 +209,7 @@ class CatalystAgent(BaseAgent):
                 "expected_impact_pct": sonnet_result.get("expected_impact_pct", {}),
                 "time_horizon_days": sonnet_result.get("time_horizon_days", 10),
                 "counter_arguments": sonnet_result.get("counter_arguments", ""),
+                "risk_analysis": sonnet_result.get("risk_analysis", {}),
                 "haiku_score": best_haiku_score,
                 "source": best_catalyst.get("source", ""),
                 "sonnet_error": sonnet_result.get("error"),
@@ -247,6 +249,7 @@ class CatalystAgent(BaseAgent):
             reasoning=sonnet_result.get("reasoning", sonnet_result.get("error", "")),
             raw_data={
                 "catalyst_type": sonnet_result.get("catalyst_type", "discovery"),
+                "catalyst_modifiers": sonnet_result.get("catalyst_modifiers", []),
                 "catalyst_summary": sonnet_result.get("catalyst_summary", ""),
                 "magnitude": sonnet_result.get("magnitude", 3),
                 "materiality": materiality,
@@ -254,6 +257,7 @@ class CatalystAgent(BaseAgent):
                 "expected_impact_pct": sonnet_result.get("expected_impact_pct", {}),
                 "time_horizon_days": sonnet_result.get("time_horizon_days", 10),
                 "counter_arguments": sonnet_result.get("counter_arguments", ""),
+                "risk_analysis": sonnet_result.get("risk_analysis", {}),
                 "haiku_score": 5,
                 "source": "discovery",
                 "discovery_context": discovery_context,
@@ -287,6 +291,7 @@ class CatalystAgent(BaseAgent):
             reasoning=sonnet_result.get("reasoning", sonnet_result.get("error", "")),
             raw_data={
                 "catalyst_type": sonnet_result.get("catalyst_type", "operator_provided"),
+                "catalyst_modifiers": sonnet_result.get("catalyst_modifiers", []),
                 "catalyst_summary": sonnet_result.get("catalyst_summary", thesis[:200]),
                 "magnitude": sonnet_result.get("magnitude", 3),
                 "materiality": materiality,
@@ -294,6 +299,7 @@ class CatalystAgent(BaseAgent):
                 "expected_impact_pct": sonnet_result.get("expected_impact_pct", {}),
                 "time_horizon_days": sonnet_result.get("time_horizon_days", 10),
                 "counter_arguments": sonnet_result.get("counter_arguments", ""),
+                "risk_analysis": sonnet_result.get("risk_analysis", {}),
                 "haiku_score": 5,
                 "source": "operator",
                 "provided_thesis": thesis,

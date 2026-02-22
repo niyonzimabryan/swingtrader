@@ -64,9 +64,21 @@ class EscalationManager:
             f"Initial assessment: {haiku_result.get('summary', '')}\n\n"
             f"Company context:\n{company_context}\n\n"
             f"Full catalyst content:\n{catalyst_text[:5000]}\n\n"
+            "CATALYST TYPE HIERARCHY (use the HIGHEST applicable type):\n"
+            "1. earnings_surprise — if earnings within 5 trading days, ALWAYS primary\n"
+            "2. m_and_a — acquisition, merger, activist campaign, spinoff\n"
+            "3. fda_regulatory — FDA decision, regulatory ruling\n"
+            "4. insider_buying — cluster purchases (3+ insiders in 14 days)\n"
+            "5. analyst_revision — upgrade/downgrade cluster, price target changes\n"
+            "6. product_launch — major product release, contract win\n"
+            "7. management_change — CEO/CFO appointment or departure\n"
+            "8. sector_macro — sector rotation, tariff, policy change\n\n"
+            "RULE: If earnings are within 5 trading days, catalyst_type MUST be an\n"
+            "earnings_* variant. Other factors become catalyst_modifiers.\n\n"
             "Respond with JSON:\n"
             "{\n"
-            '  "catalyst_type": "string",\n'
+            '  "catalyst_type": "string (use hierarchy above)",\n'
+            '  "catalyst_modifiers": ["list of secondary factors, if any"],\n'
             '  "catalyst_summary": "2-3 sentence summary",\n'
             '  "magnitude": 1-5,\n'
             '  "direction": "bullish|bearish|ambiguous",\n'
@@ -75,7 +87,13 @@ class EscalationManager:
             '  "expected_impact_pct": {"low": float, "mid": float, "high": float},\n'
             '  "time_horizon_days": int,\n'
             '  "reasoning": "detailed analysis (3-5 sentences)",\n'
-            '  "counter_arguments": "what could go wrong (2-3 sentences)"\n'
+            '  "risk_analysis": {\n'
+            '    "risks": [\n'
+            '      {"risk": "specific risk statement", "probability": "likely|possible|unlikely",\n'
+            '       "severity_pct": float, "trigger": "what to watch", "timeline": "when"}\n'
+            '    ],\n'
+            '    "failure_mode": "1-2 sentence MOST LIKELY way this trade loses money"\n'
+            '  }\n'
             "}\n\n"
             "SCORING GUIDANCE:\n"
             "- materiality: How significant/confirmed is this event? "
@@ -83,13 +101,26 @@ class EscalationManager:
             "0.5-0.8 = notable but uncertain; <0.5 = minor/unconfirmed)\n"
             "- direction_confidence: How confident in the price direction? "
             "(0.8+ = clear directional signal; 0.5-0.7 = likely but uncertain; "
-            "<0.5 = genuinely ambiguous)"
+            "<0.5 = genuinely ambiguous)\n\n"
+            "RISK ANALYSIS GUIDANCE:\n"
+            "- Provide exactly 3 risks, ranked by expected impact (probability x severity)\n"
+            "- Be specific, not generic. 'Market could go down' is not useful.\n"
+            "- severity_pct: estimated max drawdown if this risk materializes\n"
+            "- failure_mode: the single most likely scenario where this trade loses money\n"
+            "- Do NOT hedge both sides. Take a view on the most probable outcome."
         )
-        result = self.client.analyze_json(model, system, prompt, max_tokens=1500)
+        result = self.client.analyze_json(model, system, prompt, max_tokens=2000)
         # Backwards compatibility: if model returns 'confidence' instead of new fields
         if "confidence" in result and "materiality" not in result:
             result["materiality"] = result["confidence"]
             result["direction_confidence"] = result["confidence"]
+        # Backwards compatibility: wrap old counter_arguments into risk_analysis
+        if "counter_arguments" in result and "risk_analysis" not in result:
+            result["risk_analysis"] = {
+                "risks": [{"risk": result["counter_arguments"], "probability": "possible",
+                           "severity_pct": 5.0, "trigger": "N/A", "timeline": "N/A"}],
+                "failure_mode": result["counter_arguments"],
+            }
         log.info(
             "sonnet_analyze",
             ticker=ticker,
@@ -113,7 +144,8 @@ class EscalationManager:
             "1. Assign a final conviction score (0.0-1.0)\n"
             "2. Stress-test the bull case — actively look for weaknesses\n"
             "3. Assess whether the risk/reward justifies a position\n"
-            "4. Flag any signal disagreements and adjudicate them\n\n"
+            "4. Flag any signal disagreements and adjudicate them\n"
+            "5. Adjudicate Sonnet's risk ranking — confirm, re-rank, or flag missed risks\n\n"
             "Be skeptical by default. Your job is to protect capital."
         )
         prompt = (
@@ -134,7 +166,10 @@ class EscalationManager:
             '  "key_risk": "single biggest risk in one sentence",\n'
             '  "recommendation": "proceed|reduce_size|watchlist|pass",\n'
             '  "position_size_adjustment": 0.5-1.5,\n'
-            '  "reasoning": "3-5 sentences on your overall assessment"\n'
+            '  "reasoning": "3-5 sentences on your overall assessment",\n'
+            '  "risk_ranking_correct": true/false,\n'
+            '  "missed_risks": "any risks Sonnet missed (or empty string)",\n'
+            '  "failure_mode_assessment": "agree|disagree — brief reason"\n'
             "}"
         )
 
