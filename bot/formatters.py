@@ -33,6 +33,53 @@ def strip_markdown(text: str) -> str:
     return text
 
 
+def _repair_chunk_formatting(chunk: str) -> str:
+    """Ensure a chunk has balanced MarkdownV2 formatting markers.
+
+    When split_message cuts between an opening and closing marker,
+    the chunk will have unbalanced *bold*, _italic_, or `code` markers
+    which causes Telegram to reject it with a "can't parse entities" error.
+
+    Strategy: count unescaped formatting markers. If odd, close them at the
+    end (for continuation chunks, also open at the start if needed).
+    """
+    def count_unescaped(text, char):
+        """Count unescaped occurrences of a formatting character."""
+        count = 0
+        i = 0
+        while i < len(text):
+            if text[i] == '\\' and i + 1 < len(text):
+                i += 2  # skip escaped char
+                continue
+            if text[i] == char:
+                count += 1
+            i += 1
+        return count
+
+    # Fix bold markers (*)
+    stars = count_unescaped(chunk, '*')
+    if stars % 2 != 0:
+        # Odd count — close at end
+        chunk = chunk + '*'
+
+    # Fix italic markers (_)
+    underscores = count_unescaped(chunk, '_')
+    if underscores % 2 != 0:
+        chunk = chunk + '_'
+
+    # Fix code markers (`)
+    backticks = count_unescaped(chunk, '`')
+    if backticks % 2 != 0:
+        chunk = chunk + '`'
+
+    # Fix strikethrough markers (~)
+    tildes = count_unescaped(chunk, '~')
+    if tildes % 2 != 0:
+        chunk = chunk + '~'
+
+    return chunk
+
+
 def format_memo(memo_data: dict) -> str:
     """Format a memo for Telegram delivery."""
     return format_memo_telegram(memo_data)
@@ -80,7 +127,7 @@ def split_message(text: str, limit: int = SAFE_LIMIT) -> list[str]:
     Every word is delivered — no truncation, no summarization.
     """
     if len(text) <= limit:
-        return [text]
+        return [_repair_chunk_formatting(text)]
 
     chunks = []
     while text:
@@ -120,7 +167,9 @@ def split_message(text: str, limit: int = SAFE_LIMIT) -> list[str]:
         else:
             safe_chunks.extend(_emergency_split(chunk, TELEGRAM_MSG_LIMIT))
 
-    return safe_chunks
+    # Repair pass: fix unbalanced MarkdownV2 formatting markers in each chunk
+    repaired = [_repair_chunk_formatting(c) for c in safe_chunks]
+    return repaired
 
 
 def format_portfolio_status(account: dict, positions: list, regime: dict) -> str:

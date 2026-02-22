@@ -97,3 +97,13 @@
 
 - [ ] **Memo readability on mobile** — Telegram MarkdownV2 formatting can be finicky on small screens. Test memo layout on phone once bot is live
 - [ ] **Message splitting** — Messages >4096 chars get split. Verify the split points don't break mid-section in real memos
+
+---
+
+## Architecture Review Follow-ups (Feb 22, 2026)
+
+- [ ] **Offload blocking bot handlers from event loop** — `/ask`, `/regime`, `/score`, and `/performance` still execute sync I/O inline in async handlers. Move heavy work to executor/background jobs to keep Telegram responses snappy under concurrent usage.
+- [ ] **Parallelize independent agent stages in ad-hoc pipeline** — After catalyst completes, run fundamental + pattern + web research in parallel (bounded concurrency) to reduce `/test` latency.
+- [ ] **Add cache-first reads for repeat analyses** — Reuse fresh fundamentals/web-research outputs (TTL-based) before refetching APIs/LLM responses to cut repeated request latency and token/API cost.
+- [ ] **Harden SQLite for concurrent workload** — Enable WAL mode + busy_timeout; add indexes for hot filters (`trades.status`, `trades.exit_date`, `memos.status`, `memos.created_at`) to prevent future slowdowns in order monitor and performance/history views.
+- [ ] **Define DB migration path trigger to Postgres** — Keep SQLite now, but migrate when multi-replica/worker deployment or persistent lock contention appears.

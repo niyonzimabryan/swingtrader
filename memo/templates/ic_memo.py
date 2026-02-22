@@ -174,12 +174,18 @@ def format_memo_telegram(memo_data: dict) -> str:
         key_finding = wr.get("key_finding", "")
         if key_finding:
             lines.append(f"Key finding: {esc(key_finding)}")
+        first_dim = True
         for dim in ("catalyst_context", "competitive_dynamics", "management_signals",
                      "bull_bear_debate", "institutional_positioning"):
             val = wr.get(dim, "")
             if val:
                 label = dim.replace("_", " ").title()
-                lines.append(f"{esc(label)}: {esc(val[:200])}")
+                if not first_dim:
+                    lines.append("")  # blank line separator between subsections
+                    lines.append("───────────────")
+                first_dim = False
+                lines.append(f"__{esc(label)}__")
+                lines.append(esc(val[:300]))
     lines.append("")
 
     # Risk Analysis — structured (v2.1) or flat fallback
@@ -400,12 +406,18 @@ def format_memo_plain(memo_data: dict) -> str:
         key_finding = wr.get("key_finding", "")
         if key_finding:
             lines.append(f"Key finding: {key_finding}")
+        first_dim = True
         for dim in ("catalyst_context", "competitive_dynamics", "management_signals",
                      "bull_bear_debate", "institutional_positioning"):
             val = wr.get(dim, "")
             if val:
                 label = dim.replace("_", " ").title()
-                lines.append(f"{label}: {val[:200]}")
+                if not first_dim:
+                    lines.append("")
+                    lines.append("───────────────")
+                first_dim = False
+                lines.append(f"{label}")
+                lines.append(f"  {val[:300]}")
 
     risk_data = d.get("risk_analysis", {})
     counter_args = cat.get("counter_arguments", "")
