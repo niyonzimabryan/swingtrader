@@ -23,7 +23,7 @@
 
 - [x] **Pattern Agent is stubbed** — ✅ Built full implementation: Sonnet setup classification → yfinance historical instance search → forward return computation (T+5/T+10/T+15/T+20) → max drawdown → summary stats → Sonnet interpretation → scoring. Cached via SQLite. NVDA: 29 instances, 55.2% win rate. Fixed `revenue_acceleration` routing to use yfinance earnings search.
 - [x] **Reddit Sentiment Agent is stubbed** — ✅ Superseded by `WebResearchAgent` which does live web search via Anthropic's `web_search_20250305` tool. Reddit agent file (`agents/reddit_agent.py`) is orphaned dead code — can be deleted. No PRAW credentials needed.
-- [ ] **2 Telegram commands still stubbed** — `/watchlist`, `/upcoming` return "coming soon". All others are live: `/scan`, `/performance`, `/pause`, `/resume`, `/config`, `/test`, `/score`, `/history`, `/memo`, `/close`, `/adjust`, `/ask`, `/help`, `/status`, `/positions`, `/regime`, `/agents`, `/exposure`, `/risk`.
+- [ ] **1 Telegram command still stubbed** — `/upcoming` returns "coming soon". All others are live including `/watchlist` (view, add, remove with inline buttons).
 - [ ] **No test suite** — Zero tests currently. Need unit tests for scoring engine, risk manager, position sizing, and integration tests for the full pipeline
 - [ ] **Signal attribution needs 30+ trades** — `tracking/attribution.py` is a stub. Can't do meaningful signal-level performance analysis until enough closed trades exist
 - [ ] **`run_in_executor` in pipeline** — `run_ad_hoc_async` uses `loop.run_in_executor` which works but isn't ideal. Consider making the full pipeline natively async
@@ -41,7 +41,7 @@
 - [ ] **Email backup channel** — PRD calls for email delivery as Telegram backup. Not critical for MVP but useful for audit trail
 - [ ] **Backtest framework** — PRD Phase 2 scope. Replay historical data through the pipeline to validate strategy before going live
 - [x] **Dockerfile for deployment** — ✅ Done. Dockerfile + railway.toml deployed to Railway. See Autonomous Operation section.
-- [ ] **Watchlist with alerts** — Backend done (CRUD in `orchestrator/universe.py`, lower Haiku threshold for re-scanning, "Watchlist" button on memos). Still missing: `/watchlist` Telegram command to view list, and dedicated alert notifications when catalysts strengthen between scans.
+- [x] **Watchlist with alerts** — ✅ Full stack: CRUD backend (`orchestrator/universe.py`), lower Haiku threshold for re-scanning, "Watchlist" button on memos, `/watchlist` command (view list, add/remove tickers, inline remove buttons). Remaining idea: dedicated alert notifications when catalysts strengthen between scans.
 - [ ] **Multi-timeframe analysis** — Current system is swing-focused (3-15 day). Could add day-trade and position-trade modes
 - [ ] **Portfolio rebalancing** — Auto-suggest trimming winners and adding to conviction positions based on drift from target allocation
 - [ ] **Pattern Agent: incorporate own trade history** — Once 30+ closed trades exist, add our own trade outcomes as additional pattern data alongside historical market data. Our trades are higher-signal because they went through the full scoring pipeline.

@@ -41,6 +41,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_deep_research(query, context, int(data.split("_")[2]))
     elif data.startswith("back_"):
         await handle_back(query, context, int(data.split("_")[1]))
+    elif data.startswith("wl_remove_"):
+        await handle_wl_remove(query, context, data.split("wl_remove_")[1])
     elif data.startswith("close_confirm_"):
         await handle_close_confirm(query, context, data.split("close_confirm_")[1])
     elif data == "close_cancel":
@@ -154,6 +156,18 @@ async def handle_back(query, context, memo_id: int):
     """Go back to main approval keyboard."""
     keyboard = memo_approval_keyboard(memo_id)
     await query.edit_message_reply_markup(reply_markup=keyboard)
+
+
+async def handle_wl_remove(query, context, ticker: str):
+    """Remove a ticker from the watchlist via inline button."""
+    from orchestrator.universe import remove_from_watchlist
+    removed = remove_from_watchlist(ticker)
+    if removed:
+        await query.message.reply_text(f"✅ {ticker} removed from watchlist.", parse_mode=None)
+    else:
+        await query.message.reply_text(f"⚠️ {ticker} not on watchlist.", parse_mode=None)
+    # Remove the buttons from the watchlist message
+    await query.edit_message_reply_markup(reply_markup=None)
 
 
 async def handle_close_confirm(query, context, ticker: str):

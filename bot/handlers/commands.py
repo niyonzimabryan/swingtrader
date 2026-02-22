@@ -1,6 +1,6 @@
 """
-Core bot command handlers: /help, /status, /regime, /positions, /agents, /exposure, /risk, /scan
-Plus stubs for: /watchlist, /upcoming, /pause, /resume, /config
+Core bot command handlers: /help, /status, /regime, /positions, /agents, /exposure, /risk, /scan, /watchlist
+Plus stubs for: /upcoming
 """
 
 import asyncio
@@ -223,7 +223,76 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @authorized
 async def watchlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📋 Watchlist — coming soon. Use `/test TICKER thesis` to analyze tickers.", parse_mode=None)
+    """Show current watchlist with remove buttons."""
+    from orchestrator.universe import get_watchlist, remove_from_watchlist
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    args = update.message.text.split(maxsplit=1)
+
+    # /watchlist remove TICKER
+    if len(args) > 1 and args[1].strip().lower().startswith("remove "):
+        ticker = args[1].strip().split(maxsplit=1)[1].upper()
+        removed = remove_from_watchlist(ticker)
+        if removed:
+            await update.message.reply_text(f"✅ {ticker} removed from watchlist.", parse_mode=None)
+        else:
+            await update.message.reply_text(f"⚠️ {ticker} not found on watchlist.", parse_mode=None)
+        return
+
+    # /watchlist add TICKER [reason]
+    if len(args) > 1 and args[1].strip().lower().startswith("add "):
+        from orchestrator.universe import add_to_watchlist
+        parts = args[1].strip().split(maxsplit=2)  # "add", "TICKER", optional reason
+        ticker = parts[1].upper() if len(parts) > 1 else ""
+        reason = parts[2] if len(parts) > 2 else "Manual add via /watchlist"
+        if not ticker:
+            await update.message.reply_text("Usage: `/watchlist add TICKER [reason]`", parse_mode=None)
+            return
+        added = add_to_watchlist(ticker, reason=reason, source="operator")
+        if added:
+            await update.message.reply_text(f"✅ {ticker} added to watchlist. Will re-scan with lower threshold.", parse_mode=None)
+        else:
+            await update.message.reply_text(f"⚠️ {ticker} is already on the watchlist.", parse_mode=None)
+        return
+
+    # Show watchlist
+    watchlist = get_watchlist()
+    if not watchlist:
+        await update.message.reply_text(
+            "📋 *Watchlist is empty*\n\n"
+            "Add tickers via:\n"
+            "• `/watchlist add TICKER reason`\n"
+            "• 👀 Watchlist button on memos",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    lines = ["*📋 WATCHLIST*\n"]
+    buttons = []
+    for i, item in enumerate(watchlist, 1):
+        ticker = escape_md(item["ticker"])
+        sector = escape_md(item.get("sector", ""))
+        reason = item.get("reason", "")
+        # Truncate reason for display
+        short_reason = reason[:60] + "..." if len(reason) > 60 else reason
+        short_reason = escape_md(short_reason)
+        lines.append(f"{i}\\. `{ticker}` \\({sector}\\)")
+        if short_reason:
+            lines.append(f"   _{short_reason}_")
+        # Add remove button for each ticker
+        buttons.append([InlineKeyboardButton(
+            f"🗑 Remove {item['ticker']}",
+            callback_data=f"wl_remove_{item['ticker']}",
+        )])
+
+    lines.append(f"\n_{escape_md(f'{len(watchlist)} tickers — re-scanned with lower threshold')}_")
+
+    keyboard = InlineKeyboardMarkup(buttons) if buttons else None
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="MarkdownV2",
+        reply_markup=keyboard,
+    )
 
 @authorized
 async def upcoming_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
