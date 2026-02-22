@@ -86,6 +86,7 @@
 - [x] **Enhanced `/performance`** — Full dashboard: live Alpaca equity/cash/day P&L, open positions with stop-loss from DB, closed trade stats (win rate, profit factor, best/worst, avg hold).
 - [x] **Scan completion notifications** — `NotificationManager.scan_complete()` fires at end of every `run_full_scan()`. Shows duration, tickers scanned, memos generated with scores.
 - [x] **Order monitor wired to main.py** — Starts after bot init, stops on shutdown. Runs as async background task.
+- [x] **Railway deployment** — ✅ Deployed to Railway with Dockerfile, volume mount at `/data` for SQLite persistence, tzdata for scheduler, polling conflict retry (10 attempts with backoff). GitHub auto-deploy connected — `git push` to `main` triggers deploy. Project: `e556a6d9-2023-4c81-a031-e32e160a33be`.
 - [ ] **Fund Alpaca paper account** — Need to fund with $100K paper money to start live paper trading. Alpaca client is wired.
 - [ ] **First autonomous scan** — Run `/scan` from Telegram, verify memos arrive, approve one, verify order submitted + monitored.
 
