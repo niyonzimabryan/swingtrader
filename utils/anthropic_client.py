@@ -157,7 +157,7 @@ class AnthropicClient:
             max_tokens=effective_max,
             temperature=1,  # Required for extended thinking
             thinking={
-                "type": "enabled",
+                "type": "adaptive",
                 "budget_tokens": budget_tokens,
             },
             system=system_prompt,
@@ -281,7 +281,7 @@ class AnthropicClient:
                 max_tokens=effective_max,
                 temperature=1,  # Required for extended thinking
                 thinking={
-                    "type": "enabled",
+                    "type": "adaptive",
                     "budget_tokens": budget_tokens,
                 },
                 system=system_prompt,
