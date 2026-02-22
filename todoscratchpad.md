@@ -14,7 +14,7 @@
 - [ ] **Register Alpha Vantage** — _(deferred — FMP covers this for now)_
 - [x] **Register FRED** — API key added to `.env`
 - [x] **Create Telegram bot** — bot token + chat_id added to `.env`
-- [ ] **Register Reddit app** — reddit.com/prefs/apps (for PRAW). _(Deferred — agent is stubbed. Get credentials when ready to build out sentiment agent)_
+- [x] **Register Reddit app** — ✅ No longer needed. Reddit agent superseded by WebResearchAgent (live web search).
 - [x] **First live test** — `/test AAPL`, `/test NVDA`, `/test MSFT` all returned memos to Telegram
 
 ---
@@ -22,7 +22,7 @@
 ## Technical Debt
 
 - [x] **Pattern Agent is stubbed** — ✅ Built full implementation: Sonnet setup classification → yfinance historical instance search → forward return computation (T+5/T+10/T+15/T+20) → max drawdown → summary stats → Sonnet interpretation → scoring. Cached via SQLite. NVDA: 29 instances, 55.2% win rate. Fixed `revenue_acceleration` routing to use yfinance earnings search.
-- [ ] **Reddit Sentiment Agent is stubbed** — Returns 0.5 score. Real PRAW integration code is written but needs credentials + tuning of sentiment scoring
+- [x] **Reddit Sentiment Agent is stubbed** — ✅ Superseded by `WebResearchAgent` which does live web search via Anthropic's `web_search_20250305` tool. Reddit agent file (`agents/reddit_agent.py`) is orphaned dead code — can be deleted. No PRAW credentials needed.
 - [ ] **2 Telegram commands still stubbed** — `/watchlist`, `/upcoming` return "coming soon". All others are live: `/scan`, `/performance`, `/pause`, `/resume`, `/config`, `/test`, `/score`, `/history`, `/memo`, `/close`, `/adjust`, `/ask`, `/help`, `/status`, `/positions`, `/regime`, `/agents`, `/exposure`, `/risk`.
 - [ ] **No test suite** — Zero tests currently. Need unit tests for scoring engine, risk manager, position sizing, and integration tests for the full pipeline
 - [ ] **Signal attribution needs 30+ trades** — `tracking/attribution.py` is a stub. Can't do meaningful signal-level performance analysis until enough closed trades exist
@@ -36,12 +36,12 @@
 
 ## Ideas
 
-- [ ] **Expand ticker universe** — Currently 89 tickers (S&P 100 equivalent). Could add mid-caps, sector-specific lists, or dynamic screener-based universe refresh
+- [x] **Expand ticker universe** — ✅ Already S&P 500 (503 tickers across 11 GICS sectors). Auto-generated via `scripts/update_sp500.py`. Could later add mid-caps or dynamic screener-based refresh.
 - [ ] **Tune scoring weights from real data** — After 50+ closed trades, run attribution analysis to see which agents actually predict winners, then rebalance weights
 - [ ] **Email backup channel** — PRD calls for email delivery as Telegram backup. Not critical for MVP but useful for audit trail
 - [ ] **Backtest framework** — PRD Phase 2 scope. Replay historical data through the pipeline to validate strategy before going live
-- [ ] **Dockerfile for deployment** — Run on a VPS/cloud instead of local machine. Important for 24/7 scheduler reliability
-- [ ] **Watchlist with alerts** — Track tickers that scored 0.40-0.55 (below memo threshold) and alert if catalysts strengthen
+- [x] **Dockerfile for deployment** — ✅ Done. Dockerfile + railway.toml deployed to Railway. See Autonomous Operation section.
+- [ ] **Watchlist with alerts** — Backend done (CRUD in `orchestrator/universe.py`, lower Haiku threshold for re-scanning, "Watchlist" button on memos). Still missing: `/watchlist` Telegram command to view list, and dedicated alert notifications when catalysts strengthen between scans.
 - [ ] **Multi-timeframe analysis** — Current system is swing-focused (3-15 day). Could add day-trade and position-trade modes
 - [ ] **Portfolio rebalancing** — Auto-suggest trimming winners and adding to conviction positions based on drift from target allocation
 - [ ] **Pattern Agent: incorporate own trade history** — Once 30+ closed trades exist, add our own trade outcomes as additional pattern data alongside historical market data. Our trades are higher-signal because they went through the full scoring pipeline.
@@ -54,7 +54,7 @@
 - [x] **Pipeline stage progress messages** — ✅ Implemented: `run_ad_hoc()` accepts `progress_cb` callable, fires at each stage (regime → catalyst → fundamental → pattern → web research → scoring → memo). `/test` handler edits the status message in real-time via `asyncio.run_coroutine_threadsafe()`. `/scan` uses start message + scan completion notification.
 - [ ] **Approval flow for scheduled scans** — Currently full scans generate memos but there's no batch approval UX. Should scheduled memos queue up for morning review?
 - [ ] **Position sizing confidence** — Should users be able to override the calculated position size, or is the system's sizing authoritative?
-- [ ] **Risk parameter tuning** — The 5 risk rules are "non-negotiable" per PRD, but should the thresholds (10% drawdown, 3% daily loss) be configurable?
+- [x] **Risk parameter tuning** — ✅ Thresholds already configurable via `.env` / environment variables (`drawdown_circuit_breaker_pct`, `daily_loss_halt_pct` in `config/settings.py`). No runtime Telegram command to change them, but that's fine for now.
 
 ---
 

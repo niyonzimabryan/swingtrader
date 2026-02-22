@@ -139,8 +139,8 @@ async def agents_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Macro Regime Agent \\- Operational\n"
         "✅ Catalyst Agent \\- Operational\n"
         "✅ Fundamental Agent \\- Operational\n"
-        "⏳ Pattern Agent \\- Stub \\(accumulating data\\)\n"
-        "⏳ Reddit Sentiment Agent \\- Stub \\(initializing\\)\n"
+        "✅ Pattern Agent \\- Operational\n"
+        "✅ Web Research Agent \\- Operational\n"
         "✅ Scoring Engine \\- Operational\n"
         "✅ Memo Generator \\- Operational\n"
     )
