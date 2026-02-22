@@ -52,12 +52,15 @@ ALL_SETUP_TYPES = STRUCTURED_SETUP_TYPES | UNSTRUCTURED_SETUP_TYPES
 
 # Fallback chain: when a sub-type has < MIN_FALLBACK_INSTANCES, try broader types
 SETUP_TYPE_FALLBACKS = {
+    "earnings_beat_guide_up": ["earnings_beat_guide_flat", "revenue_acceleration"],
     "earnings_beat_guide_down": ["earnings_beat_guide_flat", "earnings_beat_guide_up"],
     "earnings_beat_guide_flat": ["earnings_beat_guide_up", "earnings_beat_guide_down"],
     "earnings_miss": ["earnings_beat_guide_down"],
     "revenue_acceleration": ["earnings_beat_guide_up"],
     "buyback_announcement": ["earnings_beat_guide_up"],
     "dividend_initiation": ["earnings_beat_guide_up"],
+    "analyst_upgrade_cluster": ["earnings_beat_guide_up"],
+    "analyst_downgrade": ["earnings_miss", "earnings_beat_guide_down"],
 }
 MIN_FALLBACK_INSTANCES = 5
 

@@ -184,7 +184,7 @@ def format_memo_telegram(memo_data: dict) -> str:
                     lines.append("")  # blank line separator between subsections
                     lines.append("───────────────")
                 first_dim = False
-                lines.append(f"__{esc(label)}__")
+                lines.append(f"_{esc(label)}_")
                 lines.append(esc(val[:300]))
     lines.append("")
 
@@ -287,7 +287,8 @@ def format_memo_telegram(memo_data: dict) -> str:
     # ═══ FINAL SECTION — conditional on Opus recommendation ═══
     opus_rec = opus.get("recommendation", "proceed") if opus else "proceed"
 
-    def _render_trade_params(label="FINAL TRADE PARAMETERS"):
+    def _render_trade_params(label="FINAL TRADE PARAMETERS", pos_adj=1.0):
+        import math
         lines.append(f"═══ *{label}* ═══")
         lines.append("")
         lines.append(f"Direction: `{d.get('direction', '?').upper()}`")
@@ -295,17 +296,28 @@ def format_memo_telegram(memo_data: dict) -> str:
         lines.append(f"Stop\\-loss: `${fmt(params.get('stop_loss', 0), ',.2f')}` \\(`{fmt(params.get('stop_pct', 0), '.1f')}%`\\)")
         lines.append(f"Target 1: `${fmt(params.get('target_1', 0), ',.2f')}` \\(`{fmt(params.get('target_1_pct', 0), '.1f')}%`\\)")
         lines.append(f"Target 2: `${fmt(params.get('target_2', 0), ',.2f')}` \\(`{fmt(params.get('target_2_pct', 0), '.1f')}%`\\)")
-        lines.append(f"Position: `{fmt(params.get('position_pct', 0), '.1f')}%` \\(`${fmt(params.get('dollar_amount', 0), ',.0f')}`\\)")
-        lines.append(f"Shares: `{params.get('shares', '?')}` \\| R:R: `{fmt(params.get('risk_reward', 0), '.1f')}:1`")
+        # Position sizing — apply Opus adjustment if present
+        if isinstance(pos_adj, (int, float)) and abs(pos_adj - 1.0) > 0.01:
+            adj_pct = params.get('position_pct', 0) * pos_adj
+            adj_dollar = params.get('dollar_amount', 0) * pos_adj
+            entry = params.get('entry_price', 0)
+            adj_shares = math.floor(adj_dollar / entry) if entry else params.get('shares', 0)
+            lines.append(
+                f"Position: `{fmt(params.get('position_pct', 0), '.1f')}%` → "
+                f"`{fmt(adj_pct, '.1f')}%` \\(`${fmt(adj_dollar, ',.0f')}`\\) "
+                f"← Opus `{fmt(pos_adj, '.1f')}x`"
+            )
+            lines.append(f"Shares: `{params.get('shares', '?')}` → `{adj_shares}` \\| R:R: `{fmt(params.get('risk_reward', 0), '.1f')}:1`")
+        else:
+            lines.append(f"Position: `{fmt(params.get('position_pct', 0), '.1f')}%` \\(`${fmt(params.get('dollar_amount', 0), ',.0f')}`\\)")
+            lines.append(f"Shares: `{params.get('shares', '?')}` \\| R:R: `{fmt(params.get('risk_reward', 0), '.1f')}:1`")
         lines.append(f"Max hold: `{params.get('max_hold_days', 20)}` trading days")
         regime = d.get("regime", {})
         lines.append(f"Regime: `{regime.get('regime', '?')}` \\| Multiplier: `{regime.get('position_size_multiplier', '?')}x`")
 
     if opus_rec in ("proceed", "reduce_size"):
-        _render_trade_params()
-        if opus_rec == "reduce_size":
-            pos_adj = opus.get("position_size_adjustment", 1.0)
-            lines.append(f"⚠️ Opus: Reduce size to `{fmt(pos_adj, '.1f')}x`")
+        pos_adj = opus.get("position_size_adjustment", 1.0) if opus else 1.0
+        _render_trade_params(pos_adj=pos_adj)
     elif opus_rec == "watchlist":
         lines.append("═══ *OPUS RECOMMENDATION: WATCHLIST* 👀 ═══")
         lines.append("")
@@ -446,22 +458,29 @@ def format_memo_plain(memo_data: dict) -> str:
     params = d.get("trade_params", {})
     opus_rec = opus.get("recommendation", "proceed") if opus else "proceed"
 
-    def _plain_params(label="FINAL TRADE PARAMETERS"):
+    def _plain_params(label="FINAL TRADE PARAMETERS", pos_adj=1.0):
+        import math
         lines.append(f"\n{'=' * 20} {label} {'=' * 20}")
         lines.append(f"Direction: {d.get('direction', '?').upper()}")
         lines.append(f"Entry: ${params.get('entry_price', 0):,.2f}")
         lines.append(f"Stop-loss: ${params.get('stop_loss', 0):,.2f} ({params.get('stop_pct', 0):.1f}%)")
         lines.append(f"Target 1: ${params.get('target_1', 0):,.2f} ({params.get('target_1_pct', 0):.1f}%)")
         lines.append(f"Target 2: ${params.get('target_2', 0):,.2f} ({params.get('target_2_pct', 0):.1f}%)")
-        lines.append(f"Position: {params.get('position_pct', 0):.1f}% (${params.get('dollar_amount', 0):,.0f})")
-        lines.append(f"Shares: {params.get('shares', '?')} | R:R: {params.get('risk_reward', 0):.1f}:1")
+        if isinstance(pos_adj, (int, float)) and abs(pos_adj - 1.0) > 0.01:
+            adj_pct = params.get('position_pct', 0) * pos_adj
+            adj_dollar = params.get('dollar_amount', 0) * pos_adj
+            entry = params.get('entry_price', 0)
+            adj_shares = math.floor(adj_dollar / entry) if entry else params.get('shares', 0)
+            lines.append(f"Position: {params.get('position_pct', 0):.1f}% → {adj_pct:.1f}% (${adj_dollar:,.0f}) ← Opus {pos_adj:.1f}x")
+            lines.append(f"Shares: {params.get('shares', '?')} → {adj_shares} | R:R: {params.get('risk_reward', 0):.1f}:1")
+        else:
+            lines.append(f"Position: {params.get('position_pct', 0):.1f}% (${params.get('dollar_amount', 0):,.0f})")
+            lines.append(f"Shares: {params.get('shares', '?')} | R:R: {params.get('risk_reward', 0):.1f}:1")
         lines.append(f"Max hold: {params.get('max_hold_days', 20)} trading days")
 
     if opus_rec in ("proceed", "reduce_size"):
-        _plain_params()
-        if opus_rec == "reduce_size":
-            pos_adj = opus.get("position_size_adjustment", 1.0)
-            lines.append(f"⚠️ Opus: Reduce size to {pos_adj:.1f}x")
+        pos_adj = opus.get("position_size_adjustment", 1.0) if opus else 1.0
+        _plain_params(pos_adj=pos_adj)
     elif opus_rec == "watchlist":
         lines.append(f"\n{'=' * 20} OPUS RECOMMENDATION: WATCHLIST {'=' * 20}")
         key_risk = opus.get("key_risk", "")

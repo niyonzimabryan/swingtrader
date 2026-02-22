@@ -181,10 +181,10 @@ class EscalationManager:
             result = self.client.analyze_json_with_thinking_and_fallback(
                 model, system, prompt,
                 budget_tokens=thinking_budget,
-                max_tokens=max(16000, thinking_budget + 4096),
+                max_tokens=max(16000, thinking_budget + 8192),
             )
         else:
-            result = self.client.analyze_json_with_fallback(model, system, prompt, max_tokens=2000)
+            result = self.client.analyze_json_with_fallback(model, system, prompt, max_tokens=4000)
 
         log.info(
             "opus_evaluate",
@@ -246,10 +246,10 @@ class EscalationManager:
             result = self.client.analyze_json_with_thinking_and_fallback(
                 model, system, prompt,
                 budget_tokens=thinking_budget,
-                max_tokens=max(16000, thinking_budget + 4096),
+                max_tokens=max(16000, thinking_budget + 8192),
             )
         else:
-            result = self.client.analyze_json_with_fallback(model, system, prompt, max_tokens=2000)
+            result = self.client.analyze_json_with_fallback(model, system, prompt, max_tokens=4000)
 
         log.info(
             "opus_reevaluate",
