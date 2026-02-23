@@ -46,9 +46,11 @@ def _init_langfuse(settings):
         AnthropicInstrumentor().instrument()
         client = get_client()
         return client
-    except ImportError:
+    except ImportError as e:
+        print(f"[langfuse] ImportError: {e}")
         return None
-    except Exception:
+    except Exception as e:
+        print(f"[langfuse] Init failed: {e}")
         return None
 
 
