@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     discovery_model: str = "claude-sonnet-4-6"  # Discovery uses Sonnet, NOT Haiku
 
     # --- V2: Extended Thinking ---
-    discovery_thinking_budget: int = 10000  # Thinking tokens for discovery scan
+    discovery_thinking_budget: int = 0      # Thinking tokens for discovery scan (was 10000; search quality drives discovery, not thinking)
     opus_thinking_budget: int = 16000       # Thinking tokens for Opus evaluation
 
     # --- V2: Deep Research (Phase C — empty for now) ---
@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     # --- V2: Watchlist ---
     watchlist_haiku_threshold: int = 2  # Lower bar for watchlist tickers
     watchlist_max_size: int = 25
+
+    # --- Langfuse Observability ---
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = "https://us.cloud.langfuse.com"
 
     # --- Pipeline Parallelization ---
     parallel_agents_enabled: bool = True

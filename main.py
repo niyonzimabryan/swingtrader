@@ -20,6 +20,26 @@ from execution.order_monitor import OrderMonitor
 from utils.logger import setup_logging, get_logger
 
 
+def _init_langfuse(settings):
+    """Initialize Langfuse OTEL auto-instrumentation if keys are configured."""
+    if not settings.langfuse_public_key or not settings.langfuse_secret_key:
+        return None
+    try:
+        import os
+        os.environ["LANGFUSE_PUBLIC_KEY"] = settings.langfuse_public_key
+        os.environ["LANGFUSE_SECRET_KEY"] = settings.langfuse_secret_key
+        os.environ["LANGFUSE_HOST"] = settings.langfuse_base_url
+        from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
+        from langfuse import get_client
+        AnthropicInstrumentor().instrument()
+        client = get_client()
+        return client
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
 async def main():
     # Setup logging
     setup_logging("INFO")
@@ -28,6 +48,11 @@ async def main():
 
     # Load settings
     settings = Settings()
+
+    # Initialize Langfuse observability (no-op if keys not set)
+    langfuse_client = _init_langfuse(settings)
+    if langfuse_client:
+        log.info("langfuse_initialized", host=settings.langfuse_base_url)
 
     # Validate critical keys
     missing = []
@@ -104,6 +129,8 @@ async def main():
         pass
     finally:
         log.info("shutting_down")
+        if langfuse_client:
+            langfuse_client.flush()
         await order_monitor.stop()
         scheduler.stop()
         await bot.stop()

@@ -38,6 +38,21 @@ from utils.logger import get_logger
 log = get_logger("pipeline")
 
 
+def _langfuse_context(session_id: str = None, tags: list = None):
+    """Return a Langfuse propagate_attributes context manager, or a no-op if unavailable."""
+    try:
+        from langfuse import propagate_attributes
+        kwargs = {}
+        if session_id:
+            kwargs["session_id"] = session_id
+        if tags:
+            kwargs["tags"] = tags
+        return propagate_attributes(**kwargs)
+    except ImportError:
+        from contextlib import nullcontext
+        return nullcontext()
+
+
 @dataclass
 class ScanTickerItem:
     """A ticker in the scan list with source-aware routing metadata."""
@@ -139,7 +154,13 @@ class TradingPipeline:
 
         log.info("full_scan_start")
         run_start = datetime.utcnow()
+        scan_session_id = f"scan-{run_start.strftime('%Y%m%d-%H%M%S')}"
 
+        with _langfuse_context(session_id=scan_session_id, tags=["scheduled_scan"]):
+            self._run_full_scan_inner(run_start, scan_session_id)
+
+    def _run_full_scan_inner(self, run_start, scan_session_id):
+        """Inner scan logic wrapped by Langfuse session context."""
         # 1. Update macro regime
         regime_output = self.macro_agent.analyze()
         regime = regime_output.raw_data
@@ -148,7 +169,8 @@ class TradingPipeline:
         discovery_output = DiscoveryOutput()
         if self.discovery_agent:
             try:
-                discovery_output = self.discovery_agent.discover(regime=regime)
+                with _langfuse_context(tags=["discovery"]):
+                    discovery_output = self.discovery_agent.discover(regime=regime)
                 log.info("discovery_complete", found=len(discovery_output.tickers))
             except Exception as e:
                 log.error("discovery_failed", error=str(e))
@@ -299,7 +321,8 @@ class TradingPipeline:
             # Lower Haiku threshold for watchlist tickers
             catalyst_kwargs["haiku_threshold_override"] = item.haiku_threshold
 
-        catalyst = self.catalyst_agent.analyze(ticker=item.ticker, **catalyst_kwargs)
+        with _langfuse_context(tags=["catalyst", item.ticker]):
+            catalyst = self.catalyst_agent.analyze(ticker=item.ticker, **catalyst_kwargs)
 
         # Only proceed if catalyst is meaningful
         if catalyst.score < 0.3:
@@ -315,16 +338,18 @@ class TradingPipeline:
 
         # Score opportunity
         portfolio_context = self._get_portfolio_context()
-        result = self.scoring_engine.score_opportunity(
-            item.ticker, catalyst, fundamental, pattern, web_research,
-            regime, portfolio_context,
-        )
+        with _langfuse_context(tags=["scoring", item.ticker]):
+            result = self.scoring_engine.score_opportunity(
+                item.ticker, catalyst, fundamental, pattern, web_research,
+                regime, portfolio_context,
+            )
 
         # Generate memo if above threshold
         if result.get("meets_memo_threshold"):
-            memo_data = self.memo_generator.generate(
-                item.ticker, result, catalyst, fundamental, pattern, web_research, regime,
-            )
+            with _langfuse_context(tags=["memo", item.ticker]):
+                memo_data = self.memo_generator.generate(
+                    item.ticker, result, catalyst, fundamental, pattern, web_research, regime,
+                )
             if memo_data:
                 memo_data["source"] = item.source
                 log.info(
@@ -359,20 +384,32 @@ class TradingPipeline:
         Run fundamental + pattern + web_research stages with optional parallelism.
         Returns (fundamental, pattern, web_research, stage_statuses, workers_used).
         """
+        def _tagged_fundamental():
+            with _langfuse_context(tags=["fundamental", ticker]):
+                return self.fundamental_agent.analyze(ticker=ticker, sector=sector)
+
+        def _tagged_pattern():
+            with _langfuse_context(tags=["pattern", ticker]):
+                return self.pattern_agent.analyze(
+                    ticker=ticker,
+                    catalyst_data=catalyst.raw_data,
+                    catalyst_reasoning=catalyst.reasoning,
+                )
+
+        def _tagged_web_research():
+            with _langfuse_context(tags=["web_research", ticker]):
+                return self.web_research_agent.analyze(
+                    ticker=ticker,
+                    sector=sector,
+                    catalyst_data=catalyst.raw_data,
+                    catalyst_reasoning=catalyst.reasoning,
+                    direction_hint=catalyst.direction,
+                )
+
         stage_fns = {
-            "fundamental": lambda: self.fundamental_agent.analyze(ticker=ticker, sector=sector),
-            "pattern": lambda: self.pattern_agent.analyze(
-                ticker=ticker,
-                catalyst_data=catalyst.raw_data,
-                catalyst_reasoning=catalyst.reasoning,
-            ),
-            "web_research": lambda: self.web_research_agent.analyze(
-                ticker=ticker,
-                sector=sector,
-                catalyst_data=catalyst.raw_data,
-                catalyst_reasoning=catalyst.reasoning,
-                direction_hint=catalyst.direction,
-            ),
+            "fundamental": _tagged_fundamental,
+            "pattern": _tagged_pattern,
+            "web_research": _tagged_web_research,
         }
         stage_timeouts = {
             "fundamental": max(1, int(self.settings.parallel_timeout_fundamental_s)),
@@ -678,6 +715,13 @@ class TradingPipeline:
         log.info("ad_hoc_start", ticker=ticker, has_thesis=bool(thesis))
         _progress = progress_cb or (lambda s: None)
 
+        # Wrap in Langfuse session for observability
+        session_id = f"adhoc-{ticker}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        with _langfuse_context(session_id=session_id, tags=["ad_hoc", ticker]):
+            return self._run_ad_hoc_inner(ticker, thesis, _progress)
+
+    def _run_ad_hoc_inner(self, ticker: str, thesis: str, _progress) -> dict:
+        """Inner ad-hoc logic wrapped by Langfuse session context."""
         # Ensure ticker is in DB
         self._ensure_ticker(ticker)
 
