@@ -10,7 +10,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from bot.auth import authorized
 from bot.handlers._blocking_utils import run_blocking, BlockingCallTimeout
-from bot.formatters import escape_md, format_memo, split_message, strip_markdown
+from bot.handlers._memo_delivery import send_memo_markdown_or_plain
+from bot.formatters import escape_md, format_memo
 from bot.keyboards import memo_approval_keyboard
 from utils.logger import get_logger
 
@@ -87,28 +88,14 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         memo_id = memo_data.get("memo_id", 0)
         opus_rec = memo_data.get("opus_evaluation", {}).get("recommendation", "proceed")
         keyboard = memo_approval_keyboard(memo_id, opus_recommendation=opus_rec)
-
-        # Send each chunk individually — per-chunk fallback to plain text
-        chunks = split_message(memo_text)
-        for i, chunk in enumerate(chunks):
-            is_last = i == len(chunks) - 1
-            try:
-                await update.message.reply_text(
-                    chunk,
-                    parse_mode="MarkdownV2",
-                    reply_markup=keyboard if is_last else None,
-                )
-            except Exception as e:
-                log.warning("md2_chunk_failed", chunk_index=i, error=str(e)[:200])
-                plain_chunk = strip_markdown(chunk)
-                try:
-                    await update.message.reply_text(
-                        plain_chunk,
-                        parse_mode=None,
-                        reply_markup=keyboard if is_last else None,
-                    )
-                except Exception as e2:
-                    log.error("plain_chunk_also_failed", chunk_index=i, error=str(e2)[:200])
+        await send_memo_markdown_or_plain(
+            message=update.message,
+            bot=context.bot,
+            chat_id=update.effective_chat.id,
+            memo_text=memo_text,
+            keyboard=keyboard,
+            source="test_command",
+        )
 
     except Exception as e:
         log.error("test_command_failed", ticker=ticker, error=str(e))

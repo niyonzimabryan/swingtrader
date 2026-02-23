@@ -9,6 +9,7 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
 from bot.auth import is_authorized
+from bot.handlers._memo_delivery import send_memo_markdown_or_plain
 from bot.keyboards import modify_keyboard, memo_approval_keyboard
 from database.db import get_session
 from database.models import Memo
@@ -348,30 +349,20 @@ async def handle_view_memo(query, context, memo_id: int):
 
         full_text = memo.full_text or ""
 
-    from bot.formatters import format_memo, split_message, strip_markdown
+    from bot.formatters import format_memo, split_message
     from bot.keyboards import memo_approval_keyboard
     keyboard = memo_approval_keyboard(memo_id, opus_recommendation=opus_rec)
 
     if memo_data and memo_data.get("ticker"):
-        # Full re-render — per-chunk MarkdownV2 with fallback
         memo_text = format_memo(memo_data)
-        chunks = split_message(memo_text)
-        for i, chunk in enumerate(chunks):
-            is_last = i == len(chunks) - 1
-            try:
-                await query.message.reply_text(
-                    chunk, parse_mode="MarkdownV2",
-                    reply_markup=keyboard if is_last else None,
-                )
-            except Exception:
-                plain_chunk = strip_markdown(chunk)
-                try:
-                    await query.message.reply_text(
-                        plain_chunk, parse_mode=None,
-                        reply_markup=keyboard if is_last else None,
-                    )
-                except Exception:
-                    log.error("view_memo_chunk_failed", memo_id=memo_id, chunk_index=i)
+        await send_memo_markdown_or_plain(
+            message=query.message,
+            bot=context.bot,
+            chat_id=query.message.chat_id,
+            memo_text=memo_text,
+            keyboard=keyboard,
+            source="view_memo",
+        )
         return
 
     # Fallback: send stored plain text (old memos without memo_data_json)

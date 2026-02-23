@@ -10,6 +10,14 @@ import re
 TELEGRAM_MSG_LIMIT = 4096
 SAFE_LIMIT = 3900  # Safety margin for MarkdownV2 escape overhead
 
+MEMO_PRIMARY_SPLIT_HEADER = "═══ *OPUS EVALUATION* ═══"
+MEMO_FALLBACK_SPLIT_HEADERS = (
+    "═══ *FINAL TRADE PARAMETERS* ═══",
+    "═══ *OPUS RECOMMENDATION: WATCHLIST* 👀 ═══",
+    "═══ *OPUS RECOMMENDATION: PASS* ❌ ═══",
+    "═══ *DRAFT TRADE PARAMS \\(Sonnet\\)* ═══",
+)
+
 
 def escape_md(text: str) -> str:
     """Escape special characters for Telegram MarkdownV2."""
@@ -31,53 +39,6 @@ def strip_markdown(text: str) -> str:
     # Remove escape backslashes before special chars
     text = re.sub(r'\\([_*\[\]()~`>#+=|{}.!\-])', r'\1', text)
     return text
-
-
-def _repair_chunk_formatting(chunk: str) -> str:
-    """Ensure a chunk has balanced MarkdownV2 formatting markers.
-
-    When split_message cuts between an opening and closing marker,
-    the chunk will have unbalanced *bold*, _italic_, or `code` markers
-    which causes Telegram to reject it with a "can't parse entities" error.
-
-    Strategy: count unescaped formatting markers. If odd, close them at the
-    end (for continuation chunks, also open at the start if needed).
-    """
-    def count_unescaped(text, char):
-        """Count unescaped occurrences of a formatting character."""
-        count = 0
-        i = 0
-        while i < len(text):
-            if text[i] == '\\' and i + 1 < len(text):
-                i += 2  # skip escaped char
-                continue
-            if text[i] == char:
-                count += 1
-            i += 1
-        return count
-
-    # Fix bold markers (*)
-    stars = count_unescaped(chunk, '*')
-    if stars % 2 != 0:
-        # Odd count — close at end
-        chunk = chunk + '*'
-
-    # Fix italic markers (_)
-    underscores = count_unescaped(chunk, '_')
-    if underscores % 2 != 0:
-        chunk = chunk + '_'
-
-    # Fix code markers (`)
-    backticks = count_unescaped(chunk, '`')
-    if backticks % 2 != 0:
-        chunk = chunk + '`'
-
-    # Fix strikethrough markers (~)
-    tildes = count_unescaped(chunk, '~')
-    if tildes % 2 != 0:
-        chunk = chunk + '~'
-
-    return chunk
 
 
 def format_memo(memo_data: dict) -> str:
@@ -113,10 +74,10 @@ def _emergency_split(text: str, limit: int) -> list[str]:
             chunks.append(text)
             break
         split_at = text.rfind(' ', 0, limit)
-        if split_at == -1:
+        if split_at <= 0:
             split_at = limit
         chunks.append(text[:split_at])
-        text = text[split_at:].lstrip()
+        text = text[split_at:]
     return chunks
 
 
@@ -127,7 +88,7 @@ def split_message(text: str, limit: int = SAFE_LIMIT) -> list[str]:
     Every word is delivered — no truncation, no summarization.
     """
     if len(text) <= limit:
-        return [_repair_chunk_formatting(text)]
+        return [text]
 
     chunks = []
     while text:
@@ -157,7 +118,7 @@ def split_message(text: str, limit: int = SAFE_LIMIT) -> list[str]:
                 split_at -= 1
 
         chunks.append(text[:split_at])
-        text = text[split_at:].lstrip('\n')
+        text = text[split_at:]
 
     # Safety pass: ensure no chunk exceeds Telegram's hard limit
     safe_chunks = []
@@ -167,9 +128,56 @@ def split_message(text: str, limit: int = SAFE_LIMIT) -> list[str]:
         else:
             safe_chunks.extend(_emergency_split(chunk, TELEGRAM_MSG_LIMIT))
 
-    # Repair pass: fix unbalanced MarkdownV2 formatting markers in each chunk
-    repaired = [_repair_chunk_formatting(c) for c in safe_chunks]
-    return repaired
+    return safe_chunks
+
+
+def _header_split_index(text: str, header: str) -> int:
+    """Return split index just before a section header, or -1."""
+    idx = text.find(header)
+    if idx <= 0:
+        return -1
+    nl = text.rfind("\n", 0, idx)
+    if nl == -1:
+        return idx
+    return nl + 1
+
+
+def _split_two_chunks(text: str, split_at: int) -> list[str] | None:
+    if split_at <= 0 or split_at >= len(text):
+        return None
+    first = text[:split_at]
+    second = text[split_at:]
+    if not first or not second:
+        return None
+    if len(first) > TELEGRAM_MSG_LIMIT or len(second) > TELEGRAM_MSG_LIMIT:
+        return None
+    return [first, second]
+
+
+def split_memo_message(text: str, limit: int = SAFE_LIMIT) -> list[str]:
+    """Split memo text with deterministic 2-part preference before adaptive fallback."""
+    if len(text) <= limit:
+        return [text]
+
+    # Priority 1: deterministic split before OPUS section.
+    primary_idx = _header_split_index(text, MEMO_PRIMARY_SPLIT_HEADER)
+    if primary_idx != -1:
+        two_chunks = _split_two_chunks(text, primary_idx)
+        if two_chunks:
+            return two_chunks
+        return split_message(text, limit=limit)
+
+    # Priority 2: if no OPUS section, split before final recommendation/params.
+    for header in MEMO_FALLBACK_SPLIT_HEADERS:
+        split_at = _header_split_index(text, header)
+        if split_at == -1:
+            continue
+        two_chunks = _split_two_chunks(text, split_at)
+        if two_chunks:
+            return two_chunks
+        break
+
+    return split_message(text, limit=limit)
 
 
 def format_portfolio_status(account: dict, positions: list, regime: dict) -> str:

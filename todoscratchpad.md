@@ -75,6 +75,7 @@
 - [x] **Opus API calls taking 30+ minutes** — ✅ Added `analyze_with_fallback()` to `utils/anthropic_client.py` with Sonnet fallback on timeout/rate-limit. Reduced retry attempts (3→2), added 120s client timeout. Pipeline now completes in ~50s.
 - [x] **Model upgrade to Sonnet 4.6 + Opus 4.6** — ✅ Updated all model IDs: `claude-sonnet-4-6`, `claude-opus-4-6`. Haiku stays at `claude-haiku-4-5-20251001`. Updated `model_selector.py`, `settings.py`, `anthropic_client.py`.
 - [x] **Message too long for Telegram** — ✅ Fixed: `test_command()` in `bot/handlers/test_idea.py` now uses `split_message()` to chunk memos >4096 chars. Keyboard (approve/reject buttons) attached to last chunk only. Both MarkdownV2 and plain text fallback paths handle splitting.
+- [x] **Inconsistent memo formatting across split Telegram messages** — ✅ Root cause fixed: removed mutating marker repair from `bot/formatters.py`, added deterministic memo splitter (`split_memo_message`) and shared all-or-nothing delivery fallback (`bot/handlers/_memo_delivery.py`) so chunks no longer mix Markdown/plain formatting.
 - [x] **Opus thinking mode deprecation** — ✅ Fixed: switched `thinking.type` from `enabled` to `adaptive` in both occurrences in `utils/anthropic_client.py`. Committed & deployed.
 - [ ] **Trade params contradict SHORT direction** — entry/stop/target are always computed as LONG params (stop below entry, targets above). If direction is actually short, these need to be inverted. For Phase 1 long-only this is cosmetic but will matter later.
 
@@ -96,7 +97,7 @@
 ## Design Notes
 
 - [ ] **Memo readability on mobile** — Telegram MarkdownV2 formatting can be finicky on small screens. Test memo layout on phone once bot is live
-- [ ] **Message splitting** — Messages >4096 chars get split. Verify the split points don't break mid-section in real memos
+- [x] **Message splitting** — ✅ Deterministic memo split now prefers section boundary before Opus/final params and includes regression tests (`tests/test_memo_formatting_delivery.py`)
 
 ---
 
