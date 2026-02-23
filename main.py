@@ -28,12 +28,14 @@ def _init_langfuse(settings):
         import os
         os.environ["LANGFUSE_PUBLIC_KEY"] = settings.langfuse_public_key
         os.environ["LANGFUSE_SECRET_KEY"] = settings.langfuse_secret_key
-        os.environ["LANGFUSE_HOST"] = settings.langfuse_base_url
+        os.environ["LANGFUSE_BASE_URL"] = settings.langfuse_base_url
         from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
         from langfuse import get_client
         AnthropicInstrumentor().instrument()
         client = get_client()
-        return client
+        if client.auth_check():
+            return client
+        return None
     except ImportError:
         return None
     except Exception:
