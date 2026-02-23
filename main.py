@@ -22,35 +22,43 @@ from utils.logger import setup_logging, get_logger
 
 def _init_langfuse(settings):
     """Initialize Langfuse OTEL auto-instrumentation if keys are configured."""
-    if not settings.langfuse_public_key or not settings.langfuse_secret_key:
+    pk = settings.langfuse_public_key
+    sk = settings.langfuse_secret_key
+    print(f"[langfuse] init check: pk={'set' if pk else 'empty'}, sk={'set' if sk else 'empty'}")
+    if not pk or not sk:
+        print("[langfuse] skipped — missing keys")
         return None
     try:
         import os
         import base64
 
         # Langfuse SDK client env vars
-        os.environ["LANGFUSE_PUBLIC_KEY"] = settings.langfuse_public_key
-        os.environ["LANGFUSE_SECRET_KEY"] = settings.langfuse_secret_key
+        os.environ["LANGFUSE_PUBLIC_KEY"] = pk
+        os.environ["LANGFUSE_SECRET_KEY"] = sk
         os.environ["LANGFUSE_BASE_URL"] = settings.langfuse_base_url
 
         # OTEL exporter env vars (required separately for span export)
         base_url = settings.langfuse_base_url.rstrip("/")
-        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"{base_url}/api/public/otel"
-        auth_string = base64.b64encode(
-            f"{settings.langfuse_public_key}:{settings.langfuse_secret_key}".encode()
-        ).decode()
+        otel_endpoint = f"{base_url}/api/public/otel"
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = otel_endpoint
+        auth_string = base64.b64encode(f"{pk}:{sk}".encode()).decode()
         os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = f"Authorization=Basic {auth_string}"
+        print(f"[langfuse] env vars set, OTEL endpoint: {otel_endpoint}")
 
         from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
-        from langfuse import get_client
+        print("[langfuse] AnthropicInstrumentor imported OK")
         AnthropicInstrumentor().instrument()
+        print("[langfuse] Anthropic SDK instrumented")
+
+        from langfuse import get_client
         client = get_client()
+        print(f"[langfuse] client created: {client is not None}")
         return client
     except ImportError as e:
         print(f"[langfuse] ImportError: {e}")
         return None
     except Exception as e:
-        print(f"[langfuse] Init failed: {e}")
+        print(f"[langfuse] Init failed: {type(e).__name__}: {e}")
         return None
 
 
