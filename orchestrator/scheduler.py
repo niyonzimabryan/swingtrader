@@ -55,7 +55,16 @@ class PipelineScheduler:
         self.scheduler.shutdown()
 
     async def _run_scan(self):
-        """Execute a full pipeline scan."""
+        """Execute a full pipeline scan. Skips weekends (markets closed)."""
+        from datetime import datetime
+        import pytz
+
+        et = pytz.timezone("America/New_York")
+        now_et = datetime.now(et)
+        if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
+            log.info("scheduled_scan_skipped", reason="weekend", day=now_et.strftime("%A"))
+            return
+
         try:
             log.info("scheduled_scan_start")
             import asyncio

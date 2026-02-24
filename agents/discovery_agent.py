@@ -75,12 +75,12 @@ class DiscoveryAgent(BaseAgent):
         if thinking_budget > 0:
             log.info("discovery_using_thinking", budget=thinking_budget)
             result = self.web_search.search_and_analyze_json_with_thinking(
-                system_prompt, user_prompt, model=model, max_searches=10,
+                system_prompt, user_prompt, model=model, max_searches=5,
                 budget_tokens=thinking_budget, max_tokens=max(16000, thinking_budget + 8192),
             )
         else:
             result = self.web_search.search_and_analyze_json(
-                system_prompt, user_prompt, model=model, max_searches=10, max_tokens=8192
+                system_prompt, user_prompt, model=model, max_searches=5, max_tokens=4096
             )
 
         if result.get("error"):

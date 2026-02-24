@@ -41,10 +41,16 @@ def _init_langfuse(settings):
         ).decode()
         os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = f"Authorization=Basic {auth_string}"
 
-        from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
+        # CRITICAL: get_client() MUST be called BEFORE instrument()
+        # get_client() sets up the TracerProvider with the correct HTTP exporter.
+        # If instrument() runs first, spans go to the default gRPC exporter
+        # which Langfuse rejects with 401.
         from langfuse import get_client
-        AnthropicInstrumentor().instrument()
         client = get_client()
+        client.auth_check()  # Fail fast if creds are wrong
+
+        from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
+        AnthropicInstrumentor().instrument()
         return client
     except ImportError as e:
         print(f"[langfuse] ImportError: {e}")

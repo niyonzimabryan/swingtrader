@@ -117,7 +117,7 @@ class WebResearchAgent(BaseAgent):
         )
 
         result = self.web_search_client.search_and_analyze_json(
-            system_prompt, user_prompt, model=model, max_searches=10, max_tokens=8192
+            system_prompt, user_prompt, model=model, max_searches=5, max_tokens=4096
         )
 
         log.info(

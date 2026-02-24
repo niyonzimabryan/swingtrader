@@ -258,7 +258,7 @@ class AnthropicClient:
         tools: list = None,
         budget_tokens: int = 10000,
         max_tokens: int = 16000,
-        max_tool_rounds: int = 15,
+        max_tool_rounds: int = 2,
     ) -> str:
         """
         Tool use + extended thinking combined.
@@ -266,7 +266,7 @@ class AnthropicClient:
         Used for discovery scan: web search + deep reasoning about which tickers to pursue.
         """
         if tools is None:
-            tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 10}]
+            tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]
 
         effective_max = max(max_tokens, budget_tokens + 8192)
         messages = [{"role": "user", "content": user_prompt}]
@@ -364,7 +364,7 @@ class AnthropicClient:
         tools: list = None,
         max_tokens: int = 8192,
         temperature: float = 0.3,
-        max_tool_rounds: int = 15,
+        max_tool_rounds: int = 2,
     ) -> str:
         """
         Completion with tool use (web_search_20250305).
@@ -373,7 +373,7 @@ class AnthropicClient:
         Returns final text response after all tool calls resolved.
         """
         if tools is None:
-            tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 10}]
+            tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]
 
         messages = [{"role": "user", "content": user_prompt}]
         log.info("claude_tool_call_start", model=model, prompt_len=len(user_prompt))
