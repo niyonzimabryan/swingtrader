@@ -46,11 +46,16 @@ class MemoGenerator:
             log.error("no_price_for_memo", ticker=ticker)
             return {}
 
+        # Derive direction
+        direction_raw = scoring_result.get("direction", "bullish")
+        direction = "short" if direction_raw == "bearish" else "long"
+
         # Compute trade parameters
         trade_params = self._compute_trade_params(
             current_price, atr, regime,
             scoring_result.get("final_score", 0),
             scoring_result.get("classification", "moderate"),
+            direction=direction,
         )
 
         # Generate thesis and bear case via Sonnet
@@ -64,10 +69,8 @@ class MemoGenerator:
         # Assemble memo data
         memo_data = {
             "ticker": ticker,
-            "direction": "long" if scoring_result.get("direction", "bullish") == "bullish" else (
-                "short" if scoring_result.get("direction") == "bearish" else "long"  # Phase 1 default: long
-            ),
-            "direction_raw": scoring_result.get("direction", "bullish"),
+            "direction": direction,
+            "direction_raw": direction_raw,
             "composite_score": scoring_result.get("final_score", 0),
             "classification": scoring_result.get("classification", "unknown"),
             "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -93,20 +96,31 @@ class MemoGenerator:
         return memo_data
 
     def _compute_trade_params(self, price: float, atr: float, regime: dict,
-                               score: float, classification: str) -> dict:
-        """Compute entry, stop-loss, targets, position size."""
-        # Entry: slight buffer above current price for limit order
-        entry_price = round(price * 1.001, 2)
+                               score: float, classification: str,
+                               direction: str = "long") -> dict:
+        """Compute entry, stop-loss, targets, position size. Direction-aware."""
+        # Entry: slight buffer for limit order (above for long, below for short)
+        if direction == "short":
+            entry_price = round(price * 0.999, 2)
+        else:
+            entry_price = round(price * 1.001, 2)
 
         # Stop-loss: max of default_stop and 2*ATR
         atr_stop_pct = (2 * atr / price) if price > 0 and atr > 0 else self.settings.default_stop_loss_pct
         stop_pct = max(self.settings.default_stop_loss_pct, atr_stop_pct)
         stop_pct = min(stop_pct, self.settings.max_stop_loss_pct)
-        stop_loss = round(entry_price * (1 - stop_pct), 2)
 
-        # Targets: 2:1 and 3:1 risk/reward
-        target_1 = round(entry_price * (1 + 2 * stop_pct), 2)
-        target_2 = round(entry_price * (1 + 3 * stop_pct), 2)
+        if direction == "short":
+            # Short: stop ABOVE entry, targets BELOW entry
+            stop_loss = round(entry_price * (1 + stop_pct), 2)
+            target_1 = round(entry_price * (1 - 2 * stop_pct), 2)
+            target_2 = round(entry_price * (1 - 3 * stop_pct), 2)
+        else:
+            # Long: stop BELOW entry, targets ABOVE entry
+            stop_loss = round(entry_price * (1 - stop_pct), 2)
+            target_1 = round(entry_price * (1 + 2 * stop_pct), 2)
+            target_2 = round(entry_price * (1 + 3 * stop_pct), 2)
+
         risk_reward = 2.0  # Minimum 2:1 by construction
 
         # Position sizing
@@ -128,14 +142,22 @@ class MemoGenerator:
         dollar_amount = self.settings.portfolio_value * position_pct
         shares = int(dollar_amount / entry_price) if entry_price > 0 else 0
 
+        # Target pct is always positive (the gain percentage)
+        if direction == "short":
+            t1_pct = round((1 - target_1 / entry_price) * 100, 1)
+            t2_pct = round((1 - target_2 / entry_price) * 100, 1)
+        else:
+            t1_pct = round((target_1 / entry_price - 1) * 100, 1)
+            t2_pct = round((target_2 / entry_price - 1) * 100, 1)
+
         return {
             "entry_price": entry_price,
             "stop_loss": stop_loss,
             "stop_pct": round(stop_pct * 100, 1),
             "target_1": target_1,
-            "target_1_pct": round((target_1 / entry_price - 1) * 100, 1),
+            "target_1_pct": t1_pct,
             "target_2": target_2,
-            "target_2_pct": round((target_2 / entry_price - 1) * 100, 1),
+            "target_2_pct": t2_pct,
             "risk_reward": round(risk_reward, 1),
             "position_pct": round(position_pct * 100, 1),
             "dollar_amount": round(dollar_amount, 2),
@@ -144,6 +166,7 @@ class MemoGenerator:
             "regime_multiplier": regime_multiplier,
             "conviction_multiplier": conviction_multiplier,
             "vol_adjustment": vol_adjustment,
+            "direction": direction,
         }
 
     def _generate_narratives(self, ticker, catalyst, fundamental, pattern, web_research, regime, scoring_result):

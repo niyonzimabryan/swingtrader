@@ -58,29 +58,51 @@ class AlpacaClient:
             log.error("limit_buy_failed", ticker=ticker, error=str(e))
             raise
 
-    def submit_stop_loss(self, ticker: str, qty: int, stop_price: float) -> str:
-        """Submit a stop-loss order. Returns order ID."""
+    def submit_stop_loss(self, ticker: str, qty: int, stop_price: float, direction: str = "long") -> str:
+        """Submit a stop-loss order. Direction-aware: SELL for long, BUY for short."""
+        side = OrderSide.BUY if direction == "short" else OrderSide.SELL
         if not self.client:
-            log.info("mock_stop_loss", ticker=ticker, qty=qty, price=stop_price)
+            log.info("mock_stop_loss", ticker=ticker, qty=qty, price=stop_price, direction=direction)
             return "mock_stop_id"
         try:
             order_data = StopOrderRequest(
                 symbol=ticker,
                 qty=qty,
-                side=OrderSide.SELL,
+                side=side,
                 type="stop",
                 time_in_force=TimeInForce.GTC,
                 stop_price=stop_price,
             )
             order = self.client.submit_order(order_data)
-            log.info("stop_loss_submitted", ticker=ticker, qty=qty, price=stop_price, order_id=str(order.id))
+            log.info("stop_loss_submitted", ticker=ticker, qty=qty, price=stop_price, side=side.value, order_id=str(order.id))
             return str(order.id)
         except Exception as e:
             log.error("stop_loss_failed", ticker=ticker, error=str(e))
             raise
 
+    def submit_limit_short_entry(self, ticker: str, qty: int, limit_price: float) -> str:
+        """Submit a limit sell to open a short position. DAY TIF."""
+        if not self.client:
+            log.info("mock_short_entry", ticker=ticker, qty=qty, price=limit_price)
+            return "mock_short_entry_id"
+        try:
+            order_data = LimitOrderRequest(
+                symbol=ticker,
+                qty=qty,
+                side=OrderSide.SELL,
+                type="limit",
+                time_in_force=TimeInForce.DAY,
+                limit_price=limit_price,
+            )
+            order = self.client.submit_order(order_data)
+            log.info("short_entry_submitted", ticker=ticker, qty=qty, price=limit_price, order_id=str(order.id))
+            return str(order.id)
+        except Exception as e:
+            log.error("short_entry_failed", ticker=ticker, error=str(e))
+            raise
+
     def submit_limit_sell(self, ticker: str, qty: int, limit_price: float) -> str:
-        """Submit a limit sell order."""
+        """Submit a limit sell order (long exit / target). GTC TIF."""
         if not self.client:
             return "mock_sell_id"
         try:
@@ -96,6 +118,26 @@ class AlpacaClient:
             return str(order.id)
         except Exception as e:
             log.error("limit_sell_failed", ticker=ticker, error=str(e))
+            raise
+
+    def submit_limit_cover(self, ticker: str, qty: int, limit_price: float) -> str:
+        """Submit a limit buy to cover a short position (target exit). GTC TIF."""
+        if not self.client:
+            return "mock_cover_id"
+        try:
+            order_data = LimitOrderRequest(
+                symbol=ticker,
+                qty=qty,
+                side=OrderSide.BUY,
+                type="limit",
+                time_in_force=TimeInForce.GTC,
+                limit_price=limit_price,
+            )
+            order = self.client.submit_order(order_data)
+            log.info("limit_cover_submitted", ticker=ticker, qty=qty, price=limit_price, order_id=str(order.id))
+            return str(order.id)
+        except Exception as e:
+            log.error("limit_cover_failed", ticker=ticker, error=str(e))
             raise
 
     def get_positions_detail(self) -> list[dict]:

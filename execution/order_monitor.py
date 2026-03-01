@@ -129,6 +129,7 @@ class OrderMonitor:
         """Handle entry order fill — update trade, notify, place targets."""
         actual_price = fill_info.get("filled_avg_price", trade.entry_price)
         filled_qty = fill_info.get("filled_qty", trade.shares)
+        direction = trade.direction or "long"
 
         trade.entry_price = actual_price
         trade.shares = filled_qty
@@ -136,34 +137,39 @@ class OrderMonitor:
         trade.status = "open"
         session.commit()
 
-        log.info("entry_filled", ticker=ticker, price=actual_price, shares=filled_qty)
+        log.info("entry_filled", ticker=ticker, price=actual_price, shares=filled_qty, direction=direction)
 
         # Notify operator
         if self.nm:
             position_pct = trade.position_pct or 0
+            side = "sell_short" if direction == "short" else "buy"
             await self.nm.order_filled(
                 ticker=ticker,
                 shares=filled_qty,
                 price=actual_price,
-                side="buy",
+                side=side,
                 stop_loss=trade.stop_loss,
                 position_pct=position_pct,
             )
 
-        # Place target limit sells
+        # Place target orders (direction-aware)
         await self._place_target_orders(trade, ticker, filled_qty, session)
 
     async def _place_target_orders(self, trade: Trade, ticker: str, shares: int, session):
-        """Place target 1 and target 2 limit sell orders after entry fill."""
+        """Place target orders after entry fill. Direction-aware."""
         target_ids = []
+        direction = trade.direction or "long"
 
         # Target 1: 50% of position
         t1_shares = shares // 2
         if t1_shares > 0 and trade.target_1 > 0:
             try:
-                t1_id = self.alpaca.submit_limit_sell(ticker, t1_shares, trade.target_1)
+                if direction == "short":
+                    t1_id = self.alpaca.submit_limit_cover(ticker, t1_shares, trade.target_1)
+                else:
+                    t1_id = self.alpaca.submit_limit_sell(ticker, t1_shares, trade.target_1)
                 target_ids.append(f"t1:{t1_id}")
-                log.info("target_1_order_placed", ticker=ticker, shares=t1_shares, price=trade.target_1)
+                log.info("target_1_order_placed", ticker=ticker, shares=t1_shares, price=trade.target_1, direction=direction)
             except Exception as e:
                 log.error("target_1_order_failed", ticker=ticker, error=str(e))
 
@@ -171,9 +177,12 @@ class OrderMonitor:
         t2_shares = shares - t1_shares
         if t2_shares > 0 and trade.target_2 > 0:
             try:
-                t2_id = self.alpaca.submit_limit_sell(ticker, t2_shares, trade.target_2)
+                if direction == "short":
+                    t2_id = self.alpaca.submit_limit_cover(ticker, t2_shares, trade.target_2)
+                else:
+                    t2_id = self.alpaca.submit_limit_sell(ticker, t2_shares, trade.target_2)
                 target_ids.append(f"t2:{t2_id}")
-                log.info("target_2_order_placed", ticker=ticker, shares=t2_shares, price=trade.target_2)
+                log.info("target_2_order_placed", ticker=ticker, shares=t2_shares, price=trade.target_2, direction=direction)
             except Exception as e:
                 log.error("target_2_order_failed", ticker=ticker, error=str(e))
 
@@ -201,9 +210,14 @@ class OrderMonitor:
     async def _handle_stop_triggered(self, trade: Trade, ticker: str, fill_info: dict, session):
         """Handle stop-loss fill — close trade, compute P&L, notify."""
         exit_price = fill_info.get("filled_avg_price", trade.stop_loss)
+        direction = trade.direction or "long"
 
-        pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
-        pnl_abs = (exit_price - trade.entry_price) * trade.shares
+        if direction == "short":
+            pnl_pct = ((trade.entry_price - exit_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
+            pnl_abs = (trade.entry_price - exit_price) * trade.shares
+        else:
+            pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
+            pnl_abs = (exit_price - trade.entry_price) * trade.shares
 
         trade.exit_price = exit_price
         trade.exit_date = datetime.utcnow()
@@ -232,9 +246,14 @@ class OrderMonitor:
         """Handle profit target fill — partial or full exit."""
         exit_price = fill_info.get("filled_avg_price", 0)
         filled_qty = fill_info.get("filled_qty", 0)
+        direction = trade.direction or "long"
 
-        pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
-        pnl_abs = (exit_price - trade.entry_price) * filled_qty
+        if direction == "short":
+            pnl_pct = ((trade.entry_price - exit_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
+            pnl_abs = (trade.entry_price - exit_price) * filled_qty
+        else:
+            pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
+            pnl_abs = (exit_price - trade.entry_price) * filled_qty
 
         # Check if this is partial (target_1) or full exit (target_2 or all shares sold)
         remaining_position = self.alpaca.get_positions_detail()
@@ -285,8 +304,13 @@ class OrderMonitor:
                 current_price = p.get("current_price", trade.entry_price)
                 break
 
-        pnl_pct = ((current_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
-        pnl_abs = (current_price - trade.entry_price) * trade.shares
+        direction = trade.direction or "long"
+        if direction == "short":
+            pnl_pct = ((trade.entry_price - current_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
+            pnl_abs = (trade.entry_price - current_price) * trade.shares
+        else:
+            pnl_pct = ((current_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
+            pnl_abs = (current_price - trade.entry_price) * trade.shares
 
         trade.exit_price = current_price
         trade.exit_date = datetime.utcnow()
@@ -302,8 +326,9 @@ class OrderMonitor:
         self._cancel_target_orders(trade)
 
         if self.nm:
+            dir_label = "SHORT" if direction == "short" else "LONG"
             await self.nm.system_message(
-                f"Time exit: {ticker} closed after {days_held} days. "
+                f"Time exit: {ticker} ({dir_label}) closed after {days_held} days. "
                 f"P&L: {pnl_pct:+.2f}% (${pnl_abs:+,.2f})"
             )
 

@@ -144,3 +144,159 @@ class NotificationManager:
         """Send a generic system notification."""
         text = f"ℹ️ {escape_md(message)}"
         await self.mq.send(self.chat_id, text)
+
+    # ── Position Monitor Alerts ──
+
+    async def position_stop_breached(
+        self, ticker: str, current_price: float, stop_price: float,
+        pnl_pct: float, pnl_abs: float, direction: str, trade_id: int,
+    ):
+        """Alert: price has breached the stop-loss level."""
+        from bot.keyboards import position_stop_keyboard
+        dir_label = "SHORT" if direction == "short" else "LONG"
+        text = (
+            f"🔴 *STOP BREACHED: {escape_md(ticker)}* \\({escape_md(dir_label)}\\)\n\n"
+            f"Price: `${current_price:,.2f}` — Stop: `${stop_price:,.2f}`\n"
+            f"P&L: `{pnl_pct:+.1f}%` \\(`${pnl_abs:+,.2f}`\\)\n\n"
+            f"If Alpaca stop order didn't fire, close manually now\\."
+        )
+        keyboard = position_stop_keyboard(ticker, trade_id)
+        await self.mq.send(self.chat_id, text, reply_markup=keyboard)
+
+    async def position_target_approaching(
+        self, ticker: str, target_num: int, current_price: float,
+        target_price: float, distance_pct: float, pnl_pct: float,
+        pnl_abs: float, trade_id: int,
+    ):
+        """Alert: price approaching a profit target."""
+        from bot.keyboards import position_target_keyboard
+        text = (
+            f"📈 *{escape_md(ticker)} approaching T{target_num}*\n\n"
+            f"Current: `${current_price:,.2f}` \\| T{target_num}: `${target_price:,.2f}` "
+            f"\\({distance_pct:.1f}% away\\)\n"
+            f"Open P&L: `{pnl_pct:+.1f}%` \\(`${pnl_abs:+,.2f}`\\)"
+        )
+        keyboard = position_target_keyboard(ticker, trade_id, target_num)
+        await self.mq.send(self.chat_id, text, reply_markup=keyboard)
+
+    async def position_target_hit(
+        self, ticker: str, target_num: int, current_price: float,
+        target_price: float, pnl_pct: float, pnl_abs: float,
+        entry_price: float, trade_id: int,
+    ):
+        """Alert: profit target hit with action buttons."""
+        from bot.keyboards import position_target_hit_keyboard
+        text = (
+            f"🎯 *{escape_md(ticker)} hit T{target_num}\\!*\n\n"
+            f"Current: `${current_price:,.2f}` \\| T{target_num} was: `${target_price:,.2f}`\n"
+            f"Open P&L: `{pnl_pct:+.1f}%` \\(`${pnl_abs:+,.2f}`\\)\n"
+        )
+        if target_num == 1:
+            text += (
+                f"\nRecommended: Sell 50%, move stop to breakeven "
+                f"\\(`${entry_price:,.2f}`\\)"
+            )
+        keyboard = position_target_hit_keyboard(ticker, trade_id, target_num)
+        await self.mq.send(self.chat_id, text, reply_markup=keyboard)
+
+    async def position_time_expiring(
+        self, ticker: str, days_held: int, max_days: int,
+        pnl_pct: float, pnl_abs: float, trade_id: int,
+    ):
+        """Alert: position approaching max holding period."""
+        from bot.keyboards import position_time_keyboard
+        remaining = max_days - days_held
+        text = (
+            f"⏰ *{escape_md(ticker)}: {days_held} of {max_days} max hold days*\n\n"
+            f"Current P&L: `{pnl_pct:+.1f}%` \\(`${pnl_abs:+,.2f}`\\)\n"
+            f"This position expires in {remaining} trading days\\."
+        )
+        keyboard = position_time_keyboard(ticker, trade_id)
+        await self.mq.send(self.chat_id, text, reply_markup=keyboard)
+
+    async def position_time_expired(
+        self, ticker: str, days_held: int, max_days: int,
+        pnl_pct: float, pnl_abs: float, trade_id: int,
+    ):
+        """Alert: position at or past max holding period."""
+        from bot.keyboards import position_time_expired_keyboard
+        text = (
+            f"🕐 *{escape_md(ticker)}: MAX HOLD REACHED \\({days_held} days\\)*\n\n"
+            f"Current P&L: `{pnl_pct:+.1f}%` \\(`${pnl_abs:+,.2f}`\\)\n"
+            f"System will auto\\-close at next market open unless overridden\\."
+        )
+        keyboard = position_time_expired_keyboard(ticker, trade_id)
+        await self.mq.send(self.chat_id, text, reply_markup=keyboard)
+
+    async def position_profit_giveback(
+        self, ticker: str, peak_pnl_pct: float, current_pnl_pct: float,
+        giveback_pct: float, trade_id: int,
+    ):
+        """Alert: position giving back gains from peak."""
+        from bot.keyboards import position_giveback_keyboard
+        text = (
+            f"📉 *{escape_md(ticker)} giving back gains*\n\n"
+            f"Peak: `{peak_pnl_pct:+.1f}%` → Current: `{current_pnl_pct:+.1f}%` "
+            f"\\(gave back {giveback_pct:.1f}%\\)\n"
+            f"Consider: trailing stop or partial profit\\-taking"
+        )
+        keyboard = position_giveback_keyboard(ticker, trade_id)
+        await self.mq.send(self.chat_id, text, reply_markup=keyboard)
+
+    # ── Portfolio Threshold Alerts ──
+
+    async def portfolio_strong_day(self, pnl_today_pct: float):
+        """Alert: portfolio up >2% in a single day."""
+        text = (
+            f"🟢 *Strong day: {escape_md(f'+{pnl_today_pct:.1f}')}%*\n\n"
+            f"Consider taking partial profits on extended positions\\."
+        )
+        await self.mq.send(self.chat_id, text)
+
+    async def portfolio_rough_day(self, pnl_today_pct: float):
+        """Alert: portfolio down >2% in a single day."""
+        text = (
+            f"🔴 *Rough day: {escape_md(f'{pnl_today_pct:.1f}')}%*\n\n"
+            f"All stops are active\\. No action needed unless a stop triggers\\."
+        )
+        await self.mq.send(self.chat_id, text)
+
+    async def portfolio_drawdown_warning(self, drawdown_pct: float):
+        """Alert: portfolio drawdown from peak >5%."""
+        text = (
+            f"⚠️ *Portfolio drawdown: {escape_md(f'-{drawdown_pct:.1f}')}% from peak*\n\n"
+            f"Review all positions\\. Consider reducing exposure\\."
+        )
+        await self.mq.send(self.chat_id, text)
+
+    async def portfolio_circuit_breaker(self, drawdown_pct: float):
+        """Alert: portfolio drawdown >10% — circuit breaker."""
+        text = (
+            f"🚨 *CIRCUIT BREAKER: {escape_md(f'-{drawdown_pct:.1f}')}% drawdown*\n\n"
+            f"System halting new trades for 5 days per risk rules\\.\n"
+            f"Review all positions immediately\\."
+        )
+        await self.mq.send(self.chat_id, text)
+
+    # ── Position Threshold Alerts ──
+
+    async def position_big_gain(self, ticker: str, pnl_pct: float, trade_id: int):
+        """Alert: single position up >10%."""
+        from bot.keyboards import position_target_keyboard
+        text = (
+            f"🚀 *{escape_md(ticker)} up {escape_md(f'+{pnl_pct:.1f}')}%*\n\n"
+            f"Consider partial profit\\-taking or tightening stop\\."
+        )
+        keyboard = position_target_keyboard(ticker, trade_id, 1)
+        await self.mq.send(self.chat_id, text, reply_markup=keyboard)
+
+    async def position_near_stop(self, ticker: str, pnl_pct: float, stop_price: float, trade_id: int):
+        """Alert: single position down >5%, approaching stop."""
+        from bot.keyboards import position_stop_keyboard
+        text = (
+            f"⚠️ *{escape_md(ticker)} down {escape_md(f'{pnl_pct:.1f}')}%*\n\n"
+            f"Approaching stop\\-loss at `${stop_price:,.2f}`\\.\n"
+            f"Verify stop order is active on Alpaca\\."
+        )
+        keyboard = position_stop_keyboard(ticker, trade_id)
+        await self.mq.send(self.chat_id, text, reply_markup=keyboard)

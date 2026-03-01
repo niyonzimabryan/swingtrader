@@ -65,8 +65,12 @@ class Settings(BaseSettings):
     discovery_thinking_budget: int = 0      # Thinking tokens for discovery scan (was 10000; search quality drives discovery, not thinking)
     opus_thinking_budget: int = 16000       # Thinking tokens for Opus evaluation
 
-    # --- V2: Deep Research (Phase C — empty for now) ---
+    # --- Gemini Flash Screening (Tier 2) ---
     gemini_api_key: str = ""
+    gemini_flash_model: str = "gemini-2.0-flash"
+    gemini_flash_escalation_threshold: float = 0.50  # Tickers scoring above this escalate to Sonnet
+
+    # --- V2: Deep Research (Phase C) ---
     openai_api_key: str = ""
     deep_research_provider: str = "gemini"  # "gemini" or "openai"
     deep_research_score_threshold: float = 0.75

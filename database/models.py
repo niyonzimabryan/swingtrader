@@ -158,6 +158,13 @@ class Trade(Base):
     alpaca_entry_order_id = Column(String(100), nullable=True)
     alpaca_stop_order_id = Column(String(100), nullable=True)
     operator_notes = Column(Text, default="")
+    # Position monitoring fields
+    peak_price = Column(Float, nullable=True)
+    t1_hit = Column(Boolean, default=False)
+    t2_hit = Column(Boolean, default=False)
+    t1_approaching_sent = Column(Boolean, default=False)
+    time_warning_sent = Column(Boolean, default=False)
+    drawdown_alert_sent = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

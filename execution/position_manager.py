@@ -62,19 +62,25 @@ class PositionManager:
             "vol_adjustment": vol_adjustment,
         }
 
-    def calculate_stop_loss(self, entry_price: float, ticker: str) -> float:
-        """Calculate stop-loss price."""
+    def calculate_stop_loss(self, entry_price: float, ticker: str, direction: str = "long") -> float:
+        """Calculate stop-loss price. Direction-aware."""
         atr = self.market_data.get_atr(ticker)
         atr_stop_pct = (2 * atr / entry_price) if entry_price > 0 and atr > 0 else self.settings.default_stop_loss_pct
         stop_pct = max(self.settings.default_stop_loss_pct, atr_stop_pct)
         stop_pct = min(stop_pct, self.settings.max_stop_loss_pct)
+        if direction == "short":
+            return round(entry_price * (1 + stop_pct), 2)
         return round(entry_price * (1 - stop_pct), 2)
 
-    def calculate_targets(self, entry_price: float, stop_loss: float) -> dict:
-        """Calculate profit targets based on risk/reward."""
-        risk = entry_price - stop_loss
-        target_1 = round(entry_price + 2 * risk, 2)  # 2:1 R/R
-        target_2 = round(entry_price + 3 * risk, 2)  # 3:1 R/R
+    def calculate_targets(self, entry_price: float, stop_loss: float, direction: str = "long") -> dict:
+        """Calculate profit targets based on risk/reward. Direction-aware."""
+        risk = abs(entry_price - stop_loss)
+        if direction == "short":
+            target_1 = round(entry_price - 2 * risk, 2)  # 2:1 R/R
+            target_2 = round(entry_price - 3 * risk, 2)  # 3:1 R/R
+        else:
+            target_1 = round(entry_price + 2 * risk, 2)  # 2:1 R/R
+            target_2 = round(entry_price + 3 * risk, 2)  # 3:1 R/R
         risk_reward = 2.0 if risk > 0 else 0
         return {
             "target_1": target_1,

@@ -58,6 +58,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await execute_trade(query, context, int(data.split("_")[2]))
     elif data.startswith("cancel_"):
         await query.edit_message_text("Action cancelled.")
+    # Position monitor callbacks
+    elif data.startswith("pos_close_"):
+        await handle_pos_close(query, context, data.split("pos_close_")[1])
+    elif data.startswith("pos_sell50_"):
+        await handle_pos_sell50(query, context, data.split("pos_sell50_")[1])
+    elif data.startswith("pos_t1exit_"):
+        await handle_pos_t1exit(query, context, data.split("pos_t1exit_")[1])
+    elif data.startswith("pos_hold_"):
+        await handle_pos_hold(query, context, int(data.split("pos_hold_")[1]))
+    elif data.startswith("pos_extend_"):
+        await handle_pos_extend(query, context, int(data.split("pos_extend_")[1]))
 
 
 async def handle_approve(query, context, memo_id: int):
@@ -381,3 +392,143 @@ async def handle_view_memo(query, context, memo_id: int):
 async def execute_trade(query, context, memo_id: int):
     """Confirm and execute an approved trade."""
     await handle_approve(query, context, memo_id)
+
+
+# ── Position Monitor Callback Handlers ──
+
+async def handle_pos_close(query, context, ticker: str):
+    """Close an entire position from position monitor alert."""
+    pipeline = context.bot_data.get("pipeline")
+    if pipeline and pipeline.alpaca:
+        try:
+            result = pipeline.alpaca.close_position(ticker)
+            if result.get("success"):
+                await query.edit_message_reply_markup(reply_markup=None)
+                await query.message.reply_text(f"✅ {ticker} position closed.", parse_mode=None)
+            else:
+                await query.message.reply_text(
+                    f"❌ Failed to close {ticker}: {result.get('error', 'unknown')}", parse_mode=None,
+                )
+        except Exception as e:
+            await query.message.reply_text(f"❌ Error closing {ticker}: {str(e)[:200]}", parse_mode=None)
+    else:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(f"✅ {ticker} close acknowledged (no execution engine).", parse_mode=None)
+
+
+async def handle_pos_sell50(query, context, ticker: str):
+    """Sell/cover 50% of a position. Direction-aware."""
+    pipeline = context.bot_data.get("pipeline")
+    if pipeline and pipeline.alpaca:
+        try:
+            positions = pipeline.alpaca.get_positions_detail()
+            pos = next((p for p in positions if p["ticker"] == ticker), None)
+            if not pos:
+                await query.message.reply_text(f"⚠️ No open position in {ticker}.", parse_mode=None)
+                return
+            reduce_qty = pos["qty"] // 2
+            if reduce_qty <= 0:
+                await query.message.reply_text(f"⚠️ Position too small to split (only {pos['qty']} shares).", parse_mode=None)
+                return
+            is_short = pos.get("side") == "short"
+            if is_short:
+                pipeline.alpaca.submit_limit_cover(ticker, reduce_qty, pos["current_price"])
+                action = "Covering"
+            else:
+                pipeline.alpaca.submit_limit_sell(ticker, reduce_qty, pos["current_price"])
+                action = "Selling"
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text(
+                f"✅ {action} {reduce_qty} of {pos['qty']} shares of {ticker} @ ${pos['current_price']:,.2f}.",
+                parse_mode=None,
+            )
+        except Exception as e:
+            await query.message.reply_text(f"❌ Failed: {str(e)[:200]}", parse_mode=None)
+    else:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(f"✅ 50% reduce for {ticker} acknowledged (no execution engine).", parse_mode=None)
+
+
+async def handle_pos_t1exit(query, context, ticker: str):
+    """Reduce 50% and move stop to breakeven after T1 hit. Direction-aware."""
+    from database.models import Trade, Ticker as TickerModel
+
+    pipeline = context.bot_data.get("pipeline")
+    if not pipeline or not pipeline.alpaca:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(f"✅ T1 exit for {ticker} acknowledged (no execution engine).", parse_mode=None)
+        return
+
+    try:
+        positions = pipeline.alpaca.get_positions_detail()
+        pos = next((p for p in positions if p["ticker"] == ticker), None)
+        if not pos:
+            await query.message.reply_text(f"⚠️ No open position in {ticker}.", parse_mode=None)
+            return
+
+        reduce_qty = pos["qty"] // 2
+        if reduce_qty <= 0:
+            await query.message.reply_text(f"⚠️ Position too small to split.", parse_mode=None)
+            return
+
+        is_short = pos.get("side") == "short"
+
+        # Reduce 50% (sell for long, cover for short)
+        if is_short:
+            pipeline.alpaca.submit_limit_cover(ticker, reduce_qty, pos["current_price"])
+        else:
+            pipeline.alpaca.submit_limit_sell(ticker, reduce_qty, pos["current_price"])
+
+        # Move stop to breakeven
+        with get_session() as session:
+            trade = session.query(Trade).join(TickerModel).filter(
+                Trade.status == "open",
+                TickerModel.symbol == ticker,
+            ).first()
+            if trade and trade.alpaca_stop_order_id:
+                direction = trade.direction or "long"
+                # Cancel old stop
+                pipeline.alpaca.cancel_order(trade.alpaca_stop_order_id)
+                # Place new stop at entry price (breakeven)
+                remaining = pos["qty"] - reduce_qty
+                new_stop_id = pipeline.alpaca.submit_stop_loss(
+                    ticker, remaining, trade.entry_price, direction=direction,
+                )
+                trade.alpaca_stop_order_id = new_stop_id
+                trade.stop_loss = trade.entry_price
+
+        action = "Covered" if is_short else "Sold"
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            f"✅ {ticker}: {action} {reduce_qty} shares, stop moved to breakeven (${pos['entry_price']:,.2f}).",
+            parse_mode=None,
+        )
+    except Exception as e:
+        await query.message.reply_text(f"❌ T1 exit failed: {str(e)[:200]}", parse_mode=None)
+
+
+async def handle_pos_hold(query, context, trade_id: int):
+    """Acknowledge hold — dismiss the alert."""
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text("✅ Holding. Alert dismissed.", parse_mode=None)
+
+
+async def handle_pos_extend(query, context, trade_id: int):
+    """Extend max holding period by 5 days."""
+    from database.models import Trade
+    with get_session() as session:
+        trade = session.query(Trade).filter_by(id=trade_id).first()
+        if trade and trade.entry_date:
+            # Reset the time warning so it can fire again
+            trade.time_warning_sent = False
+            # Shift entry date forward by 5 days to effectively extend hold
+            from datetime import timedelta
+            trade.entry_date = trade.entry_date + timedelta(days=5)
+            ticker = trade.ticker.symbol if trade.ticker else "?"
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text(
+                f"✅ {ticker} extended by 5 days. New expiry in ~{(trade.entry_date + timedelta(days=20) - datetime.utcnow()).days} days.",
+                parse_mode=None,
+            )
+        else:
+            await query.message.reply_text("⚠️ Trade not found.", parse_mode=None)

@@ -47,6 +47,24 @@ def _run_migrations(eng):
                 conn.commit()
             log.info("migration_applied", migration="add_memo_data_json_to_memos")
 
+    # v3: Add position monitoring columns to trades table
+    if "trades" in inspector.get_table_names():
+        columns = [c["name"] for c in inspector.get_columns("trades")]
+        new_cols = {
+            "peak_price": "FLOAT",
+            "t1_hit": "BOOLEAN DEFAULT 0",
+            "t2_hit": "BOOLEAN DEFAULT 0",
+            "t1_approaching_sent": "BOOLEAN DEFAULT 0",
+            "time_warning_sent": "BOOLEAN DEFAULT 0",
+            "drawdown_alert_sent": "BOOLEAN DEFAULT 0",
+        }
+        with eng.connect() as conn:
+            for col_name, col_type in new_cols.items():
+                if col_name not in columns:
+                    conn.execute(text(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}"))
+                    log.info("migration_applied", migration=f"add_{col_name}_to_trades")
+            conn.commit()
+
 
 @contextmanager
 def get_session() -> Session:

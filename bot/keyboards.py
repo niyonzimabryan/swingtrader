@@ -94,3 +94,82 @@ def close_confirm_keyboard(ticker: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("❌ Cancel", callback_data="close_cancel"),
         ],
     ])
+
+
+# ── Position Monitor Keyboards ──
+
+def position_stop_keyboard(ticker: str, trade_id: int) -> InlineKeyboardMarkup:
+    """Keyboard for stop-loss breach alert."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Close Now ✅", callback_data=f"pos_close_{ticker}"),
+            InlineKeyboardButton("Hold (Override) ⚡", callback_data=f"pos_hold_{trade_id}"),
+        ],
+    ])
+
+
+def position_target_keyboard(ticker: str, trade_id: int, target_num: int) -> InlineKeyboardMarkup:
+    """Keyboard for target approaching alert."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(f"Sell 50% at T{target_num} ✅", callback_data=f"pos_sell50_{ticker}"),
+            InlineKeyboardButton("Hold ✅", callback_data=f"pos_hold_{trade_id}"),
+        ],
+        [
+            InlineKeyboardButton("Close All Now 🔴", callback_data=f"pos_close_{ticker}"),
+        ],
+    ])
+
+
+def position_target_hit_keyboard(ticker: str, trade_id: int, target_num: int) -> InlineKeyboardMarkup:
+    """Keyboard for target hit alert."""
+    if target_num == 1:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Sell 50% + Move Stop ✅", callback_data=f"pos_t1exit_{ticker}"),
+                InlineKeyboardButton("Sell 50% Only ✅", callback_data=f"pos_sell50_{ticker}"),
+            ],
+            [
+                InlineKeyboardButton("Hold All ✅", callback_data=f"pos_hold_{trade_id}"),
+                InlineKeyboardButton("Close All 🔴", callback_data=f"pos_close_{ticker}"),
+            ],
+        ])
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Close All ✅", callback_data=f"pos_close_{ticker}"),
+            InlineKeyboardButton("Hold ✅", callback_data=f"pos_hold_{trade_id}"),
+        ],
+    ])
+
+
+def position_time_keyboard(ticker: str, trade_id: int) -> InlineKeyboardMarkup:
+    """Keyboard for time expiring alert."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Close Now ✅", callback_data=f"pos_close_{ticker}"),
+            InlineKeyboardButton("Extend 5 Days ✅", callback_data=f"pos_extend_{trade_id}"),
+        ],
+        [
+            InlineKeyboardButton("Let Expire ✅", callback_data=f"pos_hold_{trade_id}"),
+        ],
+    ])
+
+
+def position_time_expired_keyboard(ticker: str, trade_id: int) -> InlineKeyboardMarkup:
+    """Keyboard for time expired alert."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Confirm Close ✅", callback_data=f"pos_close_{ticker}"),
+            InlineKeyboardButton("Override: Extend ⚡", callback_data=f"pos_extend_{trade_id}"),
+        ],
+    ])
+
+
+def position_giveback_keyboard(ticker: str, trade_id: int) -> InlineKeyboardMarkup:
+    """Keyboard for profit giveback alert."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Sell 50% ✅", callback_data=f"pos_sell50_{ticker}"),
+            InlineKeyboardButton("Hold ✅", callback_data=f"pos_hold_{trade_id}"),
+        ],
+    ])

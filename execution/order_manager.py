@@ -87,23 +87,27 @@ class OrderManager:
             log.warning("trade_blocked_by_risk", ticker=ticker, reasons=risk_result["reasons"])
             return {"success": False, "error": " | ".join(risk_result["reasons"])}
 
-        # Submit limit buy
+        # Submit entry order (direction-aware)
         shares = trade_params.get("shares", 0)
         entry_price = trade_params.get("entry_price", 0)
         stop_loss = trade_params.get("stop_loss", 0)
+        direction = trade_params.get("direction", "long")
 
         if shares <= 0 or entry_price <= 0:
             return {"success": False, "error": "Invalid trade parameters (shares or price <= 0)"}
 
         try:
-            entry_order_id = self.alpaca.submit_limit_buy(ticker, shares, entry_price)
+            if direction == "short":
+                entry_order_id = self.alpaca.submit_limit_short_entry(ticker, shares, entry_price)
+            else:
+                entry_order_id = self.alpaca.submit_limit_buy(ticker, shares, entry_price)
         except Exception as e:
             return {"success": False, "error": f"Order submission failed: {str(e)}"}
 
-        # Submit stop-loss
+        # Submit stop-loss (direction-aware)
         stop_order_id = ""
         try:
-            stop_order_id = self.alpaca.submit_stop_loss(ticker, shares, stop_loss)
+            stop_order_id = self.alpaca.submit_stop_loss(ticker, shares, stop_loss, direction=direction)
         except Exception as e:
             log.error("stop_loss_placement_failed", ticker=ticker, error=str(e))
 
@@ -113,7 +117,7 @@ class OrderManager:
                 trade = Trade(
                     ticker_id=ticker_id,
                     memo_id=memo_id,
-                    direction="long",
+                    direction=direction,
                     entry_price=entry_price,
                     entry_date=datetime.utcnow(),
                     shares=shares,

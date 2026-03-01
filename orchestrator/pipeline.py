@@ -23,6 +23,8 @@ from agents.pattern_agent import PatternAgent
 from agents.web_research_agent import WebResearchAgent
 from agents.discovery_agent import DiscoveryAgent, DiscoveryOutput
 from agents.deep_research_agent import DeepResearchAgent
+from scanning.structured_scanner import StructuredScanner, ScanResult as StructuredScanResult
+from screening.gemini_screener import GeminiScreener, GeminiBatchResult
 from scoring.engine import ScoringEngine
 from memo.generator import MemoGenerator
 from execution.alpaca_client import AlpacaClient
@@ -115,6 +117,18 @@ class TradingPipeline:
             self.deep_research_agent = DeepResearchAgent(settings, dr_client, escalation)
             log.info("deep_research_agent_initialized", provider=settings.deep_research_provider)
 
+        # Initialize Tier 1 structured scanner (free, rules-based)
+        news_data = None
+        if settings.finnhub_api_key:
+            from data.news_data import NewsDataAdapter
+            news_data = NewsDataAdapter(settings.finnhub_api_key)
+        self.structured_scanner = StructuredScanner(settings, news_data)
+
+        # Initialize Tier 2 Gemini Flash screener (web research + preliminary scoring)
+        self.gemini_screener = GeminiScreener(settings)
+        if self.gemini_screener.is_available:
+            log.info("gemini_screener_initialized", model=settings.gemini_flash_model)
+
         # Initialize execution
         self.alpaca = AlpacaClient(settings.alpaca_api_key, settings.alpaca_secret_key)
         self.risk_manager = RiskManager(settings)
@@ -161,11 +175,52 @@ class TradingPipeline:
 
     def _run_full_scan_inner(self, run_start, scan_session_id):
         """Inner scan logic wrapped by Langfuse session context."""
-        # 1. Update macro regime
+        # 1. Tier 1: Structured scan (free, rules-based) — flags tickers with catalysts
+        structured_result = StructuredScanResult()
+        try:
+            structured_result = self.structured_scanner.scan(UNIVERSE)
+            log.info(
+                "tier1_scan_complete",
+                flagged=len(structured_result.flagged),
+                duration_s=structured_result.scan_duration_s,
+            )
+        except Exception as e:
+            log.error("tier1_scan_failed", error=str(e))
+
+        # 2. Tier 2: Gemini Flash screening of flagged tickers (web research + scoring)
+        gemini_result = GeminiBatchResult()
+        if structured_result.flagged and self.gemini_screener.is_available:
+            try:
+                # Build batch input from Tier 1 flagged tickers
+                batch_input = []
+                for flagged in structured_result.flagged:
+                    catalyst_context = ", ".join(flagged.catalysts)
+                    if flagged.change_pct:
+                        catalyst_context += f" | Price change: {flagged.change_pct:+.1f}%"
+                    if flagged.volume_ratio:
+                        catalyst_context += f" | Volume: {flagged.volume_ratio:.1f}x avg"
+                    if flagged.earnings_date:
+                        catalyst_context += f" | Earnings: {flagged.earnings_date}"
+                    batch_input.append({
+                        "symbol": flagged.symbol,
+                        "catalyst_context": catalyst_context,
+                    })
+
+                gemini_result = self.gemini_screener.screen_batch(batch_input)
+                log.info(
+                    "tier2_screen_complete",
+                    screened=gemini_result.total_screened,
+                    escalated=len(gemini_result.escalated),
+                    duration_s=gemini_result.duration_s,
+                )
+            except Exception as e:
+                log.error("tier2_screen_failed", error=str(e))
+
+        # 3. Update macro regime
         regime_output = self.macro_agent.analyze()
         regime = regime_output.raw_data
 
-        # 2. Discovery Agent — find new ideas via web search
+        # 4. Discovery Agent — find new ideas via web search
         discovery_output = DiscoveryOutput()
         if self.discovery_agent:
             try:
@@ -175,11 +230,13 @@ class TradingPipeline:
             except Exception as e:
                 log.error("discovery_failed", error=str(e))
 
-        # 3. Build merged scan list (priority: discovery > watchlist > universe)
-        scan_list = self._build_scan_list(discovery_output)
+        # 5. Build merged scan list (priority: tier2_escalated > discovery > watchlist > universe)
+        scan_list = self._build_scan_list(discovery_output, structured_result, gemini_result)
         log.info(
             "scan_list_built",
             total=len(scan_list),
+            tier2=sum(1 for s in scan_list if s.source == "tier2_gemini"),
+            tier1=sum(1 for s in scan_list if s.source == "tier1_scan"),
             discovery=sum(1 for s in scan_list if s.source == "discovery"),
             watchlist=sum(1 for s in scan_list if s.source == "watchlist"),
             universe=sum(1 for s in scan_list if s.source == "universe"),
@@ -258,13 +315,62 @@ class TradingPipeline:
         except Exception as e:
             log.error("scan_notification_failed", error=str(e))
 
-    def _build_scan_list(self, discovery_output: DiscoveryOutput) -> list:
+    def _build_scan_list(self, discovery_output: DiscoveryOutput, structured_result: StructuredScanResult = None, gemini_result: GeminiBatchResult = None) -> list:
         """
-        Merge discovery + watchlist + universe into a deduplicated scan list.
-        Priority: discovery > watchlist > universe (first seen wins).
+        Merge tier2_escalated + tier1_flagged + discovery + watchlist + remaining universe.
+        Priority: tier2_gemini > tier1_scan > discovery > watchlist > universe (first seen wins).
+        Tier 2 escalated tickers skip Haiku and carry Gemini's research brief.
+        Tier 1 tickers that weren't screened by Gemini still skip Haiku (fallback).
         """
         seen = set()
         scan_list = []
+
+        # Build lookup of Gemini results by ticker
+        gemini_lookup = {}
+        gemini_escalated_set = set()
+        if gemini_result:
+            for gr in gemini_result.results:
+                gemini_lookup[gr.ticker] = gr
+            gemini_escalated_set = set(gemini_result.escalated)
+
+        # Priority 0: Tier 2 Gemini-escalated tickers (skip Haiku — already researched by Gemini)
+        if gemini_escalated_set:
+            for ticker in gemini_result.escalated:
+                if ticker not in seen:
+                    seen.add(ticker)
+                    gr = gemini_lookup[ticker]
+                    context = f"Gemini Flash ({gr.score:.2f}): {gr.summary}"
+                    if gr.catalysts:
+                        context += f" | Catalysts: {', '.join(gr.catalysts[:3])}"
+                    direction_hint = gr.direction if gr.direction != "neutral" else ""
+                    scan_list.append(ScanTickerItem(
+                        ticker=ticker,
+                        sector=UNIVERSE.get(ticker, "Unknown"),
+                        source="tier2_gemini",
+                        haiku_threshold=0,  # Skip Haiku
+                        discovery_context=context,
+                        direction_hint=direction_hint,
+                    ))
+
+        # Priority 0.5: Tier 1 flagged tickers NOT screened by Gemini (fallback if Gemini unavailable)
+        if structured_result:
+            for flagged in structured_result.flagged:
+                if flagged.symbol not in seen:
+                    seen.add(flagged.symbol)
+                    catalyst_context = f"Tier 1 flags: {', '.join(flagged.catalysts)}"
+                    if flagged.change_pct:
+                        catalyst_context += f" | Change: {flagged.change_pct:+.1f}%"
+                    if flagged.volume_ratio:
+                        catalyst_context += f" | Vol ratio: {flagged.volume_ratio:.1f}x"
+                    if flagged.earnings_date:
+                        catalyst_context += f" | Earnings: {flagged.earnings_date}"
+                    scan_list.append(ScanTickerItem(
+                        ticker=flagged.symbol,
+                        sector=flagged.sector or UNIVERSE.get(flagged.symbol, "Unknown"),
+                        source="tier1_scan",
+                        haiku_threshold=0,  # Skip Haiku
+                        discovery_context=catalyst_context,
+                    ))
 
         # Priority 1: Discovery (skip Haiku — already validated)
         for disc in discovery_output.tickers:
@@ -291,16 +397,24 @@ class TradingPipeline:
                     haiku_threshold=self.settings.watchlist_haiku_threshold,
                 ))
 
-        # Priority 3: Universe (normal Haiku threshold)
-        for ticker, sector in UNIVERSE.items():
-            if ticker not in seen:
-                seen.add(ticker)
-                scan_list.append(ScanTickerItem(
-                    ticker=ticker,
-                    sector=sector,
-                    source="universe",
-                    haiku_threshold=self.settings.catalyst_escalation_threshold,
-                ))
+        # Priority 3: Remaining universe tickers (normal Haiku threshold)
+        # Only include non-flagged universe tickers if no structured scan ran
+        # (to avoid processing 500 tickers when Tier 1/2 already filtered)
+        has_tier_results = (gemini_escalated_set) or (structured_result and structured_result.flagged)
+        if has_tier_results:
+            # Tier 1/2 ran successfully — only process escalated + discovery + watchlist
+            pass
+        else:
+            # No Tier 1 results — fall back to full universe scan
+            for ticker, sector in UNIVERSE.items():
+                if ticker not in seen:
+                    seen.add(ticker)
+                    scan_list.append(ScanTickerItem(
+                        ticker=ticker,
+                        sector=sector,
+                        source="universe",
+                        haiku_threshold=self.settings.catalyst_escalation_threshold,
+                    ))
 
         return scan_list
 
@@ -312,8 +426,8 @@ class TradingPipeline:
         # Route catalyst scan based on source
         catalyst_kwargs = {"sector": item.sector}
 
-        if item.source == "discovery":
-            # Skip Haiku — already validated by Discovery Agent
+        if item.source in ("discovery", "tier1_scan", "tier2_gemini"):
+            # Skip Haiku — already validated by Discovery Agent or Tier 1 scan
             catalyst_kwargs["skip_haiku"] = True
             catalyst_kwargs["discovery_context"] = item.discovery_context
             catalyst_kwargs["direction_hint"] = item.direction_hint

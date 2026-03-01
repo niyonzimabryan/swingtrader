@@ -17,6 +17,9 @@ from bot.telegram_bot import SwingTraderBot
 from bot.message_queue import MessageQueue
 from bot.notifications import NotificationManager
 from execution.order_monitor import OrderMonitor
+from execution.position_monitor import PositionMonitor
+from bot.daily_digest import DailyDigest
+from bot.weekly_report import WeeklyReport
 from utils.logger import setup_logging, get_logger
 
 
@@ -113,8 +116,19 @@ async def main():
     # Initialize order monitor
     order_monitor = OrderMonitor(pipeline.alpaca, notifications, settings)
 
+    # Initialize position monitor (60-sec live price checks during market hours)
+    position_monitor = PositionMonitor(pipeline.alpaca, notifications, settings)
+
+    # Initialize daily digest (5 PM ET, math only — no AI)
+    daily_digest = DailyDigest(pipeline.alpaca, notifications, settings)
+
+    # Initialize weekly report (Sunday 6 PM ET, Sonnet narrative — ~$0.03/week)
+    weekly_report = WeeklyReport(pipeline.alpaca, notifications, settings)
+
     # Initialize scheduler
     scheduler = PipelineScheduler(pipeline, settings)
+    scheduler.set_daily_digest(daily_digest)
+    scheduler.set_weekly_report(weekly_report)
     scheduler.start()
     log.info("scheduler_ready")
 
@@ -124,6 +138,9 @@ async def main():
     print(f"   Telegram bot active — send /help to your bot")
     print(f"   Scheduler: 3 daily scans at {settings.pre_market_hour}:00, {settings.midday_hour}:00, {settings.post_market_hour}:00 ET")
     print(f"   Order monitor: polling every 30s")
+    print(f"   Position monitor: polling every 60s (market hours only)")
+    print(f"   Daily digest: 5:00 PM ET (weekdays)")
+    print(f"   Weekly report: Sunday 6:00 PM ET (Sonnet)")
     from config.tickers import UNIVERSE
     print(f"   Universe: {len(UNIVERSE)} tickers")
     print(f"   Press Ctrl+C to stop\n")
@@ -134,6 +151,10 @@ async def main():
         # Start order monitor (runs as async background task)
         await order_monitor.start()
         log.info("order_monitor_started")
+
+        # Start position monitor (60-sec price checks during market hours)
+        await position_monitor.start()
+        log.info("position_monitor_started")
 
         # Keep running
         stop_event = asyncio.Event()
@@ -151,6 +172,7 @@ async def main():
         log.info("shutting_down")
         if langfuse_client:
             langfuse_client.flush()
+        await position_monitor.stop()
         await order_monitor.stop()
         scheduler.stop()
         await bot.stop()

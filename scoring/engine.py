@@ -61,9 +61,8 @@ class ScoringEngine:
             if directions[agent_name] not in ("neutral",):
                 primary_direction = directions[agent_name]
                 break
-        # Phase 1 is long-only: default to bullish when all signals are neutral
-        if primary_direction == "neutral":
-            primary_direction = "bullish"
+        # If all signals are neutral, leave as neutral (no forced direction)
+        # This lets bearish and bullish signals both flow through naturally
 
         # V2: Confidence-weighted disagreement penalty
         # Instead of binary counting, weight disagreements by confidence * weight
