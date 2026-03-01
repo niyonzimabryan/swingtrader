@@ -11,13 +11,28 @@ from utils.logger import get_logger
 log = get_logger("memo_delivery")
 
 
-def _is_markdown_parse_error(exc: Exception) -> bool:
+def _markdown_parse_error_subtype(exc: Exception) -> str | None:
+    """Classify Telegram Markdown parse failures for targeted fallback logging."""
     error = str(exc).lower()
-    return "parse" in error and (
-        "entity" in error or
-        "markdown" in error or
-        "can't find end" in error
-    )
+
+    if "can't parse entities" in error or "parse entities" in error:
+        if "is reserved and must be escaped" in error:
+            return "entities_reserved_char"
+        if "can't find end of the entity" in error or "find end of the entity" in error:
+            return "entity_end_missing"
+        return "entities_generic"
+
+    if "can't find end" in error and "entity" in error:
+        return "entity_end_missing"
+    if "markdown" in error and "parse" in error:
+        return "markdown_generic"
+    if "parse" in error and ("entity" in error or "entities" in error):
+        return "entities_generic"
+    return None
+
+
+def _is_markdown_parse_error(exc: Exception) -> bool:
+    return _markdown_parse_error_subtype(exc) is not None
 
 
 async def _delete_sent_messages(bot: Any, chat_id: int | str, message_ids: list[int], source: str) -> None:
@@ -86,6 +101,7 @@ async def send_memo_markdown_or_plain(
             )
             sent_markdown_ids.append(msg.message_id)
         except Exception as e:
+            parse_subtype = _markdown_parse_error_subtype(e)
             parse_error = _is_markdown_parse_error(e)
             log.warning(
                 "memo_markdown_chunk_failed",
@@ -93,6 +109,7 @@ async def send_memo_markdown_or_plain(
                 chunk_index=i,
                 chunks_total=len(md_chunks),
                 parse_error=parse_error,
+                parse_subtype=parse_subtype or "not_parse_error",
                 error=str(e)[:200],
                 fallback_path="plain_full_resend" if parse_error else "raise",
             )

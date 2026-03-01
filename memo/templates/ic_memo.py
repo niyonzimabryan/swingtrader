@@ -94,7 +94,7 @@ def format_memo_telegram(memo_data: dict) -> str:
     if fund.get("flags"):
         lines.append(f"Flags: {esc(', '.join(fund['flags']))}")
     if fund.get("peer_comparison"):
-        lines.append(f"Peers: {esc(fund['peer_comparison'][:200])}")
+        lines.append(f"Peers: {esc(fund['peer_comparison'])}")
     lines.append("")
 
     # Historical Precedent
@@ -185,7 +185,7 @@ def format_memo_telegram(memo_data: dict) -> str:
                     lines.append("───────────────")
                 first_dim = False
                 lines.append(f"_{esc(label)}_")
-                lines.append(esc(val[:300]))
+                lines.append(esc(val))
     lines.append("")
 
     # Risk Analysis — structured (v2.1) or flat fallback
@@ -260,7 +260,7 @@ def format_memo_telegram(memo_data: dict) -> str:
         final = d.get("composite_score", 0)
         opus_score = opus.get("final_score", final)
         if opus.get("delta_clamped"):
-            delta_note = f" \\(clamped from {fmt(opus.get('original_opus_score', 0), '.2f')}\\)"
+            delta_note = f" \\(clamped from `{fmt(opus.get('original_opus_score', 0), '.2f')}`\\)"
         else:
             delta_note = ""
         opus_delta = opus_score - adjusted if isinstance(adjusted, (int, float)) else 0
@@ -375,6 +375,8 @@ def format_memo_plain(memo_data: dict) -> str:
     bs = fund.get('balance_sheet_score', 0)
     lines.append(f"Quality: {qs if isinstance(qs, str) else f'{qs:.2f}'} | Valuation: {vs if isinstance(vs, str) else f'{vs:.2f}'}")
     lines.append(f"Growth: {gs if isinstance(gs, str) else f'{gs:.2f}'} | Balance Sheet: {bs if isinstance(bs, str) else f'{bs:.2f}'}")
+    if fund.get("peer_comparison"):
+        lines.append(f"Peers: {fund['peer_comparison']}")
 
     pattern = d.get("pattern", {})
     lines.append(f"\nHISTORICAL PRECEDENT")
@@ -429,7 +431,7 @@ def format_memo_plain(memo_data: dict) -> str:
                     lines.append("───────────────")
                 first_dim = False
                 lines.append(f"{label}")
-                lines.append(f"  {val[:300]}")
+                lines.append(f"  {val}")
 
     risk_data = d.get("risk_analysis", {})
     counter_args = cat.get("counter_arguments", "")
