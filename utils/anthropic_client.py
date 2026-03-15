@@ -7,6 +7,7 @@ log = get_logger("anthropic_client")
 
 # Sonnet fallback model for when Opus times out
 SONNET_FALLBACK = "claude-sonnet-4-6"
+RAW_PARSE_ERROR_LIMIT = 20_000
 
 
 class AnthropicClient:
@@ -103,7 +104,7 @@ class AnthropicClient:
             return json.loads(text)
         except json.JSONDecodeError:
             log.error("json_parse_failed", raw_text=text[:500])
-            return {"error": "Failed to parse JSON response", "raw": text[:1000]}
+            return {"error": "Failed to parse JSON response", "raw": text[:RAW_PARSE_ERROR_LIMIT]}
 
     def analyze_json_with_fallback(
         self,
@@ -128,7 +129,7 @@ class AnthropicClient:
             return json.loads(text)
         except json.JSONDecodeError:
             log.error("json_parse_failed", raw_text=text[:500])
-            return {"error": "Failed to parse JSON response", "raw": text[:1000]}
+            return {"error": "Failed to parse JSON response", "raw": text[:RAW_PARSE_ERROR_LIMIT]}
 
     # --- V2: Extended Thinking ---
 
@@ -213,7 +214,7 @@ class AnthropicClient:
             return json.loads(text)
         except json.JSONDecodeError:
             log.error("json_parse_failed_thinking", raw_text=text[:500])
-            return {"error": "Failed to parse JSON response", "raw": text[:1000]}
+            return {"error": "Failed to parse JSON response", "raw": text[:RAW_PARSE_ERROR_LIMIT]}
 
     def analyze_json_with_thinking_and_fallback(
         self,
@@ -352,7 +353,7 @@ class AnthropicClient:
             return json.loads(text)
         except json.JSONDecodeError:
             log.error("json_parse_failed_thinking_tools", raw_text=text[:500])
-            return {"error": "Failed to parse JSON response", "raw": text[:1000]}
+            return {"error": "Failed to parse JSON response", "raw": text[:RAW_PARSE_ERROR_LIMIT]}
 
     # --- V2: Tool Use (web_search) ---
 
@@ -461,4 +462,4 @@ class AnthropicClient:
             return json.loads(text)
         except json.JSONDecodeError:
             log.error("json_parse_failed_tools", raw_text=text[:500])
-            return {"error": "Failed to parse JSON response", "raw": text[:1000]}
+            return {"error": "Failed to parse JSON response", "raw": text[:RAW_PARSE_ERROR_LIMIT]}

@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     pre_market_hour: int = 7
     midday_hour: int = 12
     post_market_hour: int = 17
+    scheduler_misfire_grace_time_s: int = 7200
 
     # --- Database ---
     database_url: str = "sqlite:///swing_trader.db"
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
     web_search_provider: str = "anthropic"  # "anthropic" (default)
     discovery_max_tickers: int = 12
     discovery_model: str = "claude-sonnet-4-6"  # Discovery uses Sonnet, NOT Haiku
+    discovery_output_max_tokens: int = 8192
 
     # --- V2: Extended Thinking ---
     discovery_thinking_budget: int = 0      # Thinking tokens for discovery scan (was 10000; search quality drives discovery, not thinking)

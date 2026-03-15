@@ -5,6 +5,7 @@ Discovered tickers skip Haiku pre-screen (already validated by Discovery).
 Runs on scheduled scans only (NOT on /test).
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import List
 from datetime import datetime
@@ -71,24 +72,40 @@ class DiscoveryAgent(BaseAgent):
 
         model = self.settings.discovery_model
         thinking_budget = getattr(self.settings, "discovery_thinking_budget", 0)
+        max_output_tokens = max(
+            4096,
+            int(getattr(self.settings, "discovery_output_max_tokens", 8192)),
+        )
 
         if thinking_budget > 0:
             log.info("discovery_using_thinking", budget=thinking_budget)
             result = self.web_search.search_and_analyze_json_with_thinking(
                 system_prompt, user_prompt, model=model, max_searches=5,
-                budget_tokens=thinking_budget, max_tokens=max(16000, thinking_budget + 8192),
+                budget_tokens=thinking_budget,
+                max_tokens=max(max_output_tokens, thinking_budget + 8192),
             )
         else:
             result = self.web_search.search_and_analyze_json(
-                system_prompt, user_prompt, model=model, max_searches=5, max_tokens=4096
+                system_prompt,
+                user_prompt,
+                model=model,
+                max_searches=5,
+                max_tokens=max_output_tokens,
             )
 
         if result.get("error"):
-            log.error("discovery_failed", error=result["error"])
-            return DiscoveryOutput(run_id=self.run_id)
-
-        # Parse results
-        output = self._parse_results(result, model)
+            output = self._recover_partial_results(result.get("raw", ""), model)
+            if output.tickers:
+                log.warning(
+                    "discovery_partial_recovery",
+                    recovered=len(output.tickers),
+                    error=result["error"],
+                )
+            else:
+                log.error("discovery_failed", error=result["error"])
+                return DiscoveryOutput(run_id=self.run_id)
+        else:
+            output = self._parse_results(result, model)
 
         # Validate tickers
         output.tickers = self._validate_tickers(output.tickers)
@@ -98,6 +115,55 @@ class DiscoveryAgent(BaseAgent):
 
         log.info("discovery_complete", found=len(output.tickers), run_id=self.run_id)
         return output
+
+    def _recover_partial_results(self, raw_text: str, model: str) -> DiscoveryOutput:
+        """
+        Recover complete ticker objects from truncated JSON output.
+        Discovery responses can overflow the output budget because each idea
+        includes a long context paragraph. Salvaging the completed objects keeps
+        scheduled scans from collapsing to zero names.
+        """
+        if not raw_text:
+            return DiscoveryOutput(model_used=model, run_id=self.run_id)
+
+        text = raw_text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            text = text.strip()
+        start = text.find("{")
+        if start == -1:
+            return DiscoveryOutput(model_used=model, run_id=self.run_id)
+        text = text[start:]
+
+        tickers_key = text.find('"tickers"')
+        if tickers_key == -1:
+            return DiscoveryOutput(model_used=model, run_id=self.run_id)
+        array_start = text.find("[", tickers_key)
+        if array_start == -1:
+            return DiscoveryOutput(model_used=model, run_id=self.run_id)
+
+        decoder = json.JSONDecoder()
+        recovered = []
+        pos = array_start + 1
+        while pos < len(text):
+            while pos < len(text) and text[pos] in " \t\r\n,":
+                pos += 1
+            if pos >= len(text) or text[pos] == "]":
+                break
+            if text[pos] != "{":
+                next_obj = text.find("{", pos)
+                if next_obj == -1:
+                    break
+                pos = next_obj
+            try:
+                item, offset = decoder.raw_decode(text[pos:])
+            except json.JSONDecodeError:
+                break
+            if isinstance(item, dict):
+                recovered.append(item)
+            pos += offset
+
+        return self._parse_results({"tickers": recovered}, model)
 
     def _build_regime_context(self, regime: dict) -> str:
         """Format macro regime context for the prompt."""

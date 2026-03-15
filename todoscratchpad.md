@@ -106,10 +106,27 @@
 
 - [x] **Create architecture trigger guide doc** — Added `/ARCHITECTURE_EVOLUTION_TRIGGERS.md` with measurable thresholds for when to implement handler offloading, parallelization, SQLite hardening, Postgres migration, and Redis.
 - [x] **Create implementation handoff doc** — Added `/claudehandoff.md` with decision context, per-file changes, env vars, fallback behavior, validation notes, rollback steps, and trigger-linked follow-ups.
+- [x] **Retitle completed architecture revisions doc** — Renamed typo file to `/ARCHITECTURE_REVISIONS_FINAL.md` and updated heading to reflect final, completed revisions.
 - [x] **Offload blocking bot handlers from event loop** — Implemented shared blocking helper and moved `/ask`, `/regime`, `/score`, `/performance` heavy sync work to executor with immediate ack + timeout-safe fallback responses.
 - [x] **Parallelize independent agent stages in ad-hoc pipeline** — Implemented shared post-catalyst parallel helper and applied to both `/test` and `/scan` flows (fundamental + pattern + web research).
 - [x] **Add automatic parallel stability controller** — Implemented rolling health tracker with auto degrade/recover (3 bad runs in 12 → workers 3→2, cooldown + healthy streak recovery), plus Telegram/log alerts on mode change.
 - [ ] **(Deferred / potential) Add cache-first reads for repeat analyses** — Keep as an optional optimization later; only implement if repeated same-day ticker analysis becomes common enough to justify added cache complexity.
 - [ ] **Persistent run logging & cost tracking** — Railway logs vanish on redeploy. Need to persist per-scan metrics (token counts per stage, duration, costs, tickers processed/escalated/memoed) to DB or external service. Currently flying blind on API spend. Exploring Langfuse for structured LLM observability — could reuse across all projects.
-- [ ] **Harden SQLite for concurrent workload** — Enable WAL mode + busy_timeout; add indexes for hot filters (`trades.status`, `trades.exit_date`, `memos.status`, `memos.created_at`) to prevent future slowdowns in order monitor and performance/history views.
+- [x] **Harden SQLite for concurrent workload** — Enabled WAL mode + busy_timeout in `database/db.py`, added runtime index creation for hot filters, and added model indexes for `trades.status`, `trades.exit_date`, `memos.status`, and `memos.created_at`.
 - [ ] **Define DB migration path trigger to Postgres** — Keep SQLite now, but migrate when multi-replica/worker deployment or persistent lock contention appears.
+
+---
+
+## Perf / Cost Review Follow-ups (Mar 8, 2026)
+
+- [x] **Create DOCX perf/cost review report** — added `/Users/bryanniyonzima/Downloads/AppsinTesting/swingtrader/SwingTrader_Post_Architecture_Perf_Cost_Review_2026-03-08.docx`
+- [x] **Fix Tier 2 gate bypass in scan builder** — `orchestrator/pipeline.py:_build_scan_list()` now only falls back to Tier 1 for tickers Gemini did not screen, so screened names with `escalated=0` no longer leak into Tier 3/4.
+- [x] **Fail closed when Gemini screening is quota-exhausted** — Batch failures now synthesize screened results so Tier 1 names do not fan out into Anthropic stages after Gemini quota/rate-limit failures, and discovery-provider exhaustion disables full-universe fallback.
+- [x] **Propagate Langfuse session context into post-catalyst worker threads** — Wrapped `ThreadPoolExecutor` submissions with `contextvars.copy_context()` so `fundamental`, `pattern`, and `web_research` inherit the active scan/ad-hoc session.
+- [x] **Fix daily digest + weekly report schema drift** — `bot/daily_digest.py` now uses `Memo.created_at` and keeps ORM-derived calculations inside the DB session; `bot/weekly_report.py` now uses `Memo.status`, `Memo.created_at`, and `Trade.pnl_absolute`.
+- [x] **Attach a real Railway volume or move off SQLite-on-/data** — Created Railway volume `swingtrader-volume` and attached it to production at `/data`; new deployment metadata now includes `volumeMounts: ["/data"]`.
+- [x] **Fix Alpaca stop placement for approved trades** — Approved trades now submit as protected OTO limit entries, persist as `pending_fill` until filled, and reconcile attached/fallback stop IDs from the order monitor instead of placing a standalone stop before the entry exists.
+- [x] **Repair pattern-data FMP fallbacks** — `data/pattern_data.py` now uses current FMP endpoints for earnings (`/earnings`) and analyst grades (`/grades`), points insider lookups at the current search endpoint, and logs 402 restricted endpoints clearly.
+- [x] **Add regression coverage for perf-review fixes** — Added `tests/test_pipeline_reports_execution.py` covering Tier 2 gating, report schema usage, and the `pending_fill` approved-trade flow.
+- [x] **Confirm Railway deployment `39557038-c880-402a-ad12-371830f10391` reaches SUCCESS** — Production deployment completed successfully and Railway reports `volumeMounts: ["/data"]` on the active build.
+- [x] **Investigate recent low scan volume / low Sonnet escalation** — Langfuse review showed Mar 11-13 scheduled scans often collapsed to discovery-only or a single `HIMS` watchlist pass. Root cause: discovery responses were truncating at the 4096-token cap, causing JSON parse failures and empty discovery output. Fixed by raising discovery output budget to 8192, preserving more raw text on parse errors, and recovering complete discovery ticker objects from truncated JSON. Added `tests/test_discovery_agent.py`.

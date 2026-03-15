@@ -4,6 +4,10 @@
 /score TICKER — quick fundamental snapshot
 """
 
+# Prevent pytest from collecting this handler module because its filename and
+# command function names begin with "test".
+__test__ = False
+
 import asyncio
 
 from telegram import Update
