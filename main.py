@@ -125,22 +125,30 @@ async def main():
     # Initialize weekly report (Sunday 6 PM ET, Sonnet narrative — ~$0.03/week)
     weekly_report = WeeklyReport(pipeline.alpaca, notifications, settings)
 
-    # Initialize scheduler
+    # Initialize scheduler (skip if SCHEDULER_ENABLED=false to save API credits)
+    import os
+    scheduler_enabled = os.getenv("SCHEDULER_ENABLED", "true").lower() not in ("false", "0", "no")
     scheduler = PipelineScheduler(pipeline, settings)
-    scheduler.set_daily_digest(daily_digest)
-    scheduler.set_weekly_report(weekly_report)
-    scheduler.start()
-    log.info("scheduler_ready")
+    if scheduler_enabled:
+        scheduler.set_daily_digest(daily_digest)
+        scheduler.set_weekly_report(weekly_report)
+        scheduler.start()
+        log.info("scheduler_ready")
+    else:
+        log.info("scheduler_disabled", reason="SCHEDULER_ENABLED=false")
 
     # Start bot
     log.info("starting_telegram_bot")
     print("\n✅ Swing Trader is running!")
     print(f"   Telegram bot active — send /help to your bot")
-    print(f"   Scheduler: 3 daily scans at {settings.pre_market_hour}:00, {settings.midday_hour}:00, {settings.post_market_hour}:00 ET")
+    if scheduler_enabled:
+        print(f"   Scheduler: 3 daily scans at {settings.pre_market_hour}:00, {settings.midday_hour}:00, {settings.post_market_hour}:00 ET")
+        print(f"   Daily digest: 5:00 PM ET (weekdays)")
+        print(f"   Weekly report: Sunday 6:00 PM ET (Sonnet)")
+    else:
+        print(f"   ⏸ Scheduler PAUSED (set SCHEDULER_ENABLED=true to resume)")
     print(f"   Order monitor: polling every 30s")
     print(f"   Position monitor: polling every 60s (market hours only)")
-    print(f"   Daily digest: 5:00 PM ET (weekdays)")
-    print(f"   Weekly report: Sunday 6:00 PM ET (Sonnet)")
     from config.tickers import UNIVERSE
     print(f"   Universe: {len(UNIVERSE)} tickers")
     print(f"   Press Ctrl+C to stop\n")
