@@ -1,5 +1,7 @@
 # Swing Trader
 
+[![CI](https://github.com/niyonzimabryan/swingtrader/actions/workflows/ci.yml/badge.svg)](https://github.com/niyonzimabryan/swingtrader/actions/workflows/ci.yml)
+
 AI-assisted swing-trading research and paper-trading operator bot.
 
 This project runs a scheduled research pipeline, sends trade memos to Telegram, and can submit approved trades to an Alpaca paper account. It is built for paper trading first. Do not wire it to live brokerage credentials unless you have reviewed the code and risk controls yourself.
@@ -57,6 +59,18 @@ Run live provider checks:
 ```bash
 .venv/bin/python -m scripts.doctor
 ```
+
+## Tests
+
+Run the full local test gate:
+
+```bash
+.venv/bin/python -m pip check
+.venv/bin/python -m compileall -q agents bot config data database execution memo orchestrator scanning scoring screening scripts tracking utils main.py
+.venv/bin/python -m unittest discover -s tests -p "test_*.py"
+```
+
+GitHub Actions runs the same compile and unit-test checks on pull requests and pushes to `main`. See `CONTRIBUTING.md` for the testing expectations around order execution, provider parsing, onboarding, Telegram formatting, and scan gating.
 
 ## First Run
 

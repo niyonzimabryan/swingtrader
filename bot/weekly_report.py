@@ -53,8 +53,8 @@ class WeeklyReport:
         week_start = week_end - timedelta(days=4)
         week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
 
-        week_start_utc = week_start.astimezone(ZoneInfo("UTC"))
-        week_end_utc = week_end.astimezone(ZoneInfo("UTC"))
+        week_start_utc = week_start.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+        week_end_utc = week_end.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
         # Portfolio state
         account = self.alpaca.get_account_info()
@@ -76,7 +76,8 @@ class WeeklyReport:
 
             # Memos generated this week
             memos = session.query(Memo).filter(
-                Memo.generated_at >= week_start_utc.strftime("%Y-%m-%dT%H:%M:%S"),
+                Memo.created_at >= week_start_utc,
+                Memo.created_at <= week_end_utc,
             ).all()
 
             # All open trades
@@ -85,22 +86,28 @@ class WeeklyReport:
             ).all()
 
             # Compute metrics
-            wins = [t for t in trades_closed if t.realized_pnl and t.realized_pnl > 0]
-            losses = [t for t in trades_closed if t.realized_pnl and t.realized_pnl <= 0]
+            wins = [t for t in trades_closed if t.pnl_absolute and t.pnl_absolute > 0]
+            losses = [t for t in trades_closed if t.pnl_absolute and t.pnl_absolute <= 0]
             total_closed = len(trades_closed)
             win_rate = len(wins) / total_closed * 100 if total_closed > 0 else 0
 
-            realized_pnl = sum(t.realized_pnl or 0 for t in trades_closed)
+            realized_pnl = sum(t.pnl_absolute or 0 for t in trades_closed)
 
             # Memo breakdown
-            approved_count = sum(1 for m in memos if m.operator_action == "approve")
-            passed_count = sum(1 for m in memos if m.operator_action == "pass")
-            watchlisted_count = sum(1 for m in memos if m.operator_action == "watchlist")
+            approved_count = sum(1 for m in memos if m.status == "approved")
+            passed_count = sum(
+                1 for m in memos
+                if m.status == "rejected" or m.classification == "no_action"
+            )
+            watchlisted_count = sum(1 for m in memos if m.status == "watchlisted")
             total_memos = len(memos)
 
             # Average scores
-            approved_scores = [m.composite_score for m in memos if m.operator_action == "approve" and m.composite_score]
-            passed_scores = [m.composite_score for m in memos if m.operator_action == "pass" and m.composite_score]
+            approved_scores = [m.composite_score for m in memos if m.status == "approved" and m.composite_score]
+            passed_scores = [
+                m.composite_score for m in memos
+                if (m.status == "rejected" or m.classification == "no_action") and m.composite_score
+            ]
             avg_approved_score = sum(approved_scores) / len(approved_scores) if approved_scores else 0
             avg_passed_score = sum(passed_scores) / len(passed_scores) if passed_scores else 0
 
@@ -137,7 +144,7 @@ class WeeklyReport:
                     "direction": t.direction or "long",
                     "entry_price": t.entry_price,
                     "exit_price": t.exit_price or 0,
-                    "realized_pnl": t.realized_pnl or 0,
+                    "realized_pnl": t.pnl_absolute or 0,
                     "exit_reason": t.exit_reason or "unknown",
                     "days_held": (t.exit_date - t.entry_date).days if t.exit_date and t.entry_date else 0,
                 })
