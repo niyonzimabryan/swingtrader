@@ -58,10 +58,11 @@ class Settings(BaseSettings):
     filter_model: str = "claude-haiku-4-5-20251001"
 
     # --- V2: Web Search & Discovery ---
-    web_search_provider: str = "anthropic"  # "anthropic" (default)
+    web_search_provider: str = "gemini"  # "gemini" (default) or "anthropic"
     discovery_max_tickers: int = 12
     discovery_model: str = "claude-sonnet-4-6"  # Discovery uses Sonnet, NOT Haiku
     discovery_output_max_tokens: int = 8192
+    discovery_max_searches: int = 8
 
     # --- V2: Extended Thinking ---
     discovery_thinking_budget: int = 0      # Thinking tokens for discovery scan (was 10000; search quality drives discovery, not thinking)
@@ -70,7 +71,11 @@ class Settings(BaseSettings):
     # --- Gemini Flash Screening (Tier 2) ---
     gemini_api_key: str = ""
     gemini_flash_model: str = "gemini-2.0-flash"
+    gemini_search_model: str = "gemini-3.1-pro-preview"
+    gemini_discovery_model: str = "gemini-3.1-pro-preview"
+    gemini_web_research_model: str = "gemini-3.1-pro-preview"
     gemini_flash_escalation_threshold: float = 0.50  # Tickers scoring above this escalate to Sonnet
+    web_research_max_searches: int = 8
 
     # --- V2: Deep Research (Phase C) ---
     openai_api_key: str = ""
@@ -103,4 +108,4 @@ class Settings(BaseSettings):
     parallel_recovery_good_runs: int = 8
     parallel_alert_on_state_change: bool = True
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

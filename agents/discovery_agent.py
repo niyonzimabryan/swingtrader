@@ -42,7 +42,7 @@ class DiscoveryOutput:
 class DiscoveryAgent(BaseAgent):
     """
     Finds swing trade ideas via web search.
-    Uses Sonnet + web_search tool to identify actionable catalysts.
+    Uses the configured grounded search provider to identify actionable catalysts.
     Returns 8-12 tickers with pre-validated catalyst context.
     """
     agent_type = "discovery"
@@ -70,17 +70,21 @@ class DiscoveryAgent(BaseAgent):
         system_prompt = self._build_system_prompt()
         user_prompt = self._build_user_prompt(regime_context)
 
-        model = self.settings.discovery_model
+        if getattr(self.settings, "web_search_provider", "anthropic") == "gemini":
+            model = getattr(self.settings, "gemini_discovery_model", "gemini-3.1-pro-preview")
+        else:
+            model = self.settings.discovery_model
         thinking_budget = getattr(self.settings, "discovery_thinking_budget", 0)
         max_output_tokens = max(
             4096,
             int(getattr(self.settings, "discovery_output_max_tokens", 8192)),
         )
+        max_searches = max(1, int(getattr(self.settings, "discovery_max_searches", 8)))
 
         if thinking_budget > 0:
             log.info("discovery_using_thinking", budget=thinking_budget)
             result = self.web_search.search_and_analyze_json_with_thinking(
-                system_prompt, user_prompt, model=model, max_searches=5,
+                system_prompt, user_prompt, model=model, max_searches=max_searches,
                 budget_tokens=thinking_budget,
                 max_tokens=max(max_output_tokens, thinking_budget + 8192),
             )
@@ -89,7 +93,7 @@ class DiscoveryAgent(BaseAgent):
                 system_prompt,
                 user_prompt,
                 model=model,
-                max_searches=5,
+                max_searches=max_searches,
                 max_tokens=max_output_tokens,
             )
 
@@ -188,7 +192,13 @@ class DiscoveryAgent(BaseAgent):
             "- Prefer quality over quantity — 8-12 high-quality ideas, not 20 weak ones\n"
             "- Include BOTH well-known and under-followed names\n"
             "- Look across ALL sectors, not just tech\n\n"
-            "Search for:\n"
+            "SEARCH DISCIPLINE:\n"
+            "- Actively search current web sources before selecting ideas\n"
+            "- Search multiple query clusters: earnings/guidance, analyst revisions, FDA/regulatory, M&A, insider buys, unusual volume/options, activist/management changes, sector/regulatory shocks\n"
+            "- Prefer primary evidence: company IR releases, SEC filings, regulator pages, earnings transcripts, and exchange notices\n"
+            "- Use reputable financial/news sources only to supplement or confirm primary evidence\n"
+            "- Reject stale catalysts, rumor-only stories, and broad market commentary without a ticker-specific edge\n\n"
+            "Catalyst categories to search:\n"
             "1. Earnings surprises (beats/misses with significant magnitude) and guidance changes\n"
             "2. Analyst upgrades/downgrades/price target changes (especially cluster revisions)\n"
             "3. FDA approvals, drug trial results, medical device clearances\n"
@@ -217,10 +227,12 @@ class DiscoveryAgent(BaseAgent):
             "- relevance_score: 0.0-1.0 (how actionable is this for a 1-20 day swing trade?)\n"
             "- direction_hint: bullish, bearish, or neutral\n"
             "- discovery_context: Full paragraph explaining the catalyst, key numbers, "
-            "and why this is actionable (this will be passed to a deeper analysis agent)\n\n"
+            "why this is actionable, and which sources support it (this will be passed to a deeper analysis agent)\n"
+            "- source_urls: 2-4 source URLs used to verify the catalyst\n\n"
             f"Return 8-{max_tickers} tickers as JSON:\n"
             '{"tickers": [{"ticker": "AAPL", "catalyst_summary": "...", "catalyst_type": "...", '
-            '"relevance_score": 0.85, "direction_hint": "bullish", "discovery_context": "..."}], '
+            '"relevance_score": 0.85, "direction_hint": "bullish", "discovery_context": "...", '
+            '"source_urls": ["https://..."]}], '
             '"search_summary": "Brief summary of market conditions and what you found"}'
         )
 
@@ -244,13 +256,23 @@ class DiscoveryAgent(BaseAgent):
             except (ValueError, TypeError):
                 rel_score = 0.5
 
+            discovery_context = item.get("discovery_context", "")
+            source_urls = item.get("source_urls") or item.get("sources") or []
+            if isinstance(source_urls, list) and source_urls:
+                clean_urls = [str(url).strip() for url in source_urls if str(url).strip()]
+                if clean_urls:
+                    discovery_context = (
+                        f"{discovery_context}\nSources: "
+                        + "; ".join(clean_urls[:4])
+                    ).strip()
+
             output.tickers.append(DiscoveredTicker(
                 ticker=ticker_sym,
                 catalyst_summary=item.get("catalyst_summary", ""),
                 catalyst_type=item.get("catalyst_type", "other"),
                 relevance_score=rel_score,
                 direction_hint=item.get("direction_hint", "neutral"),
-                discovery_context=item.get("discovery_context", ""),
+                discovery_context=discovery_context,
             ))
 
         return output

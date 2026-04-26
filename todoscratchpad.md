@@ -52,6 +52,11 @@
 
 ## Product / UX Questions
 
+- [x] **Open-source onboarding flow** — ✅ Added README-backed setup path + refreshed `.env.example` that treats Anthropic, Telegram bot token/chat ID, Alpaca paper, market/data provider keys (Finnhub, FMP, Alpha Vantage, FRED), and database config as required; Gemini remains an optional add-on.
+- [x] **Config doctor command** — ✅ Added `python -m scripts.doctor` with presence checks, SQLite path check, Telegram/Alpaca/data-provider live validation, and Gemini warning-only handling.
+- [x] **First-run setup wizard** — ✅ Added `python -m scripts.setup_wizard` local web app at `localhost:8765` that creates `.env`, walks users through every required provider key, opens signup docs, discovers `TELEGRAM_CHAT_ID`, tests Telegram delivery, validates provider connectivity, and handles Gemini/observability/advanced integrations separately.
+- [x] **Move search-heavy stages to Gemini Pro** — ✅ `WEB_SEARCH_PROVIDER=gemini` now routes Discovery and WebResearch through Gemini Pro + Google Search grounding, with Anthropic fallback if Gemini is absent; Gemini Flash screening and Gemini deep research remain separate pipeline roles.
+- [x] **Use leading-edge Gemini for search-heavy stages** — ✅ Updated defaults, wizard schema, `.env.example`, local `.env`, and tests to use `gemini-3.1-pro-preview`; live smoke test confirmed grounded search works with the configured key.
 - [x] **Pipeline stage progress messages** — ✅ Implemented: `run_ad_hoc()` accepts `progress_cb` callable, fires at each stage (regime → catalyst → fundamental → pattern → web research → scoring → memo). `/test` handler edits the status message in real-time via `asyncio.run_coroutine_threadsafe()`. `/scan` uses start message + scan completion notification.
 - [ ] **Approval flow for scheduled scans** — Currently full scans generate memos but there's no batch approval UX. Should scheduled memos queue up for morning review?
 - [ ] **Position sizing confidence** — Should users be able to override the calculated position size, or is the system's sizing authoritative?

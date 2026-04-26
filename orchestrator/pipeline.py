@@ -86,9 +86,17 @@ class TradingPipeline:
         self.web_search_client = None
         self.discovery_agent = None
         self.web_research_agent = None
-        if settings.anthropic_api_key:
+        web_provider = getattr(settings, "web_search_provider", "gemini")
+        if web_provider == "gemini" and not getattr(settings, "gemini_api_key", "") and settings.anthropic_api_key:
+            log.warning("gemini_search_missing_key_fallback_to_anthropic")
+            web_provider = "anthropic"
+        web_search_available = (
+            (web_provider == "anthropic" and settings.anthropic_api_key)
+            or (web_provider == "gemini" and getattr(settings, "gemini_api_key", ""))
+        )
+        if web_search_available:
             self.web_search_client = WebSearchClient(
-                settings.web_search_provider, self.anthropic_client, settings
+                web_provider, self.anthropic_client, settings
             )
             self.discovery_agent = DiscoveryAgent(
                 settings, self.anthropic_client, self.web_search_client
