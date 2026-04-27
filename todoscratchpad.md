@@ -24,7 +24,8 @@
 - [x] **Pattern Agent is stubbed** — ✅ Built full implementation: Sonnet setup classification → yfinance historical instance search → forward return computation (T+5/T+10/T+15/T+20) → max drawdown → summary stats → Sonnet interpretation → scoring. Cached via SQLite. NVDA: 29 instances, 55.2% win rate. Fixed `revenue_acceleration` routing to use yfinance earnings search.
 - [x] **Reddit Sentiment Agent is stubbed** — ✅ Superseded by `WebResearchAgent` which does live web search via Anthropic's `web_search_20250305` tool. Reddit agent file (`agents/reddit_agent.py`) is orphaned dead code — can be deleted. No PRAW credentials needed.
 - [ ] **1 Telegram command still stubbed** — `/upcoming` returns "coming soon". All others are live including `/watchlist` (view, add, remove with inline buttons).
-- [ ] **No test suite** — Zero tests currently. Need unit tests for scoring engine, risk manager, position sizing, and integration tests for the full pipeline
+- [x] **No test suite / no CI gate** — ✅ Added GitHub Actions CI plus 20 deterministic unit/regression tests covering onboarding, Gemini parsing, discovery recovery, memo delivery fallback, scan-list gating, reports, and approved-trade pending-fill execution.
+- [ ] **Broaden safety-critical tests** — Add focused unit coverage for scoring weights, risk manager rejection cases, position sizing, short trade parameter inversion, and order-monitor fill/stop/target transitions.
 - [ ] **Signal attribution needs 30+ trades** — `tracking/attribution.py` is a stub. Can't do meaningful signal-level performance analysis until enough closed trades exist
 - [ ] **`run_in_executor` in pipeline** — `run_ad_hoc_async` uses `loop.run_in_executor` which works but isn't ideal. Consider making the full pipeline natively async
 - [ ] **No database migrations** — Using `create_all()` for now. Should add Alembic for schema changes as the project evolves
@@ -52,6 +53,12 @@
 
 ## Product / UX Questions
 
+- [x] **Open-source onboarding flow** — ✅ Added README-backed setup path + refreshed `.env.example` that treats Anthropic, Telegram bot token/chat ID, Alpaca paper, market/data provider keys (Finnhub, FMP, Alpha Vantage, FRED), and database config as required; Gemini remains an optional add-on.
+- [x] **Config doctor command** — ✅ Added `python -m scripts.doctor` with presence checks, SQLite path check, Telegram/Alpaca/data-provider live validation, and Gemini warning-only handling.
+- [x] **First-run setup wizard** — ✅ Added `python -m scripts.setup_wizard` local web app at `localhost:8765` that creates `.env`, walks users through every required provider key, opens signup docs, discovers `TELEGRAM_CHAT_ID`, tests Telegram delivery, validates provider connectivity, and handles Gemini/observability/advanced integrations separately.
+- [x] **Move search-heavy stages to Gemini Pro** — ✅ `WEB_SEARCH_PROVIDER=gemini` now routes Discovery and WebResearch through Gemini Pro + Google Search grounding, with Anthropic fallback if Gemini is absent; Gemini Flash screening and Gemini deep research remain separate pipeline roles.
+- [x] **Use leading-edge Gemini for search-heavy stages** — ✅ Updated defaults, wizard schema, `.env.example`, local `.env`, and tests to use `gemini-3.1-pro-preview`; live smoke test confirmed grounded search works with the configured key.
+- [x] **Open-source CI and contribution path** — ✅ Added `.github/workflows/ci.yml`, README testing instructions, and `CONTRIBUTING.md`; CI installs dependencies, runs `pip check`, compiles app sources, and runs full `unittest discover`.
 - [x] **Pipeline stage progress messages** — ✅ Implemented: `run_ad_hoc()` accepts `progress_cb` callable, fires at each stage (regime → catalyst → fundamental → pattern → web research → scoring → memo). `/test` handler edits the status message in real-time via `asyncio.run_coroutine_threadsafe()`. `/scan` uses start message + scan completion notification.
 - [ ] **Approval flow for scheduled scans** — Currently full scans generate memos but there's no batch approval UX. Should scheduled memos queue up for morning review?
 - [ ] **Position sizing confidence** — Should users be able to override the calculated position size, or is the system's sizing authoritative?

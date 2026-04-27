@@ -46,12 +46,12 @@ class DailyDigest:
 
         # Today's DB activity
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        today_utc = today_start.astimezone(ZoneInfo("UTC"))
+        today_utc = today_start.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
         with get_session() as session:
             # Memos generated today
             memos_today = session.query(Memo).filter(
-                Memo.generated_at >= today_utc.strftime("%Y-%m-%dT%H:%M:%S")
+                Memo.created_at >= today_utc
             ).all()
 
             # Trades opened today
@@ -70,6 +70,12 @@ class DailyDigest:
             open_trades = session.query(Trade).filter(
                 Trade.status == "open",
             ).all()
+
+            memos_today_count = len(memos_today)
+            trades_opened_count = len(trades_opened)
+            open_trades_count = len(open_trades)
+            stops_today = sum(1 for t in trades_closed if t.exit_reason == "stop_loss")
+            targets_today = sum(1 for t in trades_closed if t.exit_reason and "target" in t.exit_reason)
 
             # Build position status lines
             position_lines = []
@@ -117,10 +123,7 @@ class DailyDigest:
                     f"`{pnl_pct:+.1f}%` \\(day {days_held}/{max_days}\\){escape_md(note_str)}"
                 )
 
-        # Count memos by recommendation
-        stops_today = sum(1 for t in trades_closed if t.exit_reason == "stop_loss")
-        targets_today = sum(1 for t in trades_closed if t.exit_reason and "target" in t.exit_reason)
-
+            alerts = self._generate_alerts(open_trades, positions)
         # Open P&L
         total_open_pnl = sum(p.get("pnl_abs", 0) for p in positions)
 
@@ -132,15 +135,14 @@ class DailyDigest:
         text += f"*PORTFOLIO*\n"
         text += f"  Equity: `${equity:,.0f}` \\({pnl_emoji} `{pnl_today_pct:+.2f}%` today\\)\n"
         text += f"  Open P&L: `${total_open_pnl:+,.0f}` across {len(positions)} positions\n"
-        if open_trades:
-            total_open = len(open_trades)
-            text += f"  Win rate: {profitable_count}/{total_open} positions in profit\n"
+        if open_trades_count:
+            text += f"  Win rate: {profitable_count}/{open_trades_count} positions in profit\n"
         text += "\n"
 
         # Activity section
         text += f"*TODAY'S ACTIVITY*\n"
-        text += f"  New memos: `{len(memos_today)}`\n"
-        text += f"  Trades executed: `{len(trades_opened)}`\n"
+        text += f"  New memos: `{memos_today_count}`\n"
+        text += f"  Trades executed: `{trades_opened_count}`\n"
         text += f"  Stops triggered: `{stops_today}`\n"
         text += f"  Targets hit: `{targets_today}`\n"
         text += "\n"
@@ -151,7 +153,6 @@ class DailyDigest:
             text += "\n".join(position_lines) + "\n\n"
 
         # Alerts section
-        alerts = self._generate_alerts(open_trades, positions)
         if alerts:
             text += f"*ALERTS*\n"
             for alert in alerts:

@@ -25,7 +25,10 @@ class _FakeWebSearchClient:
 def _build_agent(result):
     settings = SimpleNamespace(
         discovery_model="claude-sonnet-4-6",
+        web_search_provider="gemini",
+        gemini_discovery_model="gemini-3.1-pro-preview",
         discovery_max_tickers=12,
+        discovery_max_searches=8,
         discovery_thinking_budget=0,
         discovery_output_max_tokens=8192,
     )
@@ -98,3 +101,5 @@ def test_discover_recovers_from_truncated_json_and_uses_larger_output_budget():
 
     assert [ticker.ticker for ticker in output.tickers] == ["CF", "DISC"]
     assert web_search.calls[0]["max_tokens"] == 8192
+    assert web_search.calls[0]["max_searches"] == 8
+    assert web_search.calls[0]["model"] == "gemini-3.1-pro-preview"

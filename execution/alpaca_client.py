@@ -4,9 +4,9 @@ Alpaca paper trading API wrapper.
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
-    LimitOrderRequest, StopOrderRequest, GetOrdersRequest,
+    LimitOrderRequest, StopOrderRequest, GetOrdersRequest, StopLossRequest,
 )
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus, QueryOrderStatus
+from alpaca.trading.enums import OrderClass, OrderSide, OrderType, TimeInForce, OrderStatus, QueryOrderStatus
 from utils.logger import get_logger
 
 log = get_logger("alpaca_client")
@@ -99,6 +99,74 @@ class AlpacaClient:
             return str(order.id)
         except Exception as e:
             log.error("short_entry_failed", ticker=ticker, error=str(e))
+            raise
+
+    def submit_protected_limit_entry(
+        self,
+        ticker: str,
+        qty: int,
+        limit_price: float,
+        stop_price: float,
+        direction: str = "long",
+    ) -> dict:
+        """
+        Submit a limit entry with an attached stop-loss as an OTO order.
+
+        The trade stays pending until Alpaca fills the parent entry order, so the
+        app does not place a standalone stop before a position exists.
+        """
+        if not self.client:
+            log.info(
+                "mock_protected_limit_entry",
+                ticker=ticker,
+                qty=qty,
+                price=limit_price,
+                stop=stop_price,
+                direction=direction,
+            )
+            return {
+                "entry_order_id": "mock_order_id",
+                "stop_order_id": "mock_stop_id",
+                "order_strategy": "oto",
+                "stop_price": stop_price,
+            }
+
+        side = OrderSide.SELL if direction == "short" else OrderSide.BUY
+        try:
+            order_data = LimitOrderRequest(
+                symbol=ticker,
+                qty=qty,
+                side=side,
+                type=OrderType.LIMIT,
+                time_in_force=TimeInForce.DAY,
+                limit_price=limit_price,
+                order_class=OrderClass.OTO,
+                stop_loss=StopLossRequest(stop_price=stop_price),
+            )
+            order = self.client.submit_order(order_data)
+            stop_order_id = ""
+            for leg in getattr(order, "legs", None) or []:
+                if getattr(leg, "stop_price", None) is not None:
+                    stop_order_id = str(leg.id)
+                    break
+            log.info(
+                "protected_limit_entry_submitted",
+                ticker=ticker,
+                qty=qty,
+                price=limit_price,
+                stop=stop_price,
+                direction=direction,
+                order_id=str(order.id),
+                stop_order_id=stop_order_id,
+            )
+            return {
+                "entry_order_id": str(order.id),
+                "stop_order_id": stop_order_id,
+                "order_strategy": "oto",
+                "stop_price": stop_price,
+            }
+        except Exception as e:
+            log.error("protected_limit_entry_failed", ticker=ticker, error=str(e))
             raise
 
     def submit_limit_sell(self, ticker: str, qty: int, limit_price: float) -> str:

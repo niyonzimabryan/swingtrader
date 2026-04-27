@@ -23,14 +23,7 @@ class OrderManager:
         self.position = position_manager
 
     async def execute_approved_trade(self, memo_id: int) -> dict:
-        """
-        Execute a trade after operator approval.
-        1. Load memo from DB
-        2. Run risk checks
-        3. Submit limit buy
-        4. On fill, submit stop-loss
-        5. Create Trade record
-        """
+        """Execute a paper trade after operator approval."""
         # Load memo
         with get_session() as session:
             memo = session.query(Memo).filter_by(id=memo_id).first()
@@ -84,8 +77,9 @@ class OrderManager:
         )
 
         if not risk_result["allowed"]:
-            log.warning("trade_blocked_by_risk", ticker=ticker, reasons=risk_result["reasons"])
-            return {"success": False, "error": " | ".join(risk_result["reasons"])}
+            reasons = risk_result.get("reasons", ["Risk check blocked trade"])
+            log.warning("trade_blocked_by_risk", ticker=ticker, reasons=reasons)
+            return {"success": False, "error": " | ".join(reasons)}
 
         # Submit entry order (direction-aware)
         shares = trade_params.get("shares", 0)
@@ -96,20 +90,28 @@ class OrderManager:
         if shares <= 0 or entry_price <= 0:
             return {"success": False, "error": "Invalid trade parameters (shares or price <= 0)"}
 
+        status = "pending_fill"
+        entry_order_id = ""
+        stop_order_id = ""
+        order_strategy = "simple"
         try:
-            if direction == "short":
+            if hasattr(self.alpaca, "submit_protected_limit_entry") and stop_loss > 0:
+                order_result = self.alpaca.submit_protected_limit_entry(
+                    ticker=ticker,
+                    qty=shares,
+                    limit_price=entry_price,
+                    stop_price=stop_loss,
+                    direction=direction,
+                )
+                entry_order_id = order_result.get("entry_order_id", "")
+                stop_order_id = order_result.get("stop_order_id", "")
+                order_strategy = order_result.get("order_strategy", "oto")
+            elif direction == "short":
                 entry_order_id = self.alpaca.submit_limit_short_entry(ticker, shares, entry_price)
             else:
                 entry_order_id = self.alpaca.submit_limit_buy(ticker, shares, entry_price)
         except Exception as e:
             return {"success": False, "error": f"Order submission failed: {str(e)}"}
-
-        # Submit stop-loss (direction-aware)
-        stop_order_id = ""
-        try:
-            stop_order_id = self.alpaca.submit_stop_loss(ticker, shares, stop_loss, direction=direction)
-        except Exception as e:
-            log.error("stop_loss_placement_failed", ticker=ticker, error=str(e))
 
         # Create Trade record
         try:
@@ -119,31 +121,33 @@ class OrderManager:
                     memo_id=memo_id,
                     direction=direction,
                     entry_price=entry_price,
-                    entry_date=datetime.utcnow(),
+                    entry_date=None,
                     shares=shares,
                     stop_loss=stop_loss,
                     target_1=trade_params.get("target_1", 0),
                     target_2=trade_params.get("target_2", 0),
                     position_pct=trade_params.get("position_pct", 0),
-                    status="open",
+                    status=status,
                     setup_type=trade_params.get("setup_type", ""),
                     signal_scores=json.dumps(signal_breakdown),
                     regime_at_entry=regime_data.get("regime", "neutral"),
                     alpaca_entry_order_id=entry_order_id,
                     alpaca_stop_order_id=stop_order_id,
+                    operator_notes=f"ORDER_STRATEGY:{order_strategy}",
                 )
                 session.add(trade)
         except Exception as e:
             log.error("trade_record_failed", ticker=ticker, error=str(e))
 
         log.info(
-            "trade_executed",
+            "trade_submitted",
             ticker=ticker, shares=shares, entry=entry_price,
-            stop=stop_loss, order_id=entry_order_id,
+            stop=stop_loss, order_id=entry_order_id, status=status,
         )
 
         return {
             "success": True,
+            "status": status,
             "ticker": ticker,
             "shares": shares,
             "entry_price": entry_price,

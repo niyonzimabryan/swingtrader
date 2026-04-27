@@ -1,6 +1,7 @@
 """
 Web Research Agent — replaces Reddit sentiment stub.
-Conducts deep web research on catalyst-flagged tickers using Sonnet + web_search.
+Conducts deep web research on catalyst-flagged tickers using the configured
+grounded search provider.
 Researches 5 dimensions: catalyst context, competitive dynamics, management signals,
 bull/bear debate, and institutional positioning.
 """
@@ -59,8 +60,12 @@ class WebResearchAgent(BaseAgent):
         catalyst_data: dict, catalyst_reasoning: str,
         direction_hint: str,
     ) -> dict:
-        """Run multi-dimensional web research via Sonnet + web_search."""
-        model = get_model("web_research", self.settings)
+        """Run multi-dimensional grounded web research."""
+        if getattr(self.settings, "web_search_provider", "anthropic") == "gemini":
+            model = getattr(self.settings, "gemini_web_research_model", "gemini-3.1-pro-preview")
+        else:
+            model = get_model("web_research", self.settings)
+        max_searches = max(1, int(getattr(self.settings, "web_research_max_searches", 8)))
 
         catalyst_summary = catalyst_data.get("catalyst_summary", "")
         catalyst_type = catalyst_data.get("catalyst_type", "")
@@ -69,8 +74,11 @@ class WebResearchAgent(BaseAgent):
             "You are a senior equity research analyst conducting deep web research on a stock "
             "that has been flagged with a potential catalyst. Your research will inform a swing trade "
             "decision (1-20 trading day holding period).\n\n"
-            "Search the web thoroughly to gather current, actionable information across ALL five dimensions listed. "
-            "Be specific and cite recent data points. If you can't find information on a dimension, say so explicitly."
+            "Use grounded web search before answering. Scrutinize the setup like a skeptical PM: verify the catalyst, "
+            "look for disconfirming evidence, check whether the market already priced it in, and identify what would "
+            "invalidate the trade.\n\n"
+            "Search thoroughly across ALL five dimensions listed. Prefer primary sources and recent reputable reporting. "
+            "Be specific, include source URLs in JSON fields where useful, and say explicitly when evidence is sparse."
         )
 
         user_prompt = (
@@ -103,7 +111,8 @@ class WebResearchAgent(BaseAgent):
             '  "confidence": 0.0-1.0,\n'
             '  "direction": "bullish|bearish|neutral",\n'
             '  "key_finding": "single most important finding in one sentence",\n'
-            '  "sources_summary": "brief description of sources found"\n'
+            '  "sources_summary": "brief description of sources found, including source URLs when available",\n'
+            '  "source_urls": ["https://source-1.example", "https://source-2.example"]\n'
             "}\n\n"
             "SCORING GUIDANCE:\n"
             "- information_score: How favorable is the information environment for a trade?\n"
@@ -117,7 +126,7 @@ class WebResearchAgent(BaseAgent):
         )
 
         result = self.web_search_client.search_and_analyze_json(
-            system_prompt, user_prompt, model=model, max_searches=5, max_tokens=4096
+            system_prompt, user_prompt, model=model, max_searches=max_searches, max_tokens=6144
         )
 
         log.info(
@@ -151,6 +160,8 @@ class WebResearchAgent(BaseAgent):
                 "institutional_positioning": result.get("institutional_positioning", ""),
                 "key_finding": result.get("key_finding", ""),
                 "sources_summary": result.get("sources_summary", ""),
+                "source_urls": result.get("source_urls", []),
+                "grounding": result.get("_grounding", {}),
                 "status": "active",
             },
             run_id=self.run_id,

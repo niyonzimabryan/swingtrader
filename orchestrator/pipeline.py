@@ -86,9 +86,17 @@ class TradingPipeline:
         self.web_search_client = None
         self.discovery_agent = None
         self.web_research_agent = None
-        if settings.anthropic_api_key:
+        web_provider = getattr(settings, "web_search_provider", "gemini")
+        if web_provider == "gemini" and not getattr(settings, "gemini_api_key", "") and settings.anthropic_api_key:
+            log.warning("gemini_search_missing_key_fallback_to_anthropic")
+            web_provider = "anthropic"
+        web_search_available = (
+            (web_provider == "anthropic" and settings.anthropic_api_key)
+            or (web_provider == "gemini" and getattr(settings, "gemini_api_key", ""))
+        )
+        if web_search_available:
             self.web_search_client = WebSearchClient(
-                settings.web_search_provider, self.anthropic_client, settings
+                web_provider, self.anthropic_client, settings
             )
             self.discovery_agent = DiscoveryAgent(
                 settings, self.anthropic_client, self.web_search_client
@@ -315,7 +323,13 @@ class TradingPipeline:
         except Exception as e:
             log.error("scan_notification_failed", error=str(e))
 
-    def _build_scan_list(self, discovery_output: DiscoveryOutput, structured_result: StructuredScanResult = None, gemini_result: GeminiBatchResult = None) -> list:
+    def _build_scan_list(
+        self,
+        discovery_output: DiscoveryOutput,
+        structured_result: StructuredScanResult = None,
+        gemini_result: GeminiBatchResult = None,
+        allow_universe_fallback: bool = True,
+    ) -> list:
         """
         Merge tier2_escalated + tier1_flagged + discovery + watchlist + remaining universe.
         Priority: tier2_gemini > tier1_scan > discovery > watchlist > universe (first seen wins).
@@ -328,9 +342,11 @@ class TradingPipeline:
         # Build lookup of Gemini results by ticker
         gemini_lookup = {}
         gemini_escalated_set = set()
+        gemini_screened_set = set()
         if gemini_result:
             for gr in gemini_result.results:
                 gemini_lookup[gr.ticker] = gr
+                gemini_screened_set.add(gr.ticker)
             gemini_escalated_set = set(gemini_result.escalated)
 
         # Priority 0: Tier 2 Gemini-escalated tickers (skip Haiku — already researched by Gemini)
@@ -355,6 +371,8 @@ class TradingPipeline:
         # Priority 0.5: Tier 1 flagged tickers NOT screened by Gemini (fallback if Gemini unavailable)
         if structured_result:
             for flagged in structured_result.flagged:
+                if flagged.symbol in gemini_screened_set:
+                    continue
                 if flagged.symbol not in seen:
                     seen.add(flagged.symbol)
                     catalyst_context = f"Tier 1 flags: {', '.join(flagged.catalysts)}"
@@ -401,7 +419,7 @@ class TradingPipeline:
         # Only include non-flagged universe tickers if no structured scan ran
         # (to avoid processing 500 tickers when Tier 1/2 already filtered)
         has_tier_results = (gemini_escalated_set) or (structured_result and structured_result.flagged)
-        if has_tier_results:
+        if has_tier_results or not allow_universe_fallback:
             # Tier 1/2 ran successfully — only process escalated + discovery + watchlist
             pass
         else:
