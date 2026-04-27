@@ -14,6 +14,7 @@ from database import db as db_module
 from database.db import get_session, init_db
 from database.models import Memo, Ticker, Trade
 from execution.order_manager import OrderManager
+from execution.order_monitor import OrderMonitor
 from orchestrator.pipeline import TradingPipeline
 from screening.gemini_screener import GeminiBatchResult, GeminiScreenResult
 
@@ -294,3 +295,60 @@ class OrderExecutionFlowTests(unittest.TestCase):
             self.assertIsNone(trade.entry_date)
             self.assertEqual(trade.alpaca_entry_order_id, "entry-1")
             self.assertEqual(trade.alpaca_stop_order_id, "stop-1")
+
+
+class _MissingPositionAlpaca:
+    def close_position(self, ticker):
+        return {"success": False, "error": '{"code":40410000,"message":"position not found: ORCL"}'}
+
+    def cancel_order(self, order_id):
+        return None
+
+
+class OrderMonitorReconciliationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "monitor.db"
+        init_db(f"sqlite:///{self.db_path}")
+        with get_session() as session:
+            ticker = Ticker(symbol="ORCL", sector="Technology", in_universe=True)
+            session.add(ticker)
+            session.flush()
+            session.add(
+                Trade(
+                    ticker_id=ticker.id,
+                    direction="long",
+                    entry_price=100.0,
+                    entry_date=datetime.utcnow() - timedelta(days=45),
+                    shares=5,
+                    stop_loss=92.0,
+                    target_1=108.0,
+                    target_2=115.0,
+                    position_pct=2.5,
+                    status="open",
+                )
+            )
+
+        self.monitor = OrderMonitor(
+            _MissingPositionAlpaca(),
+            notification_manager=None,
+            settings=SimpleNamespace(max_holding_days=20),
+        )
+
+    def tearDown(self):
+        if db_module.engine is not None:
+            db_module.engine.dispose()
+        db_module.engine = None
+        db_module.SessionLocal = None
+        self.temp_dir.cleanup()
+
+    def test_time_exit_reconciles_trade_when_alpaca_position_is_missing(self):
+        asyncio.run(self.monitor._check_open_trades())
+
+        with get_session() as session:
+            trade = session.query(Trade).first()
+            self.assertEqual(trade.status, "closed")
+            self.assertEqual(trade.exit_reason, "reconciled_missing_position")
+            self.assertIsNotNone(trade.exit_date)
+            self.assertIsNone(trade.pnl_absolute)
+            self.assertIn("RECONCILED_MISSING_POSITION", trade.operator_notes)

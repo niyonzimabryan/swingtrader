@@ -290,6 +290,10 @@ class OrderMonitor:
         try:
             result = self.alpaca.close_position(ticker)
             if not result.get("success"):
+                error = result.get("error", "")
+                if self._is_position_not_found(error):
+                    await self._handle_missing_position_reconciliation(trade, ticker, error, session)
+                    return
                 log.error("time_exit_close_failed", ticker=ticker, error=result.get("error"))
                 return
         except Exception as e:
@@ -330,6 +334,45 @@ class OrderMonitor:
             await self.nm.system_message(
                 f"Time exit: {ticker} ({dir_label}) closed after {days_held} days. "
                 f"P&L: {pnl_pct:+.2f}% (${pnl_abs:+,.2f})"
+            )
+
+    def _is_position_not_found(self, error: str | None) -> bool:
+        """Return True when Alpaca says the DB trade no longer has a live position."""
+        normalized = (error or "").lower()
+        return "position not found" in normalized
+
+    async def _handle_missing_position_reconciliation(self, trade: Trade, ticker: str, error: str, session):
+        """
+        Stop monitoring a stale DB trade when Alpaca has no matching position.
+
+        This preserves the audit trail without fabricating P&L. The likely causes
+        are manual closure, historical DB drift, or an old monitor bug.
+        """
+        trade.status = "closed"
+        trade.exit_reason = "reconciled_missing_position"
+        trade.exit_date = datetime.utcnow()
+        existing_notes = trade.operator_notes or ""
+        note = f"RECONCILED_MISSING_POSITION:{error[:240]}"
+        trade.operator_notes = f"{existing_notes}|{note}" if existing_notes else note
+        session.commit()
+
+        if trade.alpaca_stop_order_id:
+            try:
+                self.alpaca.cancel_order(trade.alpaca_stop_order_id)
+            except Exception:
+                pass
+        self._cancel_target_orders(trade)
+
+        log.warning(
+            "trade_reconciled_missing_position",
+            ticker=ticker,
+            trade_id=trade.id,
+            error=error,
+        )
+
+        if self.nm:
+            await self.nm.system_message(
+                f"Reconciled stale trade: {ticker} is marked closed because Alpaca has no matching position."
             )
 
     async def _handle_entry_cancelled(self, trade: Trade, ticker: str, session):
