@@ -18,6 +18,7 @@ log = get_logger("deep_research_client")
 GEMINI_DEEP_RESEARCH_AGENT = "deep-research-pro-preview-12-2025"
 DEFAULT_POLL_INTERVAL = 15  # seconds between polls
 DEFAULT_TIMEOUT = 1800  # 30 minutes max
+MAX_CONSECUTIVE_POLL_ERRORS = 5  # Fail-fast threshold for persistent polling exceptions
 
 
 class DeepResearchClient:
@@ -151,6 +152,8 @@ class DeepResearchClient:
 
         start = time.time()
         loop = asyncio.get_event_loop()
+        consecutive_errors = 0
+        last_error: str = ""
 
         while True:
             elapsed = time.time() - start
@@ -168,6 +171,7 @@ class DeepResearchClient:
                     None,
                     lambda: self._client.interactions.get(task_id),
                 )
+                consecutive_errors = 0
 
                 if interaction.status == "completed":
                     report = ""
@@ -203,8 +207,30 @@ class DeepResearchClient:
                     log.debug("deep_research_polling", task_id=task_id, elapsed=round(elapsed, 0))
 
             except Exception as e:
-                log.error("deep_research_poll_error", task_id=task_id, error=str(e))
-                # Don't fail on transient errors — keep polling
-                pass
+                consecutive_errors += 1
+                last_error = str(e)
+                log.error(
+                    "deep_research_poll_error",
+                    task_id=task_id,
+                    error=last_error,
+                    consecutive_errors=consecutive_errors,
+                )
+                if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS:
+                    duration = time.time() - start
+                    log.error(
+                        "deep_research_poll_fast_fail",
+                        task_id=task_id,
+                        consecutive_errors=consecutive_errors,
+                        duration_s=round(duration, 1),
+                    )
+                    return {
+                        "task_id": task_id,
+                        "status": "failed",
+                        "duration_s": round(duration, 1),
+                        "error": (
+                            f"{MAX_CONSECUTIVE_POLL_ERRORS} consecutive poll errors; "
+                            f"last error: {last_error[:300]}"
+                        ),
+                    }
 
             await asyncio.sleep(poll_interval)
