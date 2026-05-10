@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     deep_research_provider: str = "gemini"  # "gemini" or "openai"
     deep_research_score_threshold: float = 0.75
 
+    # --- Firecrawl (optional narrative scraper + paywall fallback) ---
+    firecrawl_api_key: str = ""
+    firecrawl_max_calls_per_scan: int = 50
+    archive_is_enabled: bool = True
+
     # --- V2: Watchlist ---
     watchlist_haiku_threshold: int = 2  # Lower bar for watchlist tickers
     watchlist_max_size: int = 25

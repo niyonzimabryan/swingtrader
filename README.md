@@ -46,6 +46,8 @@ The normal open-source setup expects every core trading and data key:
 
 Gemini is optional for a bare setup, but recommended. When configured, Gemini 3.1 Pro Preview powers the search-heavy discovery and web-research stages with Google Search grounding, Gemini Flash screens Tier 1 names, and Gemini deep research can run in the background for high-conviction memos. If Gemini is blank, the app can fall back to Anthropic web search.
 
+Firecrawl (`FIRECRAWL_API_KEY`) is also optional. When set, the catalyst agent recovers full article bodies for paywalled news (with archive.is as a second fallback) and the web research agent feeds scraped narrative directly into the LLM prompt. The free tier covers typical use (~50 calls/day). Without the key, agents degrade gracefully — catalyst summaries stay headline-only and web research relies on grounded LLM search alone.
+
 ## Validate
 
 Run a local presence check:
