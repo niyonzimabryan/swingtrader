@@ -325,8 +325,11 @@ def format_memo_telegram(memo_data: dict) -> str:
         if key_risk:
             lines.append(f"Key concern: {esc(key_risk)}")
         lines.append("")
-        # Still show draft params so operator can override
-        _render_trade_params("DRAFT TRADE PARAMS \\(Sonnet\\)")
+        # Show Sonnet's draft params as reference context only — clearly marked non-executable.
+        # Opus did not endorse these; the WATCHLIST keyboard intentionally omits Approve.
+        lines.append("_Sonnet draft params below — reference only, not endorsed by Opus_")
+        lines.append("")
+        _render_trade_params("REFERENCE PARAMS — NOT EXECUTABLE \\(Sonnet draft\\)")
     elif opus_rec == "pass":
         lines.append("═══ *OPUS RECOMMENDATION: PASS* ❌ ═══")
         lines.append("")
@@ -488,7 +491,8 @@ def format_memo_plain(memo_data: dict) -> str:
         key_risk = opus.get("key_risk", "")
         if key_risk:
             lines.append(f"Key concern: {key_risk}")
-        _plain_params("DRAFT TRADE PARAMS (Sonnet)")
+        lines.append("Sonnet draft params below — reference only, not endorsed by Opus.")
+        _plain_params("REFERENCE PARAMS — NOT EXECUTABLE (Sonnet draft)")
     elif opus_rec == "pass":
         lines.append(f"\n{'=' * 20} OPUS RECOMMENDATION: PASS {'=' * 20}")
         reasoning = opus.get("reasoning", "")

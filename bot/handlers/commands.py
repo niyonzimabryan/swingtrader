@@ -1,6 +1,5 @@
 """
-Core bot command handlers: /help, /status, /regime, /positions, /agents, /exposure, /risk, /scan, /watchlist
-Plus stubs for: /upcoming
+Core bot command handlers: /help, /status, /regime, /positions, /agents, /exposure, /risk, /scan, /watchlist, /upcoming
 """
 
 import asyncio
@@ -313,7 +312,51 @@ async def watchlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @authorized
 async def upcoming_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📅 Upcoming catalysts — coming soon.", parse_mode=None)
+    """Show next known catalysts for watchlist + open positions (earnings only in MVP)."""
+    from data.upcoming_catalysts import collect_upcoming, format_upcoming_message
+    from database.db import get_session
+    from database.models import Ticker, Trade
+    from orchestrator.universe import get_watchlist
+
+    try:
+        watchlist_tickers = [w["ticker"] for w in get_watchlist()]
+    except Exception as e:
+        log.warning("upcoming_watchlist_lookup_failed", error=str(e))
+        watchlist_tickers = []
+
+    position_tickers: list[str] = []
+    try:
+        with get_session() as session:
+            rows = (
+                session.query(Ticker.symbol)
+                .join(Trade, Trade.ticker_id == Ticker.id)
+                .filter(Trade.status == "open")
+                .all()
+            )
+            position_tickers = [r[0] for r in rows]
+    except Exception as e:
+        log.warning("upcoming_positions_lookup_failed", error=str(e))
+
+    tickers = list({*watchlist_tickers, *position_tickers})
+    if not tickers:
+        await update.message.reply_text(
+            "📅 No upcoming catalysts found — your watchlist and open positions are empty.\n\n"
+            "Add tickers via /watchlist add TICKER reason.",
+            parse_mode=None,
+        )
+        return
+
+    try:
+        catalysts = await asyncio.to_thread(collect_upcoming, tickers)
+    except Exception as e:
+        log.error("upcoming_collect_failed", error=str(e))
+        await update.message.reply_text(
+            "📅 Couldn't fetch upcoming catalysts right now (data provider error). Try again shortly.",
+            parse_mode=None,
+        )
+        return
+
+    await update.message.reply_text(format_upcoming_message(catalysts), parse_mode=None)
 
 @authorized
 async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

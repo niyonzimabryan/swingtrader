@@ -15,7 +15,7 @@ MEMO_FALLBACK_SPLIT_HEADERS = (
     "═══ *FINAL TRADE PARAMETERS* ═══",
     "═══ *OPUS RECOMMENDATION: WATCHLIST* 👀 ═══",
     "═══ *OPUS RECOMMENDATION: PASS* ❌ ═══",
-    "═══ *DRAFT TRADE PARAMS \\(Sonnet\\)* ═══",
+    "═══ *REFERENCE PARAMS — NOT EXECUTABLE \\(Sonnet draft\\)* ═══",
 )
 
 
