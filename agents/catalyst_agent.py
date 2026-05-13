@@ -55,15 +55,19 @@ def _compute_catalyst_score(sonnet_result: dict) -> tuple:
     return catalyst_score, materiality, direction_confidence
 
 
+CATALYST_BODY_MAX_CHARS = 6000
+
+
 class CatalystAgent(BaseAgent):
     agent_type = "catalyst"
 
-    def __init__(self, settings, anthropic_client=None):
+    def __init__(self, settings, anthropic_client=None, article_fetcher=None):
         super().__init__(settings, anthropic_client)
         self.news_data = NewsDataAdapter(settings.finnhub_api_key)
         self.sec_data = SECDataAdapter()
         self.market_data = MarketDataAdapter()
         self.escalation = EscalationManager(anthropic_client, settings) if anthropic_client else None
+        self.article_fetcher = article_fetcher
 
     def analyze(self, ticker: str = None, **kwargs) -> AgentOutput:
         """
@@ -178,9 +182,18 @@ class CatalystAgent(BaseAgent):
                 run_id=self.run_id,
             )
 
+        # Optional: enrich with full article body before deep analysis. The
+        # Haiku-screened text is just headline + summary, so paywalled news
+        # would otherwise reach Sonnet without the body. Firecrawl/archive.is
+        # try to recover it; on failure we tag narrative_quality so Sonnet
+        # knows to weight price/fundamentals more heavily.
+        enriched_text, narrative_quality = self._enrich_text(
+            best_catalyst.get("text", ""), best_catalyst.get("source", "")
+        )
+
         # Escalate to Sonnet for deep analysis
         sonnet_result = self.escalation.sonnet_analyze(
-            ticker, best_catalyst["text"], best_catalyst["haiku_result"], company_context
+            ticker, enriched_text, best_catalyst["haiku_result"], company_context
         )
 
         # V2: Materiality/direction confidence split
@@ -212,10 +225,33 @@ class CatalystAgent(BaseAgent):
                 "risk_analysis": sonnet_result.get("risk_analysis", {}),
                 "haiku_score": best_haiku_score,
                 "source": best_catalyst.get("source", ""),
+                "narrative_quality": narrative_quality,
                 "sonnet_error": sonnet_result.get("error"),
             },
             run_id=self.run_id,
         )
+
+    def _enrich_text(self, text: str, source_url: str) -> tuple[str, str]:
+        """Try to append full article body to a headline-only catalyst text.
+
+        Returns (text, narrative_quality). narrative_quality is one of:
+          "firecrawl"      — full body via Firecrawl
+          "archive"        — body recovered from archive.is
+          "skipped_paywall" — fetch attempted, both routes failed
+          "headline_only"  — fetcher disabled or no source URL
+        """
+        if not self.article_fetcher or not source_url:
+            return text, "headline_only"
+
+        body, status = self.article_fetcher.fetch(source_url)
+        if body and status in ("firecrawl", "archive"):
+            trimmed = body[:CATALYST_BODY_MAX_CHARS]
+            enriched = f"{text}\n\n--- Full article body ({status}) ---\n{trimmed}"
+            return enriched, status
+
+        if status == "paywalled":
+            return text, "skipped_paywall"
+        return text, "headline_only"
 
     def _analyze_discovery_context(
         self, ticker: str, discovery_context: str, direction_hint: str, company_context: str

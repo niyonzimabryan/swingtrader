@@ -16,12 +16,21 @@ from utils.logger import get_logger
 log = get_logger("web_research_agent")
 
 
+SCRAPED_BODY_MAX_CHARS = 4000
+SCRAPED_BLOCK_BUDGET_CHARS = 12000
+
+
 class WebResearchAgent(BaseAgent):
     agent_type = "web_research"
 
-    def __init__(self, settings, anthropic_client=None, web_search_client: WebSearchClient = None):
+    def __init__(
+        self, settings, anthropic_client=None,
+        web_search_client: WebSearchClient = None,
+        firecrawl_client=None,
+    ):
         super().__init__(settings, anthropic_client)
         self.web_search_client = web_search_client
+        self.firecrawl_client = firecrawl_client
 
     def analyze(self, ticker: str = None, **kwargs) -> AgentOutput:
         """
@@ -46,19 +55,68 @@ class WebResearchAgent(BaseAgent):
         catalyst_reasoning = kwargs.get("catalyst_reasoning", "")
         direction_hint = kwargs.get("direction_hint", "neutral")
 
+        scraped_sources = self._scrape_supplemental_sources(ticker, catalyst_data)
+
         try:
             result = self._run_research(
-                ticker, sector, catalyst_data, catalyst_reasoning, direction_hint
+                ticker, sector, catalyst_data, catalyst_reasoning, direction_hint,
+                scraped_sources=scraped_sources,
             )
-            return self._build_output(ticker, result)
+            return self._build_output(ticker, result, scraped_sources=scraped_sources)
         except Exception as e:
             log.error("web_research_failed", ticker=ticker, error=str(e))
             return self._fallback_output(ticker, str(e))
+
+    def _scrape_supplemental_sources(self, ticker: str, catalyst_data: dict) -> list[dict]:
+        """Scrape catalyst-supplied URLs through Firecrawl for the LLM prompt.
+
+        Returns a list of {url, markdown} dicts. Empty list when Firecrawl is
+        not configured or no URLs were supplied — the agent then falls back to
+        grounded LLM search alone, which is still functional.
+        """
+        if not self.firecrawl_client or not getattr(self.firecrawl_client, "is_available", False):
+            return []
+
+        urls = self._collect_source_urls(catalyst_data)
+        if not urls:
+            return []
+
+        scraped = []
+        budget = SCRAPED_BLOCK_BUDGET_CHARS
+        for url in urls:
+            if budget <= 0:
+                break
+            markdown = self.firecrawl_client.scrape(url)
+            if not markdown:
+                continue
+            trimmed = markdown[:SCRAPED_BODY_MAX_CHARS]
+            scraped.append({"url": url, "markdown": trimmed})
+            budget -= len(trimmed)
+
+        if scraped:
+            log.info("web_research_scraped", ticker=ticker, count=len(scraped))
+        return scraped
+
+    @staticmethod
+    def _collect_source_urls(catalyst_data: dict) -> list[str]:
+        if not isinstance(catalyst_data, dict):
+            return []
+        urls: list[str] = []
+        primary = catalyst_data.get("source")
+        if isinstance(primary, str) and primary.startswith("http"):
+            urls.append(primary)
+        extra = catalyst_data.get("source_urls")
+        if isinstance(extra, list):
+            for u in extra:
+                if isinstance(u, str) and u.startswith("http") and u not in urls:
+                    urls.append(u)
+        return urls[:5]
 
     def _run_research(
         self, ticker: str, sector: str,
         catalyst_data: dict, catalyst_reasoning: str,
         direction_hint: str,
+        scraped_sources: list[dict] | None = None,
     ) -> dict:
         """Run multi-dimensional grounded web research."""
         if getattr(self.settings, "web_search_provider", "anthropic") == "gemini":
@@ -81,6 +139,22 @@ class WebResearchAgent(BaseAgent):
             "Be specific, include source URLs in JSON fields where useful, and say explicitly when evidence is sparse."
         )
 
+        scraped_block = ""
+        if scraped_sources:
+            chunks = []
+            for src in scraped_sources:
+                url = src.get("url", "")
+                md = src.get("markdown", "")
+                if not md:
+                    continue
+                chunks.append(f"Source: {url}\n{md}")
+            if chunks:
+                scraped_block = (
+                    "PRE-FETCHED SOURCES (Firecrawl scrape, treat as primary evidence "
+                    "but verify recency with your search tools):\n"
+                    + "\n\n---\n\n".join(chunks) + "\n\n"
+                )
+
         user_prompt = (
             f"Research {ticker} ({sector}) for a potential swing trade.\n\n"
             f"CATALYST CONTEXT:\n"
@@ -88,6 +162,7 @@ class WebResearchAgent(BaseAgent):
             f"Summary: {catalyst_summary}\n"
             f"Direction hint: {direction_hint}\n"
             f"Full reasoning: {catalyst_reasoning[:500]}\n\n"
+            f"{scraped_block}"
             "Research the following 5 dimensions and respond with JSON:\n\n"
             "1. CATALYST CONTEXT — What are analysts expecting? Any whisper numbers? "
             "Key metrics to watch? How does this compare to prior quarters?\n\n"
@@ -139,7 +214,9 @@ class WebResearchAgent(BaseAgent):
 
         return result
 
-    def _build_output(self, ticker: str, result: dict) -> AgentOutput:
+    def _build_output(
+        self, ticker: str, result: dict, scraped_sources: list[dict] | None = None,
+    ) -> AgentOutput:
         """Convert web research result to AgentOutput."""
         info_score = result.get("information_score", 0.5)
         confidence = result.get("confidence", 0.5)
@@ -162,6 +239,7 @@ class WebResearchAgent(BaseAgent):
                 "sources_summary": result.get("sources_summary", ""),
                 "source_urls": result.get("source_urls", []),
                 "grounding": result.get("_grounding", {}),
+                "scraped_source_urls": [s.get("url", "") for s in (scraped_sources or [])],
                 "status": "active",
             },
             run_id=self.run_id,

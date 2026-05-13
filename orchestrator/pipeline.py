@@ -35,6 +35,8 @@ from orchestrator.universe import seed_universe, get_active_universe, get_watchl
 from utils.anthropic_client import AnthropicClient
 from utils.web_search_client import WebSearchClient
 from utils.deep_research_client import DeepResearchClient
+from utils.firecrawl_client import FirecrawlClient
+from utils.article_fetcher import ArticleFetcher
 from utils.logger import get_logger
 
 log = get_logger("pipeline")
@@ -76,9 +78,19 @@ class TradingPipeline:
         if settings.anthropic_api_key:
             self.anthropic_client = AnthropicClient(settings.anthropic_api_key)
 
+        # Firecrawl + archive.is fallback for paywalled narrative sources.
+        # Both are optional — agents fall back gracefully when not configured.
+        self.firecrawl_client = FirecrawlClient(settings)
+        self.article_fetcher = ArticleFetcher(
+            firecrawl_client=self.firecrawl_client,
+            archive_enabled=getattr(settings, "archive_is_enabled", True),
+        )
+
         # Initialize agents
         self.macro_agent = MacroRegimeAgent(settings, self.anthropic_client)
-        self.catalyst_agent = CatalystAgent(settings, self.anthropic_client)
+        self.catalyst_agent = CatalystAgent(
+            settings, self.anthropic_client, article_fetcher=self.article_fetcher
+        )
         self.fundamental_agent = FundamentalAgent(settings, self.anthropic_client)
         self.pattern_agent = PatternAgent(settings, self.anthropic_client)
 
@@ -102,10 +114,13 @@ class TradingPipeline:
                 settings, self.anthropic_client, self.web_search_client
             )
             self.web_research_agent = WebResearchAgent(
-                settings, self.anthropic_client, self.web_search_client
+                settings, self.anthropic_client, self.web_search_client,
+                firecrawl_client=self.firecrawl_client,
             )
         else:
-            self.web_research_agent = WebResearchAgent(settings, self.anthropic_client)
+            self.web_research_agent = WebResearchAgent(
+                settings, self.anthropic_client, firecrawl_client=self.firecrawl_client
+            )
 
         # Initialize scoring and memo
         self.scoring_engine = ScoringEngine(settings, self.anthropic_client)
