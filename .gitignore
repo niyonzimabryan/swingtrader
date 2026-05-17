@@ -3,6 +3,9 @@ __pycache__/
 *.db
 *.db-journal
 .env
+.env.local
+.env.*
+!.env.example
 *.egg-info/
 dist/
 build/
@@ -13,3 +16,14 @@ venv/
 *.log
 .DS_Store
 .claude/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+data/
+/data/
+sessions/
+/sessions/
+cache/
+caches/
