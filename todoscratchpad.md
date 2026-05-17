@@ -25,7 +25,7 @@
 - [x] **Reddit Sentiment Agent is stubbed** — ✅ Superseded by `WebResearchAgent` which does live web search via Anthropic's `web_search_20250305` tool. Reddit agent file (`agents/reddit_agent.py`) is orphaned dead code — can be deleted. No PRAW credentials needed.
 - [ ] **1 Telegram command still stubbed** — `/upcoming` returns "coming soon". All others are live including `/watchlist` (view, add, remove with inline buttons).
 - [x] **No test suite / no CI gate** — ✅ Added GitHub Actions CI plus 20 deterministic unit/regression tests covering onboarding, Gemini parsing, discovery recovery, memo delivery fallback, scan-list gating, reports, and approved-trade pending-fill execution.
-- [ ] **Broaden safety-critical tests** — Add focused unit coverage for scoring weights, risk manager rejection cases, position sizing, short trade parameter inversion, and order-monitor fill/stop/target transitions.
+- [x] **Broaden safety-critical tests** — ✅ Added/expanded focused unit coverage for scoring weights, risk manager rejection cases, position sizing, short trade parameter inversion, and order-monitor fill/stop/target/time/cancel transitions. Coverage for safety-critical modules now exceeds 70%.
 - [ ] **Signal attribution needs 30+ trades** — `tracking/attribution.py` is a stub. Can't do meaningful signal-level performance analysis until enough closed trades exist
 - [ ] **`run_in_executor` in pipeline** — `run_ad_hoc_async` uses `loop.run_in_executor` which works but isn't ideal. Consider making the full pipeline natively async
 - [ ] **No database migrations** — Using `create_all()` for now. Should add Alembic for schema changes as the project evolves

@@ -246,10 +246,27 @@ class RiskManagerRejectionTests(unittest.TestCase):
         self.assertTrue(any("portfolio exposure" in r.lower() for r in result["reasons"]))
 
     def test_sector_exposure_warns_does_not_block(self):
-        # Sector exposure check uses UNIVERSE; for unknown ticker sector defaults.
-        # Force the sector to one we know won't be tripped, then confirm no block.
-        result = self._check(sector_exposure={"Technology": 0.05})
+        # Sector exposure is advisory, not a hard block.
+        result = self._check(sector_exposure={"Technology": self.risk.settings.max_sector_exposure})
         self.assertTrue(result["allowed"])
+        self.assertTrue(any("sector exposure" in w.lower() for w in result["warnings"]))
+
+    def test_peak_value_updates_before_drawdown_check(self):
+        self.risk._peak_value = 100_000.0
+        self.assertFalse(self.risk.check_drawdown_circuit_breaker({"equity": 110_000.0}))
+        self.assertEqual(self.risk._peak_value, 110_000.0)
+
+    def test_high_correlation_blocks_new_position(self):
+        import pandas as pd
+
+        class CorrelatedMarketData(_NoopMarketData):
+            def get_daily_bars(self, *_, **__):
+                return pd.DataFrame({"Close": list(range(100, 130))})
+
+        self.risk.market_data = CorrelatedMarketData()
+        result = self._check(positions=[{"ticker": "MSFT"}])
+        self.assertFalse(result["allowed"])
+        self.assertTrue(any("high correlation" in r.lower() for r in result["reasons"]))
 
     def test_earnings_blackout_no_op_without_finnhub(self):
         # Current implementation always returns False (no Finnhub key required).
@@ -484,6 +501,104 @@ class OrderMonitorTransitionTests(unittest.TestCase):
             # Short P&L: (entry - exit)/entry*100 = (100-105)/100*100 = -5%.
             self.assertEqual(trade.pnl_pct, -5.0)
             self.assertEqual(trade.pnl_absolute, -50.0)
+
+    def test_target_hit_full_exit_closes_trade_and_cancels_stop(self):
+        trade_id = self._make_trade(
+            status="open",
+            entry_price=100.0,
+            shares=10,
+            alpaca_stop_order_id="stop-3",
+            operator_notes="ORDER_STRATEGY:oto|TARGETS:t1:target-1,t2:target-2",
+        )
+        self.alpaca.order_status_map["entry-1"] = {"status": "filled"}
+        self.alpaca.order_status_map["target-2"] = {
+            "status": "filled",
+            "filled_avg_price": 115.0,
+            "filled_qty": 10,
+        }
+        self.alpaca.positions_detail = []
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            self.assertEqual(trade.status, "closed")
+            self.assertEqual(trade.exit_reason, "target_2")
+            self.assertEqual(trade.pnl_pct, 15.0)
+            self.assertEqual(trade.pnl_absolute, 150.0)
+        self.assertIn("stop-3", self.alpaca.cancelled_orders)
+
+    def test_short_entry_fill_places_cover_targets(self):
+        trade_id = self._make_trade(
+            direction="short",
+            entry_price=100.0,
+            stop_loss=105.0,
+            target_1=90.0,
+            target_2=85.0,
+        )
+        self.alpaca.order_status_map["entry-1"] = {
+            "status": "filled",
+            "filled_avg_price": 100.0,
+            "filled_qty": 9,
+        }
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
+
+        self.assertEqual(
+            self.alpaca.target_orders,
+            [("cover", 4, 90.0), ("cover", 5, 85.0)],
+        )
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            self.assertIn("TARGETS:t1:cover-AAPL-4,t2:cover-AAPL-5", trade.operator_notes)
+
+    def test_time_exit_success_closes_with_direction_aware_pnl_and_cleans_orders(self):
+        from datetime import datetime, timedelta
+
+        trade_id = self._make_trade(
+            direction="short",
+            status="open",
+            entry_price=100.0,
+            shares=10,
+            entry_date=datetime.utcnow() - timedelta(days=30),
+            alpaca_stop_order_id="stop-4",
+            operator_notes="ORDER_STRATEGY:oto|TARGETS:t1:target-3,t2:target-4",
+        )
+        self.alpaca.order_status_map["entry-1"] = {"status": "filled"}
+        self.alpaca.positions_detail = [{"ticker": "AAPL", "current_price": 90.0}]
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            self.assertEqual(trade.status, "closed")
+            self.assertEqual(trade.exit_reason, "time_exit")
+            self.assertEqual(trade.exit_price, 90.0)
+            self.assertEqual(trade.pnl_pct, 10.0)
+            self.assertEqual(trade.pnl_absolute, 100.0)
+        self.assertIn("stop-4", self.alpaca.cancelled_orders)
+        self.assertIn("target-3", self.alpaca.cancelled_orders)
+        self.assertIn("target-4", self.alpaca.cancelled_orders)
+
+    def test_cancelled_entry_marks_trade_cancelled_and_cancels_stop(self):
+        trade_id = self._make_trade(alpaca_stop_order_id="stop-5")
+        self.alpaca.order_status_map["entry-1"] = {"status": "canceled"}
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            self.assertEqual(trade.status, "cancelled")
+            self.assertEqual(trade.exit_reason, "order_expired")
+        self.assertIn("stop-5", self.alpaca.cancelled_orders)
 
     def test_missing_alpaca_position_reconciles_without_fabricating_pnl(self):
         # Time-exit attempt but Alpaca says position not found → reconciliation path.
