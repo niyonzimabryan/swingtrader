@@ -6,8 +6,10 @@ Swing Trader turns a ticker into a Telegram trade memo, then lets you approve or
 
 Important: this is paper-trading research software, not financial advice. Use Alpaca paper keys only unless you have personally reviewed the code, strategy, broker integration, and risk controls. Every trade needs human review.
 
-License: MIT. See LICENSE.
-Financial disclaimer: read DISCLAIMER.md before setup.
+Read these before setup:
+
+- [Financial disclaimer](DISCLAIMER.md)
+- [MIT license](LICENSE)
 
 ![Swing Trader Telegram memo preview](docs/assets/telegram-memo-preview.svg)
 

@@ -25,7 +25,7 @@
 - [x] **Reddit Sentiment Agent is stubbed** — ✅ Superseded by `WebResearchAgent` which does live web search via Anthropic's `web_search_20250305` tool. Reddit agent file (`agents/reddit_agent.py`) is orphaned dead code — can be deleted. No PRAW credentials needed.
 - [ ] **1 Telegram command still stubbed** — `/upcoming` returns "coming soon". All others are live including `/watchlist` (view, add, remove with inline buttons).
 - [x] **No test suite / no CI gate** — ✅ Added GitHub Actions CI plus 20 deterministic unit/regression tests covering onboarding, Gemini parsing, discovery recovery, memo delivery fallback, scan-list gating, reports, and approved-trade pending-fill execution.
-- [ ] **Broaden safety-critical tests** — Add focused unit coverage for scoring weights, risk manager rejection cases, position sizing, short trade parameter inversion, and order-monitor fill/stop/target transitions.
+- [x] **Broaden safety-critical tests** — ✅ Added/expanded focused unit coverage for scoring weights, risk manager rejection cases, position sizing, short trade parameter inversion, and order-monitor fill/stop/target/time/cancel transitions. Coverage for safety-critical modules now exceeds 70%.
 - [ ] **Signal attribution needs 30+ trades** — `tracking/attribution.py` is a stub. Can't do meaningful signal-level performance analysis until enough closed trades exist
 - [ ] **`run_in_executor` in pipeline** — `run_ad_hoc_async` uses `loop.run_in_executor` which works but isn't ideal. Consider making the full pipeline natively async
 - [ ] **No database migrations** — Using `create_all()` for now. Should add Alembic for schema changes as the project evolves
@@ -85,7 +85,7 @@
 - [x] **Inconsistent memo formatting across split Telegram messages** — ✅ Root cause fixed: removed mutating marker repair from `bot/formatters.py`, added deterministic memo splitter (`split_memo_message`) and shared all-or-nothing delivery fallback (`bot/handlers/_memo_delivery.py`) so chunks no longer mix Markdown/plain formatting.
 - [x] **Telegram memo WEB RESEARCH truncation + chunk-2 parse miss** — ✅ Fixed both root causes: removed hard clipping in memo template (`peer_comparison`, WEB RESEARCH dimensions) and expanded Markdown parse detection to catch Telegram `"Can't parse entities"` variants (including reserved `'.'`) so fallback now reliably rolls back + resends full plain text.
 - [x] **Opus thinking mode deprecation** — ✅ Fixed: switched `thinking.type` from `enabled` to `adaptive` in both occurrences in `utils/anthropic_client.py`. Committed & deployed.
-- [ ] **Trade params contradict SHORT direction** — entry/stop/target are always computed as LONG params (stop below entry, targets above). If direction is actually short, these need to be inverted. For Phase 1 long-only this is cosmetic but will matter later.
+- [x] **Trade params contradict SHORT direction** — ✅ Verified `memo/generator.py` computes direction-aware params (short stop above entry, targets below) and added regression coverage for LONG/SHORT params plus synthetic SHORT memo rendering.
 
 ---
 
