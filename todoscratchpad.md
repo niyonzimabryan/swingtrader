@@ -85,7 +85,7 @@
 - [x] **Inconsistent memo formatting across split Telegram messages** — ✅ Root cause fixed: removed mutating marker repair from `bot/formatters.py`, added deterministic memo splitter (`split_memo_message`) and shared all-or-nothing delivery fallback (`bot/handlers/_memo_delivery.py`) so chunks no longer mix Markdown/plain formatting.
 - [x] **Telegram memo WEB RESEARCH truncation + chunk-2 parse miss** — ✅ Fixed both root causes: removed hard clipping in memo template (`peer_comparison`, WEB RESEARCH dimensions) and expanded Markdown parse detection to catch Telegram `"Can't parse entities"` variants (including reserved `'.'`) so fallback now reliably rolls back + resends full plain text.
 - [x] **Opus thinking mode deprecation** — ✅ Fixed: switched `thinking.type` from `enabled` to `adaptive` in both occurrences in `utils/anthropic_client.py`. Committed & deployed.
-- [ ] **Trade params contradict SHORT direction** — entry/stop/target are always computed as LONG params (stop below entry, targets above). If direction is actually short, these need to be inverted. For Phase 1 long-only this is cosmetic but will matter later.
+- [x] **Trade params contradict SHORT direction** — ✅ Verified `memo/generator.py` computes direction-aware params (short stop above entry, targets below) and added regression coverage for LONG/SHORT params plus synthetic SHORT memo rendering.
 
 ---
 

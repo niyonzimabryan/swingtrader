@@ -7,8 +7,10 @@ a non-endorsed trade.
 """
 
 import unittest
+from types import SimpleNamespace
 
 from bot.keyboards import memo_approval_keyboard
+from memo.generator import MemoGenerator
 from memo.templates.ic_memo import format_memo_plain, format_memo_telegram
 
 
@@ -49,6 +51,18 @@ def _base_memo(opus_recommendation: str) -> dict:
     }
 
 
+def _memo_settings() -> SimpleNamespace:
+    return SimpleNamespace(
+        portfolio_value=100_000.0,
+        base_position_pct=0.05,
+        max_position_pct=0.10,
+        min_position_pct=0.02,
+        default_stop_loss_pct=0.05,
+        max_stop_loss_pct=0.08,
+        max_holding_days=20,
+    )
+
+
 class MemoRenderingByRecommendationTests(unittest.TestCase):
     # --- BUY / APPROVE (proceed) ---
     def test_proceed_renders_executable_final_trade_params(self):
@@ -82,6 +96,72 @@ class MemoRenderingByRecommendationTests(unittest.TestCase):
                 self.assertIn("No trade parameters generated", out)
                 self.assertNotIn("FINAL TRADE PARAMETERS", out)
                 self.assertNotIn("REFERENCE PARAMS", out)
+
+
+class MemoTradeParameterDirectionTests(unittest.TestCase):
+    def setUp(self):
+        self.generator = MemoGenerator(_memo_settings(), anthropic_client=None)
+
+    def test_long_trade_params_put_stop_below_entry_and_targets_above(self):
+        params = self.generator._compute_trade_params(
+            price=100.0,
+            atr=1.0,
+            regime={"position_size_multiplier": 1.0},
+            score=0.8,
+            classification="moderate",
+            direction="long",
+        )
+
+        self.assertEqual(params["direction"], "long")
+        self.assertLess(params["stop_loss"], params["entry_price"])
+        self.assertGreater(params["target_1"], params["entry_price"])
+        self.assertGreater(params["target_2"], params["target_1"])
+        self.assertGreater(params["target_1_pct"], 0)
+        self.assertGreater(params["target_2_pct"], params["target_1_pct"])
+
+    def test_short_trade_params_put_stop_above_entry_and_targets_below(self):
+        params = self.generator._compute_trade_params(
+            price=100.0,
+            atr=1.0,
+            regime={"position_size_multiplier": 1.0},
+            score=0.8,
+            classification="moderate",
+            direction="short",
+        )
+
+        self.assertEqual(params["direction"], "short")
+        self.assertGreater(params["stop_loss"], params["entry_price"])
+        self.assertLess(params["target_1"], params["entry_price"])
+        self.assertLess(params["target_2"], params["target_1"])
+        self.assertGreater(params["target_1_pct"], 0)
+        self.assertGreater(params["target_2_pct"], params["target_1_pct"])
+
+    def test_short_memo_renders_inverted_params_matching_direction(self):
+        memo = _base_memo("proceed")
+        memo["direction"] = "short"
+        memo["direction_raw"] = "bearish"
+        memo["trade_params"] = self.generator._compute_trade_params(
+            price=100.0,
+            atr=1.0,
+            regime={"position_size_multiplier": 1.0},
+            score=0.8,
+            classification="moderate",
+            direction="short",
+        )
+
+        params = memo["trade_params"]
+        self.assertGreater(params["stop_loss"], params["entry_price"])
+        self.assertLess(params["target_1"], params["entry_price"])
+        self.assertLess(params["target_2"], params["target_1"])
+
+        for renderer in (format_memo_plain, format_memo_telegram):
+            with self.subTest(renderer=renderer.__name__):
+                out = renderer(memo)
+                self.assertIn("SHORT", out)
+                self.assertIn(f"{params['entry_price']:,.2f}", out)
+                self.assertIn(f"{params['stop_loss']:,.2f}", out)
+                self.assertIn(f"{params['target_1']:,.2f}", out)
+                self.assertIn(f"{params['target_2']:,.2f}", out)
 
 
 def _button_labels(markup):
