@@ -6,6 +6,15 @@ AI-assisted swing-trading research and paper-trading operator bot.
 
 This project runs a scheduled research pipeline, sends trade memos to Telegram, and can submit approved trades to an Alpaca paper account. It is built for paper trading first. Do not wire it to live brokerage credentials unless you have reviewed the code and risk controls yourself.
 
+## Legal and safety notice
+
+Swing Trader is paper-trading research software. It is not financial advice, it is not intended for unsupervised live trading, and an operator must review every approved trade. You accept all risk from using it.
+
+Read these before setup:
+
+- [Financial disclaimer](DISCLAIMER.md)
+- [MIT license](LICENSE)
+
 ## Quick Start
 
 Create a virtualenv and install dependencies:

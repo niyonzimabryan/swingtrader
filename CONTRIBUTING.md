@@ -2,6 +2,8 @@
 
 Thanks for helping improve Swing Trader. This project automates research and paper-trading workflows, so changes should keep setup, provider fallbacks, and trading safety easy to verify.
 
+Before contributing, read the [financial disclaimer](DISCLAIMER.md) and [MIT license](LICENSE). Do not submit changes that make live trading unattended or hide the human approval step.
+
 ## Local Setup
 
 ```bash
