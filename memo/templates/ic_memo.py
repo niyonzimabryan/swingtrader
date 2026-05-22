@@ -43,13 +43,12 @@ def format_memo_telegram(memo_data: dict) -> str:
     # === HEADER ===
     cat = d.get("catalyst", {})
     setup_type = cat.get("catalyst_type", "catalyst").replace("_", " ").title()
-    lines.append(
-        f"{'🔴' if classification == 'high_conviction' else '🟡'} "
-        f"*TRADE IDEA: {esc(d.get('ticker', '?'))} — "
-        f"{esc(d.get('direction', '?').upper())} — "
-        f"{esc(setup_type)}*"
-    )
-    lines.append(f"Score: `{fmt(score, '.2f')}` \\| {esc(classification.replace('_', ' ').title())} \\| {esc(d.get('generated_at', '')[:16])}")
+    lines.append(f"{'🔴' if classification == 'high_conviction' else '🟡'} *TRADE IDEA* `{esc(d.get('ticker', '?'))}`")
+    lines.append(f"Direction: `{esc(d.get('direction', '?').upper())}`")
+    lines.append(f"Setup: {esc(setup_type)}")
+    lines.append(f"Score: `{fmt(score, '.2f')}`")
+    lines.append(f"Class: {esc(classification.replace('_', ' ').title())}")
+    lines.append(f"Generated: {esc(d.get('generated_at', '')[:16])}")
     lines.append("")
 
     # ═══ SONNET PROPOSAL ═══
@@ -66,16 +65,20 @@ def format_memo_telegram(memo_data: dict) -> str:
     lines.append(f"Type: `{cat.get('catalyst_type', 'N/A')}`")
     modifiers = cat.get('catalyst_modifiers', [])
     if modifiers:
-        lines.append(f"Modifiers: `{esc(', '.join(modifiers))}`")
+        lines.append("Modifiers:")
+        for modifier in modifiers:
+            lines.append(f"• `{esc(modifier)}`")
     lines.append(f"Summary: {esc(cat.get('catalyst_summary', 'N/A'))}")
     materiality = cat.get('materiality', cat.get('confidence', None))
     dir_conf = cat.get('direction_confidence', cat.get('confidence', None))
     mat_str = f"{materiality:.0%}" if isinstance(materiality, (int, float)) else "?"
     dir_str = f"{dir_conf:.0%}" if isinstance(dir_conf, (int, float)) else "?"
-    lines.append(f"Materiality: `{mat_str}` \\| Direction Confidence: `{dir_str}`")
+    lines.append(f"Materiality: `{mat_str}`")
+    lines.append(f"Direction confidence: `{dir_str}`")
     impact = cat.get("expected_impact_pct", {})
     if impact:
-        lines.append(f"Impact: `{impact.get('low', '?')}%` to `{impact.get('high', '?')}%` \\| Horizon: `{cat.get('time_horizon_days', '?')}d`")
+        lines.append(f"Impact: `{impact.get('low', '?')}%` to `{impact.get('high', '?')}%`")
+        lines.append(f"Horizon: `{cat.get('time_horizon_days', '?')}d`")
     lines.append("")
 
     # Fundamentals
@@ -85,14 +88,14 @@ def format_memo_telegram(memo_data: dict) -> str:
     vs = fund.get('valuation_score', 0)
     gs = fund.get('growth_score', 0)
     bs = fund.get('balance_sheet_score', 0)
-    lines.append(
-        f"Quality: `{qs if isinstance(qs, str) else fmt(qs, '.2f')}` \\| "
-        f"Valuation: `{vs if isinstance(vs, str) else fmt(vs, '.2f')}` \\| "
-        f"Growth: `{gs if isinstance(gs, str) else fmt(gs, '.2f')}` \\| "
-        f"Balance Sheet: `{bs if isinstance(bs, str) else fmt(bs, '.2f')}`"
-    )
+    lines.append(f"• Quality: `{qs if isinstance(qs, str) else fmt(qs, '.2f')}`")
+    lines.append(f"• Valuation: `{vs if isinstance(vs, str) else fmt(vs, '.2f')}`")
+    lines.append(f"• Growth: `{gs if isinstance(gs, str) else fmt(gs, '.2f')}`")
+    lines.append(f"• Balance sheet: `{bs if isinstance(bs, str) else fmt(bs, '.2f')}`")
     if fund.get("flags"):
-        lines.append(f"Flags: {esc(', '.join(fund['flags']))}")
+        lines.append("Flags:")
+        for flag in fund["flags"]:
+            lines.append(f"• {esc(flag)}")
     if fund.get("peer_comparison"):
         lines.append(f"Peers: {esc(fund['peer_comparison'])}")
     lines.append("")
@@ -128,21 +131,28 @@ def format_memo_telegram(memo_data: dict) -> str:
 
         # V2: Show highly similar count in instances line
         if hs_count > 0:
-            lines.append(f"Instances: `{total}` \\(`{hs_count}` highly similar\\) \\| self: `{same}`, peers: `{peer}`")
+            lines.append(f"Instances: `{total}` \\(`{hs_count}` highly similar\\)")
+            lines.append(f"Self: `{same}` \\| Peers: `{peer}`")
         else:
-            lines.append(f"Instances: `{total}` \\(self: `{same}`, peers: `{peer}`\\)")
+            lines.append(f"Instances: `{total}`")
+            lines.append(f"Self: `{same}` \\| Peers: `{peer}`")
 
         # V2: Show similarity-weighted stats when available and different from raw
         win_rate_str = f"{win_rate:.0%}" if isinstance(win_rate, (int, float)) else "?"
         if weighted_wr is not None and abs(weighted_wr - win_rate) > 0.02:
             weighted_wr_str = f"{weighted_wr:.0%}" if isinstance(weighted_wr, (int, float)) else "?"
-            lines.append(f"Win rate \\(T\\+10\\): `{win_rate_str}` \\| Similarity\\-weighted: `{weighted_wr_str}`")
-            lines.append(f"Median: `{fmt(median_ret, '+.1f')}%` \\| Weighted median: `{fmt(weighted_med, '+.1f')}%`")
+            lines.append(f"Win rate \\(T\\+10\\): `{win_rate_str}`")
+            lines.append(f"Similarity\\-weighted: `{weighted_wr_str}`")
+            lines.append(f"Median: `{fmt(median_ret, '+.1f')}%`")
+            lines.append(f"Weighted median: `{fmt(weighted_med, '+.1f')}%`")
         else:
-            lines.append(f"Win rate \\(T\\+10\\): `{win_rate_str}` \\| Median: `{fmt(median_ret, '+.1f')}%`")
+            lines.append(f"Win rate \\(T\\+10\\): `{win_rate_str}`")
+            lines.append(f"Median: `{fmt(median_ret, '+.1f')}%`")
 
-        lines.append(f"Avg winner: `{fmt(avg_winner, '+.1f')}%` \\| Avg loser: `{fmt(avg_loser, '.1f')}%`")
-        lines.append(f"Max DD: `{fmt(dd_median, '.1f')}%` median \\| `{fmt(dd_worst, '.1f')}%` worst")
+        lines.append(f"Avg winner: `{fmt(avg_winner, '+.1f')}%`")
+        lines.append(f"Avg loser: `{fmt(avg_loser, '.1f')}%`")
+        lines.append(f"Max DD median: `{fmt(dd_median, '.1f')}%`")
+        lines.append(f"Max DD worst: `{fmt(dd_worst, '.1f')}%`")
 
         # V2: Show most similar instance
         if most_similar and most_similar.get("ticker"):
@@ -151,9 +161,9 @@ def format_memo_telegram(memo_data: dict) -> str:
             sim_ret = most_similar.get("return_t10", 0)
             sim_score = most_similar.get("similarity", 0)
             lines.append(
-                f"Most similar: `{esc(sim_ticker)}` {esc(sim_date)} "
-                f"\\(sim: `{fmt(sim_score, '.0%')}`\\) → `{fmt(sim_ret, '+.1f')}%`"
+                f"Most similar: `{esc(sim_ticker)}` {esc(sim_date)}"
             )
+            lines.append(f"Similarity: `{fmt(sim_score, '.0%')}` → `{fmt(sim_ret, '+.1f')}%`")
 
         if pattern.get("sample_size_warning"):
             lines.append(esc("⚠️ Small sample — interpret with caution"))
@@ -182,7 +192,6 @@ def format_memo_telegram(memo_data: dict) -> str:
                 label = dim.replace("_", " ").title()
                 if not first_dim:
                     lines.append("")  # blank line separator between subsections
-                    lines.append("───────────────")
                 first_dim = False
                 lines.append(f"_{esc(label)}_")
                 lines.append(esc(val))
@@ -198,7 +207,9 @@ def format_memo_telegram(memo_data: dict) -> str:
             sev = risk.get("severity_pct", "?")
             prob_emoji = {"likely": "🔴", "possible": "🟡", "unlikely": "🟢"}.get(prob, "⚪")
             lines.append(f"{prob_emoji} {esc(risk.get('risk', 'N/A'))}")
-            lines.append(f"   {esc(prob)} \\| \\-`{fmt(sev, '.0f')}%` \\| Trigger: {esc(risk.get('trigger', 'N/A'))}")
+            lines.append(f"   Probability: {esc(prob)}")
+            lines.append(f"   Severity: \\-`{fmt(sev, '.0f')}%`")
+            lines.append(f"   Trigger: {esc(risk.get('trigger', 'N/A'))}")
         failure = risk_data.get("failure_mode", "")
         if failure:
             lines.append(f"*Failure mode:* {esc(failure)}")
@@ -215,20 +226,13 @@ def format_memo_telegram(memo_data: dict) -> str:
     # Draft Trade Parameters
     params = d.get("trade_params", {})
     lines.append("*DRAFT TRADE PARAMS* \\(subject to Opus modification\\)")
-    lines.append(
-        f"Entry: `${fmt(params.get('entry_price', 0), ',.2f')}` \\| "
-        f"Stop: `${fmt(params.get('stop_loss', 0), ',.2f')}` \\(`{fmt(params.get('stop_pct', 0), '.1f')}%`\\)"
-    )
-    lines.append(
-        f"T1: `${fmt(params.get('target_1', 0), ',.2f')}` \\| "
-        f"T2: `${fmt(params.get('target_2', 0), ',.2f')}` \\| "
-        f"R:R `{fmt(params.get('risk_reward', 0), '.1f')}:1`"
-    )
-    lines.append(
-        f"Position: `{fmt(params.get('position_pct', 0), '.1f')}%` "
-        f"\\(`${fmt(params.get('dollar_amount', 0), ',.0f')}`\\) \\| "
-        f"`{params.get('shares', '?')}` shares"
-    )
+    lines.append(f"Entry: `${fmt(params.get('entry_price', 0), ',.2f')}`")
+    lines.append(f"Stop: `${fmt(params.get('stop_loss', 0), ',.2f')}` \\(`{fmt(params.get('stop_pct', 0), '.1f')}%`\\)")
+    lines.append(f"Target 1: `${fmt(params.get('target_1', 0), ',.2f')}`")
+    lines.append(f"Target 2: `${fmt(params.get('target_2', 0), ',.2f')}`")
+    lines.append(f"R:R: `{fmt(params.get('risk_reward', 0), '.1f')}:1`")
+    lines.append(f"Position: `{fmt(params.get('position_pct', 0), '.1f')}%` \\(`${fmt(params.get('dollar_amount', 0), ',.0f')}`\\)")
+    lines.append(f"Shares: `{params.get('shares', '?')}`")
     lines.append("")
 
     # Signal Agreement
@@ -237,12 +241,10 @@ def format_memo_telegram(memo_data: dict) -> str:
     fund_sig = breakdown.get("fundamental", {})
     pat_sig = breakdown.get("pattern", {})
     wr_sig = breakdown.get("web_research", {})
-    lines.append(
-        f"{signal_emoji(cat_sig)} Catalyst \\| "
-        f"{signal_emoji(fund_sig)} Fundamental \\| "
-        f"{signal_emoji(pat_sig)} Pattern \\| "
-        f"{signal_emoji(wr_sig)} Web Research"
-    )
+    lines.append(f"{signal_emoji(cat_sig)} Catalyst")
+    lines.append(f"{signal_emoji(fund_sig)} Fundamental")
+    lines.append(f"{signal_emoji(pat_sig)} Pattern")
+    lines.append(f"{signal_emoji(wr_sig)} Web Research")
     lines.append("")
 
     # ═══ OPUS EVALUATION ═══
@@ -253,7 +255,8 @@ def format_memo_telegram(memo_data: dict) -> str:
 
         rec = opus.get("recommendation", "?")
         rec_emoji = {"proceed": "✅", "reduce_size": "⚠️", "watchlist": "👀", "pass": "❌"}.get(rec, "❓")
-        lines.append(f"Verdict: {rec_emoji} *{esc(rec.upper())}* \\| Conviction: `{esc(opus.get('conviction', '?'))}`")
+        lines.append(f"Verdict: {rec_emoji} *{esc(rec.upper())}*")
+        lines.append(f"Conviction: `{esc(opus.get('conviction', '?'))}`")
 
         # Score adjustment
         adjusted = d.get("adjusted_score", d.get("composite_score", 0))
@@ -264,7 +267,8 @@ def format_memo_telegram(memo_data: dict) -> str:
         else:
             delta_note = ""
         opus_delta = opus_score - adjusted if isinstance(adjusted, (int, float)) else 0
-        lines.append(f"Score: `{fmt(adjusted, '.2f')}` → `{fmt(final, '.2f')}` \\(Opus: `{fmt(opus_delta, '+.2f')}`{delta_note}\\)")
+        lines.append(f"Score: `{fmt(adjusted, '.2f')}` → `{fmt(final, '.2f')}`")
+        lines.append(f"Opus delta: `{fmt(opus_delta, '+.2f')}`{delta_note}")
 
         key_risk = opus.get("key_risk", "")
         if key_risk:
@@ -302,18 +306,19 @@ def format_memo_telegram(memo_data: dict) -> str:
             adj_dollar = params.get('dollar_amount', 0) * pos_adj
             entry = params.get('entry_price', 0)
             adj_shares = math.floor(adj_dollar / entry) if entry else params.get('shares', 0)
-            lines.append(
-                f"Position: `{fmt(params.get('position_pct', 0), '.1f')}%` → "
-                f"`{fmt(adj_pct, '.1f')}%` \\(`${fmt(adj_dollar, ',.0f')}`\\) "
-                f"← Opus `{fmt(pos_adj, '.1f')}x`"
-            )
-            lines.append(f"Shares: `{params.get('shares', '?')}` → `{adj_shares}` \\| R:R: `{fmt(params.get('risk_reward', 0), '.1f')}:1`")
+            lines.append(f"Position: `{fmt(params.get('position_pct', 0), '.1f')}%` → `{fmt(adj_pct, '.1f')}%`")
+            lines.append(f"Dollars: `${fmt(adj_dollar, ',.0f')}`")
+            lines.append(f"Opus adjustment: `{fmt(pos_adj, '.1f')}x`")
+            lines.append(f"Shares: `{params.get('shares', '?')}` → `{adj_shares}`")
+            lines.append(f"R:R: `{fmt(params.get('risk_reward', 0), '.1f')}:1`")
         else:
             lines.append(f"Position: `{fmt(params.get('position_pct', 0), '.1f')}%` \\(`${fmt(params.get('dollar_amount', 0), ',.0f')}`\\)")
-            lines.append(f"Shares: `{params.get('shares', '?')}` \\| R:R: `{fmt(params.get('risk_reward', 0), '.1f')}:1`")
+            lines.append(f"Shares: `{params.get('shares', '?')}`")
+            lines.append(f"R:R: `{fmt(params.get('risk_reward', 0), '.1f')}:1`")
         lines.append(f"Max hold: `{params.get('max_hold_days', 20)}` trading days")
         regime = d.get("regime", {})
-        lines.append(f"Regime: `{regime.get('regime', '?')}` \\| Multiplier: `{regime.get('position_size_multiplier', '?')}x`")
+        lines.append(f"Regime: `{regime.get('regime', '?')}`")
+        lines.append(f"Multiplier: `{regime.get('position_size_multiplier', '?')}x`")
 
     if opus_rec in ("proceed", "reduce_size"):
         pos_adj = opus.get("position_size_adjustment", 1.0) if opus else 1.0

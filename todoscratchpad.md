@@ -104,7 +104,7 @@
 
 ## Design Notes
 
-- [ ] **Memo readability on mobile** — Telegram MarkdownV2 formatting can be finicky on small screens. Test memo layout on phone once bot is live
+- [x] **Memo readability on mobile** — ✅ Polished Telegram MarkdownV2 memo layout for 390px mobile readability: split dense pipe rows, modifier code spans, risk metadata, signal agreement, and trade params into stacked rows. QA evidence lives in `docs/BRY-187-mobile-memo-readability-qa.md`.
 - [x] **Message splitting** — ✅ Deterministic memo split now prefers section boundary before Opus/final params and includes regression tests (`tests/test_memo_formatting_delivery.py`)
 
 ---
