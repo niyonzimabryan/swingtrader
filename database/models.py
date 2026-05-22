@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, Text, DateTime, Date,
     ForeignKey, Enum, UniqueConstraint, Index, create_engine
@@ -318,6 +318,27 @@ class WebResearch(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     ticker = relationship("Ticker")
+
+
+class WebResearchCache(Base):
+    """Same-day web-research cache for repeated ticker/catalyst runs."""
+    __tablename__ = "web_research_cache"
+    __table_args__ = (
+        UniqueConstraint("cache_key", name="uq_web_research_cache_key"),
+        Index("ix_web_research_cache_lookup", "ticker", "research_date", "catalyst_hash"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cache_key = Column(String(120), nullable=False)
+    ticker = Column(String(10), nullable=False)
+    research_date = Column(String(10), nullable=False)
+    catalyst_hash = Column(String(64), nullable=False)
+    provider = Column(String(30), default="")
+    model_used = Column(String(80), default="")
+    result_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    expires_at = Column(DateTime, nullable=True)
 
 
 class WatchlistTicker(Base):

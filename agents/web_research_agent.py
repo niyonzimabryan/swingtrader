@@ -6,12 +6,15 @@ Researches 5 dimensions: catalyst context, competitive dynamics, management sign
 bull/bear debate, and institutional positioning.
 """
 
+import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from agents.base_agent import BaseAgent, AgentOutput
 from utils.web_search_client import WebSearchClient
 from utils.model_selector import get_model
 from utils.logger import get_logger
+from database.db import get_session
+from database.models import WebResearchCache
 
 log = get_logger("web_research_agent")
 
@@ -31,6 +34,7 @@ class WebResearchAgent(BaseAgent):
         super().__init__(settings, anthropic_client)
         self.web_search_client = web_search_client
         self.firecrawl_client = firecrawl_client
+        self._cache_stats = {"hits": 0, "misses": 0}
 
     def analyze(self, ticker: str = None, **kwargs) -> AgentOutput:
         """
@@ -55,6 +59,18 @@ class WebResearchAgent(BaseAgent):
         catalyst_reasoning = kwargs.get("catalyst_reasoning", "")
         direction_hint = kwargs.get("direction_hint", "neutral")
 
+        cache_key, catalyst_hash, research_date = self._cache_identity(
+            ticker, catalyst_data, catalyst_reasoning, direction_hint
+        )
+        cached = self._get_cached_research(cache_key)
+        if cached is not None:
+            self._record_cache_event("hit", ticker, cache_key)
+            return self._build_output(ticker, cached, cache_status="hit")
+
+        cache_status = "miss" if self._cache_enabled() else "disabled"
+        if cache_status == "miss":
+            self._record_cache_event("miss", ticker, cache_key)
+
         scraped_sources = self._scrape_supplemental_sources(ticker, catalyst_data)
 
         try:
@@ -62,7 +78,12 @@ class WebResearchAgent(BaseAgent):
                 ticker, sector, catalyst_data, catalyst_reasoning, direction_hint,
                 scraped_sources=scraped_sources,
             )
-            return self._build_output(ticker, result, scraped_sources=scraped_sources)
+            self._save_cached_research(
+                cache_key, ticker, research_date, catalyst_hash, result, scraped_sources
+            )
+            return self._build_output(
+                ticker, result, scraped_sources=scraped_sources, cache_status=cache_status
+            )
         except Exception as e:
             log.error("web_research_failed", ticker=ticker, error=str(e))
             return self._fallback_output(ticker, str(e))
@@ -123,7 +144,7 @@ class WebResearchAgent(BaseAgent):
             model = getattr(self.settings, "gemini_web_research_model", "gemini-3.1-pro-preview")
         else:
             model = get_model("web_research", self.settings)
-        max_searches = max(1, int(getattr(self.settings, "web_research_max_searches", 8)))
+        max_searches = max(1, int(getattr(self.settings, "web_research_max_searches", 5)))
 
         catalyst_summary = catalyst_data.get("catalyst_summary", "")
         catalyst_type = catalyst_data.get("catalyst_type", "")
@@ -214,8 +235,107 @@ class WebResearchAgent(BaseAgent):
 
         return result
 
+    def _cache_enabled(self) -> bool:
+        return bool(getattr(self.settings, "web_research_cache_enabled", True))
+
+    def _record_cache_event(self, event: str, ticker: str, cache_key: str) -> None:
+        stats = getattr(self, "_cache_stats", {"hits": 0, "misses": 0})
+        if event == "hit":
+            stats["hits"] = stats.get("hits", 0) + 1
+        else:
+            stats["misses"] = stats.get("misses", 0) + 1
+        self._cache_stats = stats
+        total = stats.get("hits", 0) + stats.get("misses", 0)
+        hit_rate = (stats.get("hits", 0) / total) if total else 0.0
+        log.info(
+            f"web_research_cache_{event}",
+            ticker=ticker,
+            cache_key=cache_key,
+            cache_hits=stats.get("hits", 0),
+            cache_misses=stats.get("misses", 0),
+            cache_hit_rate=round(hit_rate, 3),
+        )
+
+    @staticmethod
+    def _normalize_ticker(ticker: str) -> str:
+        return (ticker or "").upper().strip()
+
+    def _cache_identity(
+        self, ticker: str, catalyst_data: dict, catalyst_reasoning: str, direction_hint: str
+    ) -> tuple[str, str, str]:
+        research_date = datetime.now(timezone.utc).date().isoformat()
+        payload = {
+            "ticker": self._normalize_ticker(ticker),
+            "catalyst_data": catalyst_data if isinstance(catalyst_data, dict) else {},
+            "catalyst_reasoning": catalyst_reasoning or "",
+            "direction_hint": direction_hint or "neutral",
+        }
+        serialized = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+        catalyst_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        cache_key = f"{self._normalize_ticker(ticker)}:{research_date}:{catalyst_hash[:24]}"
+        return cache_key, catalyst_hash, research_date
+
+    def _get_cached_research(self, cache_key: str) -> dict | None:
+        if not self._cache_enabled():
+            return None
+        try:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            with get_session() as session:
+                row = session.query(WebResearchCache).filter_by(cache_key=cache_key).first()
+                if not row:
+                    return None
+                if row.expires_at and row.expires_at <= now:
+                    return None
+                return json.loads(row.result_json or "{}")
+        except Exception as exc:
+            log.warning("web_research_cache_read_failed", cache_key=cache_key, error=str(exc))
+            return None
+
+    def _save_cached_research(
+        self,
+        cache_key: str,
+        ticker: str,
+        research_date: str,
+        catalyst_hash: str,
+        result: dict,
+        scraped_sources: list[dict] | None,
+    ) -> None:
+        if not self._cache_enabled():
+            return
+        try:
+            payload = dict(result)
+            payload["_scraped_source_urls"] = [s.get("url", "") for s in (scraped_sources or [])]
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            ttl_hours = max(1, int(getattr(self.settings, "web_research_cache_ttl_hours", 24)))
+            provider = getattr(self.settings, "web_search_provider", "anthropic")
+            model = (
+                getattr(self.settings, "gemini_web_research_model", "")
+                if provider == "gemini"
+                else get_model("web_research", self.settings)
+            )
+            with get_session() as session:
+                row = session.query(WebResearchCache).filter_by(cache_key=cache_key).first()
+                if not row:
+                    row = WebResearchCache(cache_key=cache_key)
+                    session.add(row)
+                row.ticker = self._normalize_ticker(ticker)
+                row.research_date = research_date
+                row.catalyst_hash = catalyst_hash
+                row.provider = provider
+                row.model_used = model
+                row.result_json = json.dumps(payload, sort_keys=True, default=str)
+                row.updated_at = now
+                row.expires_at = now + timedelta(hours=ttl_hours)
+            log.info("web_research_cache_saved", ticker=ticker, cache_key=cache_key, ttl_hours=ttl_hours)
+        except Exception as exc:
+            log.warning("web_research_cache_write_failed", cache_key=cache_key, error=str(exc))
+
     def _build_output(
-        self, ticker: str, result: dict, scraped_sources: list[dict] | None = None,
+        self,
+        ticker: str,
+        result: dict,
+        scraped_sources: list[dict] | None = None,
+        cache_status: str = "disabled",
     ) -> AgentOutput:
         """Convert web research result to AgentOutput."""
         info_score = result.get("information_score", 0.5)
@@ -239,7 +359,8 @@ class WebResearchAgent(BaseAgent):
                 "sources_summary": result.get("sources_summary", ""),
                 "source_urls": result.get("source_urls", []),
                 "grounding": result.get("_grounding", {}),
-                "scraped_source_urls": [s.get("url", "") for s in (scraped_sources or [])],
+                "scraped_source_urls": result.get("_scraped_source_urls") or [s.get("url", "") for s in (scraped_sources or [])],
+                "cache_status": cache_status,
                 "status": "active",
             },
             run_id=self.run_id,

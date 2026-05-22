@@ -65,6 +65,30 @@ def _run_migrations(eng):
                     log.info("migration_applied", migration=f"add_{col_name}_to_trades")
             conn.commit()
 
+    if "web_research_cache" not in inspector.get_table_names():
+        with eng.connect() as conn:
+            conn.execute(text("""
+                CREATE TABLE web_research_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cache_key VARCHAR(120) NOT NULL UNIQUE,
+                    ticker VARCHAR(10) NOT NULL,
+                    research_date VARCHAR(10) NOT NULL,
+                    catalyst_hash VARCHAR(64) NOT NULL,
+                    provider VARCHAR(30) DEFAULT '',
+                    model_used VARCHAR(80) DEFAULT '',
+                    result_json TEXT DEFAULT '{}',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    expires_at DATETIME
+                )
+            """))
+            conn.execute(text(
+                "CREATE INDEX ix_web_research_cache_lookup "
+                "ON web_research_cache (ticker, research_date, catalyst_hash)"
+            ))
+            conn.commit()
+        log.info("migration_applied", migration="create_web_research_cache")
+
 
 @contextmanager
 def get_session() -> Session:
