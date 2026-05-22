@@ -32,7 +32,7 @@ Note: This run did not start the live Telegram bot because Railway may be pollin
 - Browser-verified `docs/assets/bry-187-mobile-memo-qa/after.html` at 390px Telegram-style width.
 - Visible after screenshot shows no horizontal clipping or code-span spillover in the rendered mobile preview.
 - Representative memo states covered: proceed, watchlist, pass.
-- Tests: `.venv/bin/python -m unittest discover` — 97 tests passed.
+- Tests: `.venv/bin/python -m unittest discover` — 93 tests passed.
 
 ## Evidence artifacts
 
