@@ -68,6 +68,8 @@
 
 ## Bugs
 
+- [x] **Implement BRY-66 web research cost controls** — ✅ Lowered `WEB_RESEARCH_MAX_SEARCHES` default from 8 to 5 and added a SQLite same-day web research cache keyed by ticker + UTC date + catalyst hash. Cache hit/miss status is logged and exposed in web research raw data; `.env.example` and README document the knobs.
+
 - [x] **V2 compliance audit (imports/models/pipeline/config/scoring/contracts/errors/time)** — ✅ Completed static scan against `swing-trader-prd.md` Section 16 with file/line findings captured in chat report
 - [x] **Deep research auto-trigger fails on scheduled scans** — ✅ Fixed: replaced `asyncio.get_event_loop().create_task()` with `asyncio.run_coroutine_threadsafe(coro, self.bot_loop)`. Bot event loop ref stored at init via `main.py`. Deep research now schedules correctly from sync scheduler context.
 - [x] **Pattern narrative missing in memo output** — ✅ Fixed: added `"reasoning": pattern.reasoning` to pattern dict in `memo/generator.py:78`. Memo template can now render Sonnet's interpretation text.

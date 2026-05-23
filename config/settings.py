@@ -75,7 +75,9 @@ class Settings(BaseSettings):
     gemini_discovery_model: str = "gemini-3.1-pro-preview"
     gemini_web_research_model: str = "gemini-3.1-pro-preview"
     gemini_flash_escalation_threshold: float = 0.50  # Tickers scoring above this escalate to Sonnet
-    web_research_max_searches: int = 8
+    web_research_max_searches: int = 5
+    web_research_cache_enabled: bool = True
+    web_research_cache_ttl_hours: int = 24
 
     # --- V2: Deep Research (Phase C) ---
     openai_api_key: str = ""

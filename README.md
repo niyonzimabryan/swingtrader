@@ -122,7 +122,7 @@ Planning numbers:
 - At the observed average, that is about $88.76/month.
 - At observed p95 cost every time, budget about $215.04/month.
 
-Main cost driver: web research. It was 66.4% of observed Langfuse spend, averaging $0.21 per web-research call. The current recommendation is to lower WEB_RESEARCH_MAX_SEARCHES from 8 to 5 if web research remains above 55% of monthly spend or p95 stays above $0.25/call.
+Main cost driver: web research. It was 66.4% of observed Langfuse spend, averaging $0.21 per web-research call. The BRY-66 code defaults now cap web research at 5 searches per call and reuse same-day ticker/catalyst results through the SQLite web-research cache.
 
 These are model/provider costs only. They do not include broker fees, market-data subscription upgrades, hosting, or your local machine.
 
@@ -198,7 +198,9 @@ Cost and research controls:
 | WEB_SEARCH_PROVIDER | gemini | Routes search-heavy stages to Gemini when configured |
 | GEMINI_API_KEY | blank | Optional, recommended for grounded search-heavy stages |
 | DISCOVERY_MAX_SEARCHES | 8 | Caps discovery search breadth |
-| WEB_RESEARCH_MAX_SEARCHES | 8 | Biggest spend lever; BRY-66 recommends testing 5 |
+| WEB_RESEARCH_MAX_SEARCHES | 5 | Biggest spend lever; caps per-call search breadth |
+| WEB_RESEARCH_CACHE_ENABLED | true | Reuses same-day ticker/catalyst web research from SQLite before calling the provider |
+| WEB_RESEARCH_CACHE_TTL_HOURS | 24 | Cache expiry window; keep at 24 for same-day reuse |
 | LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY | blank | Optional observability and cost tracing |
 
 Risk controls:
