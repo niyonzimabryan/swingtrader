@@ -37,6 +37,33 @@ class Settings(BaseSettings):
     drawdown_circuit_breaker_pct: float = 0.10
     daily_loss_halt_pct: float = 0.03
 
+    # --- Broker Selection & Execution Mode ---
+    broker_primary: str = "alpaca"
+    broker_paper: str = "alpaca"
+    execution_mode: str = "paper"  # review_only | paper | live
+    allow_live_trading: bool = False
+    require_order_review: bool = True
+
+    # --- Robinhood Agentic Trading MCP ---
+    robinhood_mcp_url: str = "https://agent.robinhood.com/mcp/trading"
+    robinhood_account_number: str = ""
+    robinhood_mcp_auth_token: str = ""
+    robinhood_mcp_headers_json: str = ""
+    robinhood_account_budget: float = 25.0
+    robinhood_max_order_notional: float = 5.0
+    robinhood_max_daily_notional: float = 10.0
+    robinhood_max_open_positions: int = 3
+    robinhood_allow_fractional: bool = True
+    robinhood_allow_options: bool = False
+    robinhood_allowed_symbols: str = ""
+    robinhood_blocked_symbols: str = ""
+    robinhood_order_type: str = "market"  # market for small-dollar fractional, limit for whole-share control
+    robinhood_market_hours: str = "regular_hours"
+
+    # --- Alpaca Paper Trading Safety ---
+    alpaca_enabled: bool = True
+    alpaca_paper_only: bool = True
+
     # --- Scoring ---
     memo_threshold: float = 0.55  # Production threshold (override via .env for testing)
     high_conviction_threshold: float = 0.75

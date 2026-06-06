@@ -73,16 +73,16 @@ def _build_portfolio_context(pipeline) -> str:
     parts = []
 
     # Account info
-    if pipeline.alpaca:
+    if pipeline.broker:
         try:
-            account = pipeline.alpaca.get_account_info()
+            account = pipeline.broker.get_account_info()
             parts.append(f"Account: equity=${account.get('equity', 0):,.2f}, cash=${account.get('cash', 0):,.2f}")
         except Exception:
             pass
 
         # Positions
         try:
-            positions = pipeline.alpaca.get_positions_detail()
+            positions = pipeline.broker.get_positions_detail()
             if positions:
                 pos_lines = []
                 for p in positions:

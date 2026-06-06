@@ -113,17 +113,21 @@ async def main():
     pipeline.notification_manager = notifications
     pipeline.bot_loop = asyncio.get_running_loop()  # For deep research async scheduling
 
-    # Initialize order monitor
-    order_monitor = OrderMonitor(pipeline.alpaca, notifications, settings)
+    # Initialize order monitor — always bound to the Alpaca broker, never the
+    # mode-sensitive router. These monitors manage Alpaca order lifecycles only;
+    # Robinhood live trades are managed via callbacks/manual close. Binding to
+    # the router would let a /mode switch re-point an in-flight position's
+    # monitor at the wrong broker.
+    order_monitor = OrderMonitor(pipeline.paper_broker, notifications, settings)
 
     # Initialize position monitor (60-sec live price checks during market hours)
-    position_monitor = PositionMonitor(pipeline.alpaca, notifications, settings)
+    position_monitor = PositionMonitor(pipeline.paper_broker, notifications, settings)
 
     # Initialize daily digest (5 PM ET, math only — no AI)
-    daily_digest = DailyDigest(pipeline.alpaca, notifications, settings)
+    daily_digest = DailyDigest(pipeline.broker, notifications, settings)
 
     # Initialize weekly report (Sunday 6 PM ET, Sonnet narrative — ~$0.03/week)
-    weekly_report = WeeklyReport(pipeline.alpaca, notifications, settings)
+    weekly_report = WeeklyReport(pipeline.broker, notifications, settings)
 
     # Initialize scheduler (skip if SCHEDULER_ENABLED=false to save API credits)
     import os

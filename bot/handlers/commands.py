@@ -36,6 +36,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/history` \\- Recent trade log\n"
         "`/memo ID` \\- Retrieve past memo\n\n"
         "*Trading*\n"
+        "`/broker` \\- Active broker and account\n"
+        "`/mode` \\- review, paper, or live execution mode\n"
+        "`/orders` \\- Recent broker orders\n"
         "`/close TICKER` \\- Close a position\n"
         "`/adjust TICKER stop PRICE` \\- Adjust stop\\-loss\n\n"
         "*System*\n"
@@ -60,13 +63,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Get account info
         account = {}
-        if pipeline.alpaca:
-            account = pipeline.alpaca.get_account_info()
+        if pipeline.broker:
+            account = pipeline.broker.get_account_info()
 
         # Get positions
         positions = []
-        if pipeline.alpaca:
-            positions = pipeline.alpaca.get_positions_detail()
+        if pipeline.broker:
+            positions = pipeline.broker.get_positions_detail()
 
         # Get regime
         regime = pipeline.macro_agent.get_latest_regime()
@@ -88,8 +91,8 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         positions = []
-        if pipeline.alpaca:
-            positions = pipeline.alpaca.get_positions_detail()
+        if pipeline.broker:
+            positions = pipeline.broker.get_positions_detail()
 
         text = format_positions_detail(positions)
         await update.message.reply_text(text, parse_mode="MarkdownV2")
@@ -167,12 +170,12 @@ async def agents_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def exposure_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sector exposure breakdown."""
     pipeline = context.bot_data.get("pipeline")
-    if not pipeline or not pipeline.alpaca:
+    if not pipeline or not pipeline.broker:
         await update.message.reply_text("No positions or system initializing\\.", parse_mode="MarkdownV2")
         return
 
     try:
-        positions = pipeline.alpaca.get_positions_detail()
+        positions = pipeline.broker.get_positions_detail()
         if not positions:
             await update.message.reply_text("No open positions\\.", parse_mode="MarkdownV2")
             return
@@ -208,8 +211,107 @@ async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Max Sector Exposure: `{(pipeline.settings.max_sector_exposure * 100) if pipeline else 30:.0f}%`\n"
         f"Max Single Position: `{(pipeline.settings.max_position_pct * 100) if pipeline else 10:.0f}%`\n"
         f"Max Stop\\-Loss: `{(pipeline.settings.max_stop_loss_pct * 100) if pipeline else 8:.0f}%`\n"
+        f"Robinhood Max Order: `${getattr(pipeline.settings, 'robinhood_max_order_notional', 5) if pipeline else 5:.0f}`\n"
+        f"Robinhood Daily Cap: `${getattr(pipeline.settings, 'robinhood_max_daily_notional', 10) if pipeline else 10:.0f}`\n"
     )
     await update.message.reply_text(text, parse_mode="MarkdownV2")
+
+
+@authorized
+async def broker_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show or switch the active broker: /broker [alpaca|robinhood|accounts] [account]."""
+    pipeline = context.bot_data.get("pipeline")
+    if not pipeline:
+        await update.message.reply_text("System initializing...", parse_mode=None)
+        return
+
+    args = list(context.args or [])
+    if not args:
+        await update.message.reply_text(_broker_summary(pipeline), parse_mode=None)
+        return
+
+    action = args[0].lower()
+    if action == "accounts":
+        try:
+            accounts = await run_blocking(
+                operation="broker_accounts",
+                fn=lambda: _broker_accounts(pipeline),
+                timeout_s=60,
+            )
+            await update.message.reply_text(accounts, parse_mode=None)
+        except Exception as e:
+            await update.message.reply_text(f"Could not fetch broker accounts: {str(e)[:300]}", parse_mode=None)
+        return
+
+    if action in ("alpaca", "paper"):
+        pipeline.configure_broker(primary="alpaca", execution_mode="paper")
+        await update.message.reply_text(_broker_summary(pipeline), parse_mode=None)
+        return
+
+    if action in ("robinhood", "rh"):
+        account_number = args[1] if len(args) > 1 else None
+        # Safety: selecting Robinhood always drops execution to review_only.
+        # The operator must then explicitly run /mode live to arm live placement.
+        # We never inherit a prior "live" mode across a broker switch.
+        mode = "review_only"
+        if account_number and account_number.isdigit() and len(account_number) <= 2:
+            try:
+                pipeline.configure_broker(primary="robinhood", execution_mode=mode)
+                account_number = await run_blocking(
+                    operation="broker_select_account",
+                    fn=lambda: _select_robinhood_account(pipeline, int(account_number)),
+                    timeout_s=60,
+                )
+            except Exception as e:
+                await update.message.reply_text(f"Could not select Robinhood account: {str(e)[:300]}", parse_mode=None)
+                return
+        pipeline.configure_broker(primary="robinhood", execution_mode=mode, robinhood_account_number=account_number)
+        await update.message.reply_text(_broker_summary(pipeline), parse_mode=None)
+        return
+
+    await update.message.reply_text("Usage: /broker, /broker accounts, /broker alpaca, /broker robinhood ACCOUNT_OR_INDEX", parse_mode=None)
+
+
+@authorized
+async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Switch execution mode: /mode review|paper|live."""
+    pipeline = context.bot_data.get("pipeline")
+    if not pipeline:
+        await update.message.reply_text("System initializing...", parse_mode=None)
+        return
+
+    if not context.args:
+        await update.message.reply_text(_broker_summary(pipeline), parse_mode=None)
+        return
+
+    mode = context.args[0].lower()
+    if mode == "review":
+        mode = "review_only"
+    if mode not in {"review_only", "paper", "live"}:
+        await update.message.reply_text("Usage: /mode review, /mode paper, or /mode live", parse_mode=None)
+        return
+    pipeline.configure_broker(execution_mode=mode)
+    await update.message.reply_text(_broker_summary(pipeline), parse_mode=None)
+
+
+@authorized
+async def orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show recent active-broker orders."""
+    pipeline = context.bot_data.get("pipeline")
+    if not pipeline:
+        await update.message.reply_text("System initializing...", parse_mode=None)
+        return
+    status = context.args[0].lower() if context.args else None
+    try:
+        text = await run_blocking(
+            operation="orders_command",
+            fn=lambda: _orders_text(pipeline, status),
+            timeout_s=60,
+        )
+        await update.message.reply_text(text, parse_mode=None)
+    except Exception as e:
+        log.error("orders_command_failed", error=str(e))
+        await update.message.reply_text(f"Error fetching orders: {str(e)[:300]}", parse_mode=None)
 
 
 @authorized
@@ -380,6 +482,11 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     s = pipeline.settings
     text = (
+        f"Broker: {getattr(getattr(pipeline.broker, 'active', pipeline.broker), 'name', 'unknown')}\n"
+        f"Mode: {s.execution_mode}\n"
+        f"Live enabled: {s.allow_live_trading}\n"
+        f"Robinhood acct: {_mask_account(getattr(s, 'robinhood_account_number', ''))}\n"
+        f"RH max order/day: ${s.robinhood_max_order_notional:,.2f} / ${s.robinhood_max_daily_notional:,.2f}\n"
         f"Portfolio: ${s.portfolio_value:,.0f}\n"
         f"Base position: {s.base_position_pct*100:.0f}%\n"
         f"Max position: {s.max_position_pct*100:.0f}%\n"
@@ -388,3 +495,86 @@ async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Scoring model: {s.scoring_model}\n"
     )
     await update.message.reply_text(text, parse_mode=None)
+
+
+def _broker_summary(pipeline) -> str:
+    s = pipeline.settings
+    active = getattr(getattr(pipeline, "broker", None), "active", None)
+    active_name = getattr(active, "name", "unknown")
+    lines = [
+        "Broker status",
+        f"Active broker: {active_name}",
+        f"Primary broker: {getattr(s, 'broker_primary', 'alpaca')}",
+        f"Execution mode: {getattr(s, 'execution_mode', 'paper')}",
+        f"Live trading enabled: {getattr(s, 'allow_live_trading', False)}",
+        f"Robinhood account: {_mask_account(getattr(s, 'robinhood_account_number', ''))}",
+        f"Robinhood max order: ${getattr(s, 'robinhood_max_order_notional', 5):,.2f}",
+        f"Robinhood daily cap: ${getattr(s, 'robinhood_max_daily_notional', 10):,.2f}",
+        f"Robinhood order type: {getattr(s, 'robinhood_order_type', 'market')}",
+    ]
+    if active_name == "robinhood" and not getattr(s, "robinhood_account_number", ""):
+        lines.append("Set an Agentic account with /broker robinhood ACCOUNT_NUMBER or ROBINHOOD_ACCOUNT_NUMBER.")
+    if getattr(s, "execution_mode", "paper") == "live" and not getattr(s, "allow_live_trading", False):
+        lines.append("Live mode is selected, but placement is blocked until ALLOW_LIVE_TRADING=true.")
+    return "\n".join(lines)
+
+
+def _broker_accounts(pipeline) -> str:
+    primary = getattr(pipeline, "primary_broker", None)
+    if not primary or not hasattr(primary, "get_accounts"):
+        return "Account listing is only available for the Robinhood broker."
+    accounts = primary.get_accounts()
+    if not accounts:
+        return "No accounts returned. Check MCP authorization and Robinhood Agentic account setup."
+    lines = ["Robinhood accounts"]
+    for idx, account in enumerate(accounts, 1):
+        number = str(account.get("account_number") or account.get("number") or account.get("id") or "")
+        label = account.get("label") or account.get("type") or account.get("account_type") or "account"
+        agentic = account.get("agentic_allowed")
+        marker = "agentic_allowed=true" if agentic is True else "agentic_allowed=false" if agentic is False else "agentic_allowed=?"
+        lines.append(f"{idx}. {_mask_account(number)} - {label} - {marker}")
+    lines.append("Use /broker robinhood 1 to select by index, or /broker robinhood ACCOUNT_NUMBER.")
+    return "\n".join(lines)
+
+
+def _select_robinhood_account(pipeline, index: int) -> str:
+    primary = getattr(pipeline, "primary_broker", None)
+    if not primary or not hasattr(primary, "get_accounts"):
+        raise ValueError("Switch to /broker robinhood first, then run /broker accounts.")
+    accounts = primary.get_accounts()
+    if index < 1 or index > len(accounts):
+        raise ValueError(f"Account index {index} is out of range.")
+    account = accounts[index - 1]
+    number = str(account.get("account_number") or account.get("number") or account.get("id") or "")
+    if not number:
+        raise ValueError("Selected account did not include an account number.")
+    return number
+
+
+def _orders_text(pipeline, status: str | None = None) -> str:
+    orders = pipeline.broker.get_orders(status=status)
+    active = getattr(getattr(pipeline, "broker", None), "active", None)
+    broker_name = getattr(active, "name", "unknown")
+    if not orders:
+        suffix = f" ({status})" if status else ""
+        return f"No {broker_name} orders found{suffix}."
+    lines = [f"{broker_name.title()} orders"]
+    for order in orders[:10]:
+        symbol = order.get("symbol") or order.get("ticker") or "?"
+        state = order.get("state") or order.get("status") or "?"
+        side = order.get("side") or "?"
+        qty = order.get("quantity") or order.get("qty") or order.get("filled_quantity") or ""
+        price = order.get("limit_price") or order.get("average_price") or order.get("filled_avg_price") or ""
+        order_id = str(order.get("id") or order.get("order_id") or "")
+        tail = f" #{order_id[-8:]}" if order_id else ""
+        lines.append(f"{symbol} {side} {qty} {state} {price}{tail}".strip())
+    return "\n".join(lines)
+
+
+def _mask_account(account_number: str) -> str:
+    account_number = account_number or ""
+    if not account_number:
+        return "not set"
+    if len(account_number) <= 4:
+        return "****"
+    return f"****{account_number[-4:]}"

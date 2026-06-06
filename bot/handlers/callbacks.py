@@ -56,6 +56,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Position close cancelled.")
     elif data.startswith("confirm_approve_"):
         await execute_trade(query, context, int(data.split("_")[2]))
+    elif data.startswith("confirm_place_"):
+        await execute_trade(query, context, int(data.split("_")[2]), force_place=True)
     elif data.startswith("cancel_"):
         await query.edit_message_text("Action cancelled.")
     # Position monitor callbacks
@@ -95,14 +97,34 @@ async def handle_approve(query, context, memo_id: int):
             result = await pipeline.order_manager.execute_approved_trade(memo_id)
             if result.get("success"):
                 await query.edit_message_reply_markup(reply_markup=None)
-                shares = trade_params.get("shares", 0)
-                entry = trade_params.get("entry_price", 0)
-                stop = trade_params.get("stop_loss", 0)
-                await query.message.reply_text(
-                    f"✅ Approved: Submitting limit buy for {shares} shares {ticker} "
-                    f"@ ${entry:,.2f}. Stop-loss at ${stop:,.2f}. Will confirm fill.",
-                    parse_mode=None,
-                )
+                if result.get("requires_confirmation"):
+                    from bot.keyboards import confirm_keyboard
+                    warnings = "\n".join(f"- {w}" for w in result.get("warnings", [])) or "- Broker returned warnings."
+                    await query.message.reply_text(
+                        f"Broker review completed for {ticker}, but needs final confirmation.\n"
+                        f"Broker: {result.get('broker')}\n"
+                        f"Estimated notional: ${result.get('estimated_notional') or 0:,.2f}\n\n"
+                        f"Warnings:\n{warnings}",
+                        parse_mode=None,
+                        reply_markup=confirm_keyboard("place", memo_id),
+                    )
+                elif result.get("review_only"):
+                    await query.message.reply_text(
+                        f"Reviewed only: {ticker} is approved in Swing Trader and broker review is stored. "
+                        f"Switch /mode paper or /mode live to place orders.",
+                        parse_mode=None,
+                    )
+                else:
+                    shares = result.get("shares", trade_params.get("shares", 0))
+                    entry = result.get("entry_price", trade_params.get("entry_price", 0))
+                    notional = result.get("requested_notional")
+                    stop = result.get("stop_loss", trade_params.get("stop_loss", 0))
+                    size_text = f"${notional:,.2f} notional" if notional else f"{shares} shares"
+                    await query.message.reply_text(
+                        f"Approved: submitted {result.get('broker', 'broker')} order for {size_text} {ticker} "
+                        f"@ ${entry:,.2f}. Stop plan: ${stop:,.2f}. Will monitor status.",
+                        parse_mode=None,
+                    )
             else:
                 error = result.get("error", "Unknown error")
                 await query.message.reply_text(f"❌ Execution failed: {error}", parse_mode=None)
@@ -200,9 +222,9 @@ async def handle_wl_remove(query, context, ticker: str):
 async def handle_close_confirm(query, context, ticker: str):
     """Execute position close."""
     pipeline = context.bot_data.get("pipeline")
-    if pipeline and pipeline.alpaca:
+    if pipeline and pipeline.broker:
         try:
-            result = pipeline.alpaca.close_position(ticker)
+            result = pipeline.broker.close_position(ticker)
             await query.edit_message_text(f"✅ Position in {ticker} closed.", parse_mode=None)
         except Exception as e:
             await query.edit_message_text(f"❌ Failed to close {ticker}: {str(e)[:200]}", parse_mode=None)
@@ -389,9 +411,29 @@ async def handle_view_memo(query, context, memo_id: int):
         await query.message.reply_text("Memo data not available.", parse_mode=None)
 
 
-async def execute_trade(query, context, memo_id: int):
+async def execute_trade(query, context, memo_id: int, force_place: bool = False):
     """Confirm and execute an approved trade."""
-    await handle_approve(query, context, memo_id)
+    if not force_place:
+        await handle_approve(query, context, memo_id)
+        return
+
+    pipeline = context.bot_data.get("pipeline")
+    if not pipeline or not pipeline.order_manager:
+        await query.message.reply_text("Execution engine not connected.", parse_mode=None)
+        return
+    try:
+        result = await pipeline.order_manager.execute_approved_trade(memo_id, force_place=True)
+        await query.edit_message_reply_markup(reply_markup=None)
+        if result.get("success"):
+            await query.message.reply_text(
+                f"Final confirmation accepted. Submitted {result.get('broker', 'broker')} order "
+                f"for {result.get('ticker', '?')} (order {result.get('entry_order_id', '')[-8:]}).",
+                parse_mode=None,
+            )
+        else:
+            await query.message.reply_text(f"Execution failed: {result.get('error', 'unknown')}", parse_mode=None)
+    except Exception as e:
+        await query.message.reply_text(f"Execution error: {str(e)[:300]}", parse_mode=None)
 
 
 # ── Position Monitor Callback Handlers ──
@@ -399,9 +441,9 @@ async def execute_trade(query, context, memo_id: int):
 async def handle_pos_close(query, context, ticker: str):
     """Close an entire position from position monitor alert."""
     pipeline = context.bot_data.get("pipeline")
-    if pipeline and pipeline.alpaca:
+    if pipeline and pipeline.broker:
         try:
-            result = pipeline.alpaca.close_position(ticker)
+            result = pipeline.broker.close_position(ticker)
             if result.get("success"):
                 await query.edit_message_reply_markup(reply_markup=None)
                 await query.message.reply_text(f"✅ {ticker} position closed.", parse_mode=None)
@@ -419,9 +461,9 @@ async def handle_pos_close(query, context, ticker: str):
 async def handle_pos_sell50(query, context, ticker: str):
     """Sell/cover 50% of a position. Direction-aware."""
     pipeline = context.bot_data.get("pipeline")
-    if pipeline and pipeline.alpaca:
+    if pipeline and pipeline.broker:
         try:
-            positions = pipeline.alpaca.get_positions_detail()
+            positions = pipeline.broker.get_positions_detail()
             pos = next((p for p in positions if p["ticker"] == ticker), None)
             if not pos:
                 await query.message.reply_text(f"⚠️ No open position in {ticker}.", parse_mode=None)
@@ -432,10 +474,10 @@ async def handle_pos_sell50(query, context, ticker: str):
                 return
             is_short = pos.get("side") == "short"
             if is_short:
-                pipeline.alpaca.submit_limit_cover(ticker, reduce_qty, pos["current_price"])
+                pipeline.broker.submit_limit_cover(ticker, reduce_qty, pos["current_price"])
                 action = "Covering"
             else:
-                pipeline.alpaca.submit_limit_sell(ticker, reduce_qty, pos["current_price"])
+                pipeline.broker.submit_limit_sell(ticker, reduce_qty, pos["current_price"])
                 action = "Selling"
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text(
@@ -454,13 +496,13 @@ async def handle_pos_t1exit(query, context, ticker: str):
     from database.models import Trade, Ticker as TickerModel
 
     pipeline = context.bot_data.get("pipeline")
-    if not pipeline or not pipeline.alpaca:
+    if not pipeline or not pipeline.broker:
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text(f"✅ T1 exit for {ticker} acknowledged (no execution engine).", parse_mode=None)
         return
 
     try:
-        positions = pipeline.alpaca.get_positions_detail()
+        positions = pipeline.broker.get_positions_detail()
         pos = next((p for p in positions if p["ticker"] == ticker), None)
         if not pos:
             await query.message.reply_text(f"⚠️ No open position in {ticker}.", parse_mode=None)
@@ -475,9 +517,9 @@ async def handle_pos_t1exit(query, context, ticker: str):
 
         # Reduce 50% (sell for long, cover for short)
         if is_short:
-            pipeline.alpaca.submit_limit_cover(ticker, reduce_qty, pos["current_price"])
+            pipeline.broker.submit_limit_cover(ticker, reduce_qty, pos["current_price"])
         else:
-            pipeline.alpaca.submit_limit_sell(ticker, reduce_qty, pos["current_price"])
+            pipeline.broker.submit_limit_sell(ticker, reduce_qty, pos["current_price"])
 
         # Move stop to breakeven
         with get_session() as session:
@@ -485,16 +527,21 @@ async def handle_pos_t1exit(query, context, ticker: str):
                 Trade.status == "open",
                 TickerModel.symbol == ticker,
             ).first()
-            if trade and trade.alpaca_stop_order_id:
+            stop_order_id = (trade.broker_stop_order_id or trade.alpaca_stop_order_id) if trade else None
+            if trade and stop_order_id:
                 direction = trade.direction or "long"
                 # Cancel old stop
-                pipeline.alpaca.cancel_order(trade.alpaca_stop_order_id)
+                pipeline.broker.cancel_order(stop_order_id)
                 # Place new stop at entry price (breakeven)
                 remaining = pos["qty"] - reduce_qty
-                new_stop_id = pipeline.alpaca.submit_stop_loss(
-                    ticker, remaining, trade.entry_price, direction=direction,
-                )
+                if not hasattr(pipeline.broker, "submit_stop_loss"):
+                    new_stop_id = ""
+                else:
+                    new_stop_id = pipeline.broker.submit_stop_loss(
+                        ticker, remaining, trade.entry_price, direction=direction,
+                    )
                 trade.alpaca_stop_order_id = new_stop_id
+                trade.broker_stop_order_id = new_stop_id
                 trade.stop_loss = trade.entry_price
 
         action = "Covered" if is_short else "Sold"

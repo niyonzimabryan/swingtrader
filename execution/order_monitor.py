@@ -13,6 +13,8 @@ Handles:
 import asyncio
 from datetime import datetime, timedelta
 
+from sqlalchemy import or_
+
 from database.db import get_session
 from database.models import Trade, Ticker
 from execution.alpaca_client import AlpacaClient
@@ -57,8 +59,12 @@ class OrderMonitor:
     async def _check_open_trades(self):
         """Check all open trades for status changes."""
         with get_session() as session:
+            # Only manage Alpaca trades (incl. legacy NULL-broker rows). This
+            # monitor speaks the Alpaca order API; Robinhood trades are managed
+            # via callbacks/manual close.
             open_trades = session.query(Trade).filter(
-                Trade.status.in_(["open", "pending_fill"])
+                Trade.status.in_(["open", "pending_fill"]),
+                or_(Trade.broker == "alpaca", Trade.broker.is_(None)),
             ).all()
 
             if not open_trades:
@@ -79,8 +85,9 @@ class OrderMonitor:
         """Check a single trade's order statuses and handle state transitions."""
 
         # 1. Check entry order
-        if trade.alpaca_entry_order_id and trade.status in ("open", "pending_fill"):
-            entry_status = self.alpaca.get_order_status(trade.alpaca_entry_order_id)
+        entry_order_id = trade.broker_order_id or trade.alpaca_entry_order_id
+        if entry_order_id and trade.status in ("open", "pending_fill"):
+            entry_status = self.alpaca.get_order_status(entry_order_id)
 
             if not entry_status:
                 return
@@ -100,8 +107,9 @@ class OrderMonitor:
         # 2. For open trades with confirmed fills, check stop and target orders
         if trade.status == "open":
             # Check stop-loss order
-            if trade.alpaca_stop_order_id:
-                stop_status = self.alpaca.get_order_status(trade.alpaca_stop_order_id)
+            stop_order_id = trade.broker_stop_order_id or trade.alpaca_stop_order_id
+            if stop_order_id:
+                stop_status = self.alpaca.get_order_status(stop_order_id)
                 if stop_status and stop_status.get("status") == "filled":
                     await self._handle_stop_triggered(trade, ticker, stop_status, session)
                     return
@@ -129,10 +137,15 @@ class OrderMonitor:
         """Handle entry order fill — update trade, notify, place targets."""
         actual_price = fill_info.get("filled_avg_price", trade.entry_price)
         filled_qty = fill_info.get("filled_qty", trade.shares)
+        filled_notional = fill_info.get("filled_notional")
         direction = trade.direction or "long"
 
         trade.entry_price = actual_price
-        trade.shares = filled_qty
+        trade.shares = int(float(filled_qty or 0))
+        if filled_notional:
+            trade.filled_notional = float(filled_notional)
+        elif actual_price and filled_qty:
+            trade.filled_notional = float(actual_price) * float(filled_qty)
         trade.entry_date = datetime.utcnow()
         trade.status = "open"
         session.commit()
@@ -145,7 +158,7 @@ class OrderMonitor:
             side = "sell_short" if direction == "short" else "buy"
             await self.nm.order_filled(
                 ticker=ticker,
-                shares=filled_qty,
+                shares=trade.shares,
                 price=actual_price,
                 side=side,
                 stop_loss=trade.stop_loss,
@@ -153,7 +166,7 @@ class OrderMonitor:
             )
 
         # Place target orders (direction-aware)
-        await self._place_target_orders(trade, ticker, filled_qty, session)
+        await self._place_target_orders(trade, ticker, trade.shares, session)
 
     async def _place_target_orders(self, trade: Trade, ticker: str, shares: int, session):
         """Place target orders after entry fill. Direction-aware."""
@@ -214,10 +227,10 @@ class OrderMonitor:
 
         if direction == "short":
             pnl_pct = ((trade.entry_price - exit_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
-            pnl_abs = (trade.entry_price - exit_price) * trade.shares
+            pnl_abs = self._pnl_abs(trade, pnl_pct)
         else:
             pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
-            pnl_abs = (exit_price - trade.entry_price) * trade.shares
+            pnl_abs = self._pnl_abs(trade, pnl_pct)
 
         trade.exit_price = exit_price
         trade.exit_date = datetime.utcnow()
@@ -250,10 +263,10 @@ class OrderMonitor:
 
         if direction == "short":
             pnl_pct = ((trade.entry_price - exit_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
-            pnl_abs = (trade.entry_price - exit_price) * filled_qty
+            pnl_abs = self._pnl_abs(trade, pnl_pct, quantity=filled_qty)
         else:
             pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
-            pnl_abs = (exit_price - trade.entry_price) * filled_qty
+            pnl_abs = self._pnl_abs(trade, pnl_pct, quantity=filled_qty)
 
         # Check if this is partial (target_1) or full exit (target_2 or all shares sold)
         remaining_position = self.alpaca.get_positions_detail()
@@ -275,8 +288,9 @@ class OrderMonitor:
             session.commit()
 
             # Cancel stop-loss order
-            if trade.alpaca_stop_order_id:
-                self.alpaca.cancel_order(trade.alpaca_stop_order_id)
+            stop_order_id = trade.broker_stop_order_id or trade.alpaca_stop_order_id
+            if stop_order_id:
+                self.alpaca.cancel_order(stop_order_id)
 
             log.info("target_hit_full_exit", ticker=ticker, target=target_num, pnl_pct=pnl_pct)
             if self.nm:
@@ -311,10 +325,10 @@ class OrderMonitor:
         direction = trade.direction or "long"
         if direction == "short":
             pnl_pct = ((trade.entry_price - current_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
-            pnl_abs = (trade.entry_price - current_price) * trade.shares
+            pnl_abs = self._pnl_abs(trade, pnl_pct)
         else:
             pnl_pct = ((current_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
-            pnl_abs = (current_price - trade.entry_price) * trade.shares
+            pnl_abs = self._pnl_abs(trade, pnl_pct)
 
         trade.exit_price = current_price
         trade.exit_date = datetime.utcnow()
@@ -325,8 +339,9 @@ class OrderMonitor:
         session.commit()
 
         # Cancel outstanding orders
-        if trade.alpaca_stop_order_id:
-            self.alpaca.cancel_order(trade.alpaca_stop_order_id)
+        stop_order_id = trade.broker_stop_order_id or trade.alpaca_stop_order_id
+        if stop_order_id:
+            self.alpaca.cancel_order(stop_order_id)
         self._cancel_target_orders(trade)
 
         if self.nm:
@@ -356,9 +371,10 @@ class OrderMonitor:
         trade.operator_notes = f"{existing_notes}|{note}" if existing_notes else note
         session.commit()
 
-        if trade.alpaca_stop_order_id:
+        stop_order_id = trade.broker_stop_order_id or trade.alpaca_stop_order_id
+        if stop_order_id:
             try:
-                self.alpaca.cancel_order(trade.alpaca_stop_order_id)
+                self.alpaca.cancel_order(stop_order_id)
             except Exception:
                 pass
         self._cancel_target_orders(trade)
@@ -382,8 +398,9 @@ class OrderMonitor:
         session.commit()
 
         # Cancel any stop-loss order
-        if trade.alpaca_stop_order_id:
-            self.alpaca.cancel_order(trade.alpaca_stop_order_id)
+        stop_order_id = trade.broker_stop_order_id or trade.alpaca_stop_order_id
+        if stop_order_id:
+            self.alpaca.cancel_order(stop_order_id)
 
         log.info("entry_cancelled", ticker=ticker, trade_id=trade.id)
 
@@ -399,3 +416,14 @@ class OrderMonitor:
                     self.alpaca.cancel_order(order_id)
                 except Exception:
                     pass
+
+    def _pnl_abs(self, trade: Trade, pnl_pct: float, quantity: float | None = None) -> float:
+        """Compute absolute P&L using filled notional when fractional shares are tracked."""
+        if trade.filled_notional:
+            if quantity and trade.shares:
+                basis = trade.filled_notional * (float(quantity) / float(trade.shares))
+            else:
+                basis = trade.filled_notional
+            return basis * (pnl_pct / 100)
+        qty = quantity if quantity is not None else trade.shares
+        return trade.entry_price * qty * (pnl_pct / 100)

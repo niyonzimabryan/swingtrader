@@ -11,12 +11,12 @@ from bot.handlers.commands import (
     help_command, status_command, positions_command, regime_command,
     agents_command, exposure_command, risk_command,
     watchlist_command, upcoming_command, pause_command, resume_command, config_command,
-    scan_command,
+    scan_command, broker_command, mode_command, orders_command,
 )
 from bot.handlers.test_idea import test_command, score_command
 from bot.handlers.callbacks import handle_callback
 from bot.handlers.trade_mgmt import close_command, adjust_command
-from bot.handlers.performance import performance_command, history_command, memo_command
+from bot.handlers.performance import performance_command, history_command, memo_command, attr_command
 from bot.handlers.ask import ask_command
 from utils.logger import get_logger
 
@@ -52,6 +52,7 @@ class SwingTraderBot:
         self.app.add_handler(CommandHandler("close", close_command))
         self.app.add_handler(CommandHandler("adjust", adjust_command))
         self.app.add_handler(CommandHandler("performance", performance_command))
+        self.app.add_handler(CommandHandler("attr", attr_command))
         self.app.add_handler(CommandHandler("history", history_command))
         self.app.add_handler(CommandHandler("memo", memo_command))
         self.app.add_handler(CommandHandler("ask", ask_command))
@@ -61,11 +62,14 @@ class SwingTraderBot:
         self.app.add_handler(CommandHandler("resume", resume_command))
         self.app.add_handler(CommandHandler("config", config_command))
         self.app.add_handler(CommandHandler("scan", scan_command))
+        self.app.add_handler(CommandHandler("broker", broker_command))
+        self.app.add_handler(CommandHandler("mode", mode_command))
+        self.app.add_handler(CommandHandler("orders", orders_command))
 
         # Inline keyboard callbacks
         self.app.add_handler(CallbackQueryHandler(handle_callback))
 
-        log.info("telegram_bot_built", commands=21)
+        log.info("telegram_bot_built", commands=25)
         return self.app
 
     async def start(self):

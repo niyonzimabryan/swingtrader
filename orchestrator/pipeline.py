@@ -27,7 +27,7 @@ from scanning.structured_scanner import StructuredScanner, ScanResult as Structu
 from screening.gemini_screener import GeminiScreener, GeminiBatchResult
 from scoring.engine import ScoringEngine
 from memo.generator import MemoGenerator
-from execution.alpaca_client import AlpacaClient
+from execution.brokers import create_brokers, rebuild_primary_broker
 from execution.risk_manager import RiskManager
 from execution.position_manager import PositionManager
 from execution.order_manager import OrderManager
@@ -153,10 +153,10 @@ class TradingPipeline:
             log.info("gemini_screener_initialized", model=settings.gemini_flash_model)
 
         # Initialize execution
-        self.alpaca = AlpacaClient(settings.alpaca_api_key, settings.alpaca_secret_key)
+        self.alpaca, self.paper_broker, self.primary_broker, self.broker = create_brokers(settings)
         self.risk_manager = RiskManager(settings)
         self.position_manager = PositionManager(settings)
-        self.order_manager = OrderManager(settings, self.alpaca, self.risk_manager, self.position_manager)
+        self.order_manager = OrderManager(settings, self.alpaca, self.risk_manager, self.position_manager, broker=self.broker)
 
         # Telegram notification manager (set after bot starts)
         self.notification_manager = None
@@ -171,6 +171,25 @@ class TradingPipeline:
         }
 
         log.info("pipeline_initialized")
+
+    def configure_broker(
+        self,
+        primary: str | None = None,
+        execution_mode: str | None = None,
+        robinhood_account_number: str | None = None,
+    ) -> None:
+        """Update broker settings at runtime for Telegram controls."""
+        if primary:
+            self.settings.broker_primary = primary
+        if execution_mode:
+            mode = execution_mode.lower()
+            if mode == "review":
+                mode = "review_only"
+            self.settings.execution_mode = mode
+        if robinhood_account_number:
+            self.settings.robinhood_account_number = robinhood_account_number
+        self.primary_broker = rebuild_primary_broker(self.settings, self.paper_broker)
+        self.broker.set_primary(self.primary_broker)
 
     def get_sector(self, ticker: str) -> str:
         """Get sector for a ticker."""
@@ -192,9 +211,14 @@ class TradingPipeline:
         log.info("full_scan_start")
         run_start = datetime.utcnow()
         scan_session_id = f"scan-{run_start.strftime('%Y%m%d-%H%M%S')}"
+        self._start_pipeline_run(scan_session_id, "scheduled_scan")
 
-        with _langfuse_context(session_id=scan_session_id, tags=["scheduled_scan"]):
-            self._run_full_scan_inner(run_start, scan_session_id)
+        try:
+            with _langfuse_context(session_id=scan_session_id, tags=["scheduled_scan"]):
+                self._run_full_scan_inner(run_start, scan_session_id)
+        except Exception as e:
+            self._finish_pipeline_run(scan_session_id, status="failed", errors=[str(e)])
+            raise
 
     def _run_full_scan_inner(self, run_start, scan_session_id):
         """Inner scan logic wrapped by Langfuse session context."""
@@ -300,6 +324,16 @@ class TradingPipeline:
 
         duration = (datetime.utcnow() - run_start).total_seconds()
         log.info("full_scan_complete", duration_s=duration, memos=memos_generated)
+        self._finish_pipeline_run(
+            scan_session_id,
+            status="success",
+            scanned_count=len(scan_list),
+            screened_count=getattr(gemini_result, "total_screened", 0),
+            researched_count=len(scan_list),
+            memos_generated=memos_generated,
+            duration_s=duration,
+            metadata={"memo_details": memo_details},
+        )
 
         # Send scan completion notification
         self._send_scan_notification(duration, len(scan_list), escalated_count, memos_generated, memo_details)
@@ -864,8 +898,22 @@ class TradingPipeline:
 
         # Wrap in Langfuse session for observability
         session_id = f"adhoc-{ticker}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
-        with _langfuse_context(session_id=session_id, tags=["ad_hoc", ticker]):
-            return self._run_ad_hoc_inner(ticker, thesis, _progress)
+        self._start_pipeline_run(session_id, "ad_hoc", metadata={"ticker": ticker})
+        try:
+            with _langfuse_context(session_id=session_id, tags=["ad_hoc", ticker]):
+                memo_data = self._run_ad_hoc_inner(ticker, thesis, _progress)
+            self._finish_pipeline_run(
+                session_id,
+                status="success",
+                scanned_count=1,
+                researched_count=1,
+                memos_generated=1 if memo_data else 0,
+                metadata={"ticker": ticker, "memo_id": memo_data.get("memo_id") if memo_data else None},
+            )
+            return memo_data
+        except Exception as e:
+            self._finish_pipeline_run(session_id, status="failed", errors=[str(e)])
+            raise
 
     def _run_ad_hoc_inner(self, ticker: str, thesis: str, _progress) -> dict:
         """Inner ad-hoc logic wrapped by Langfuse session context."""
@@ -918,8 +966,8 @@ class TradingPipeline:
     def _get_portfolio_context(self) -> str:
         """Build portfolio context string for Opus evaluation."""
         try:
-            account = self.alpaca.get_account_info()
-            positions = self.alpaca.get_positions_detail()
+            account = self.broker.get_account_info()
+            positions = self.broker.get_positions_detail()
             parts = [
                 f"Portfolio: ${account.get('equity', 0):,.2f}, Cash: ${account.get('cash', 0):,.2f}",
                 f"Open positions: {len(positions)}",
@@ -929,6 +977,56 @@ class TradingPipeline:
             return "\n".join(parts)
         except Exception:
             return f"Portfolio: ${self.settings.portfolio_value:,.2f} (initial), 0 positions"
+
+    def _start_pipeline_run(self, run_id: str, trigger_source: str, metadata: dict | None = None) -> None:
+        try:
+            from database.db import get_session
+            from database.models import PipelineRun
+
+            with get_session() as session:
+                session.add(
+                    PipelineRun(
+                        run_id=run_id,
+                        trigger_source=trigger_source,
+                        status="running",
+                        metadata_json=json.dumps(metadata or {}),
+                    )
+                )
+        except Exception as e:
+            log.warning("pipeline_run_start_failed", run_id=run_id, error=str(e))
+
+    def _finish_pipeline_run(
+        self,
+        run_id: str,
+        status: str,
+        scanned_count: int = 0,
+        screened_count: int = 0,
+        researched_count: int = 0,
+        memos_generated: int = 0,
+        duration_s: float | None = None,
+        errors: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        try:
+            from database.db import get_session
+            from database.models import PipelineRun
+
+            with get_session() as session:
+                row = session.query(PipelineRun).filter_by(run_id=run_id).first()
+                if not row:
+                    return
+                row.status = status
+                row.ended_at = datetime.utcnow()
+                row.scanned_count = scanned_count
+                row.screened_count = screened_count
+                row.researched_count = researched_count
+                row.memos_generated = memos_generated
+                row.duration_s = duration_s
+                row.errors_json = json.dumps(errors or [])
+                if metadata is not None:
+                    row.metadata_json = json.dumps(metadata)
+        except Exception as e:
+            log.warning("pipeline_run_finish_failed", run_id=run_id, error=str(e))
 
     def _ensure_ticker(self, ticker: str):
         """Make sure a ticker exists in the DB (for ad-hoc analysis)."""
