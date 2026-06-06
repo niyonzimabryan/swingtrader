@@ -100,9 +100,9 @@ Swing Trader has two jobs: produce better trade memos, and keep paper-trade oper
 3. Memo delivery turns research into an operator decision.
    - Telegram receives the memo.
    - You approve, reject, or watchlist.
-   - Approved trades go to Alpaca paper trading, not live trading by default.
+   - Approved trades go to Alpaca paper trading by default, or to Robinhood Agentic Trading when you explicitly select Robinhood live mode.
 
-After approval, the order monitor polls Alpaca, tracks fills, watches stops and targets, and keeps trade state in SQLite.
+After approval, the order monitor polls the active broker, tracks fills, watches stops and targets where supported, and keeps trade state in SQLite.
 
 ## Cost expectations
 
@@ -128,7 +128,8 @@ These are model/provider costs only. They do not include broker fees, market-dat
 
 ## Limitations
 
-- Paper trading first. The default Alpaca endpoint is the paper API.
+- Paper trading first. The default mode is Alpaca paper trading.
+- Robinhood live trading requires a dedicated Agentic account, `BROKER_PRIMARY=robinhood`, `EXECUTION_MODE=live`, `ALLOW_LIVE_TRADING=true`, and `ROBINHOOD_ACCOUNT_NUMBER`.
 - US equities only.
 - Phase 1 is long-only. Short-side parameters are not production-ready.
 - Swing horizon, roughly days to weeks. This is not a day-trading scalper.
@@ -190,6 +191,32 @@ Core required settings:
 | FRED_API_KEY | Macro rates, yield curve, credit spreads |
 | DATABASE_URL | Local default: sqlite:///swing_trader.db |
 | SCHEDULER_ENABLED | Start with false; set true only after `/test` works |
+
+Broker controls:
+
+| Variable | Default | Why it matters |
+|---|---:|---|
+| BROKER_PRIMARY | alpaca | Selects the live/review broker; set to robinhood for Agentic Trading |
+| EXECUTION_MODE | paper | `review_only`, `paper`, or `live` |
+| ALLOW_LIVE_TRADING | false | Hard gate before any live broker placement |
+| ROBINHOOD_ACCOUNT_NUMBER | blank | Dedicated Agentic account used by Robinhood MCP tools |
+| ROBINHOOD_MAX_ORDER_NOTIONAL | 5 | Per-order Robinhood micro-trading cap |
+| ROBINHOOD_MAX_DAILY_NOTIONAL | 10 | Daily Robinhood live notional cap |
+
+Telegram broker commands:
+
+```text
+/broker
+/broker accounts
+/broker robinhood ACCOUNT_NUMBER
+/broker robinhood 1
+/broker alpaca
+/mode review
+/mode paper
+/mode live
+/orders
+/attr
+```
 
 Cost and research controls:
 
