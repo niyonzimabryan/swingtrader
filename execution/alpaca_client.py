@@ -260,6 +260,36 @@ class AlpacaClient:
             log.error("get_order_failed", order_id=order_id, error=str(e))
             return {}
 
+    def get_orders(self, status: str | None = None) -> list[dict]:
+        """Get recent orders."""
+        if not self.client:
+            return []
+        try:
+            query_status = QueryOrderStatus.ALL
+            if status in ("open", "new", "accepted", "pending_fill"):
+                query_status = QueryOrderStatus.OPEN
+            elif status in ("closed", "filled", "cancelled", "canceled"):
+                query_status = QueryOrderStatus.CLOSED
+            orders = self.client.get_orders(filter=GetOrdersRequest(status=query_status, limit=20))
+            return [
+                {
+                    "id": str(order.id),
+                    "symbol": order.symbol,
+                    "side": order.side.value if hasattr(order.side, "value") else str(order.side),
+                    "type": order.type.value if hasattr(order.type, "value") else str(order.type),
+                    "status": order.status.value if hasattr(order.status, "value") else str(order.status),
+                    "quantity": float(order.qty) if order.qty else 0,
+                    "filled_quantity": float(order.filled_qty) if order.filled_qty else 0,
+                    "limit_price": float(order.limit_price) if order.limit_price else None,
+                    "average_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+                    "created_at": str(order.created_at),
+                }
+                for order in orders
+            ]
+        except Exception as e:
+            log.error("get_orders_failed", status=status, error=str(e))
+            return []
+
     def cancel_order(self, order_id: str):
         """Cancel a pending order."""
         if not self.client:

@@ -157,6 +157,15 @@ class Trade(Base):
     regime_at_entry = Column(String(20), default="")
     alpaca_entry_order_id = Column(String(100), nullable=True)
     alpaca_stop_order_id = Column(String(100), nullable=True)
+    broker = Column(String(30), default="alpaca")
+    broker_account_id = Column(String(100), nullable=True)
+    broker_order_id = Column(String(100), nullable=True)
+    broker_stop_order_id = Column(String(100), nullable=True)
+    broker_order_strategy = Column(String(50), nullable=True)
+    order_review_json = Column(Text, default="{}")
+    execution_mode = Column(String(20), default="paper")
+    requested_notional = Column(Float, nullable=True)
+    filled_notional = Column(Float, nullable=True)
     operator_notes = Column(Text, default="")
     # Position monitoring fields
     peak_price = Column(Float, nullable=True)
@@ -170,6 +179,49 @@ class Trade(Base):
 
     ticker = relationship("Ticker", back_populates="trades")
     memo = relationship("Memo", back_populates="trade")
+
+
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(80), unique=True, nullable=False, index=True)
+    trigger_source = Column(String(40), default="")
+    started_at = Column(DateTime, default=datetime.utcnow)
+    ended_at = Column(DateTime, nullable=True)
+    status = Column(String(30), default="running")
+    scanned_count = Column(Integer, default=0)
+    screened_count = Column(Integer, default=0)
+    researched_count = Column(Integer, default=0)
+    memos_generated = Column(Integer, default=0)
+    approved_count = Column(Integer, default=0)
+    duration_s = Column(Float, nullable=True)
+    cost_estimate = Column(Float, nullable=True)
+    degraded_stages = Column(Text, default="[]")
+    errors_json = Column(Text, default="[]")
+    metadata_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class OrderEvent(Base):
+    __tablename__ = "order_events"
+    __table_args__ = (
+        Index("ix_order_events_broker_order", "broker", "order_id"),
+        Index("ix_order_events_created_at", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
+    memo_id = Column(Integer, ForeignKey("memos.id"), nullable=True)
+    broker = Column(String(30), default="")
+    account_id = Column(String(100), nullable=True)
+    order_id = Column(String(100), nullable=True)
+    event_type = Column(String(40), default="")
+    status = Column(String(40), default="")
+    notional = Column(Float, nullable=True)
+    raw_payload = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Memo(Base):
