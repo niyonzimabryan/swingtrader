@@ -57,6 +57,15 @@ def _run_migrations(eng):
             "t1_approaching_sent": "BOOLEAN DEFAULT 0",
             "time_warning_sent": "BOOLEAN DEFAULT 0",
             "drawdown_alert_sent": "BOOLEAN DEFAULT 0",
+            "broker": "VARCHAR(30) DEFAULT 'alpaca'",
+            "broker_account_id": "VARCHAR(100)",
+            "broker_order_id": "VARCHAR(100)",
+            "broker_stop_order_id": "VARCHAR(100)",
+            "broker_order_strategy": "VARCHAR(50)",
+            "order_review_json": "TEXT DEFAULT '{}'",
+            "execution_mode": "VARCHAR(20) DEFAULT 'paper'",
+            "requested_notional": "FLOAT",
+            "filled_notional": "FLOAT",
         }
         with eng.connect() as conn:
             for col_name, col_type in new_cols.items():

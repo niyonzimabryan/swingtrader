@@ -9,6 +9,7 @@ from bot.handlers._blocking_utils import run_blocking, BlockingCallTimeout
 from bot.formatters import escape_md
 from database.db import get_session
 from database.models import Trade, Memo, Ticker
+from tracking.attribution import get_signal_attribution
 from utils.logger import get_logger
 
 log = get_logger("bot_performance")
@@ -47,7 +48,7 @@ def _build_performance_text(pipeline) -> str:
     sections = []
 
     # --- ACCOUNT section (live from Alpaca) ---
-    account = pipeline.alpaca.get_account_info() if pipeline.alpaca else {}
+    account = pipeline.broker.get_account_info() if pipeline.broker else {}
     equity = account.get("equity", 0)
     cash = account.get("cash", 0)
     day_pnl = account.get("pnl_today", 0)
@@ -62,7 +63,7 @@ def _build_performance_text(pipeline) -> str:
     )
 
     # --- OPEN POSITIONS section (live from Alpaca) ---
-    positions = pipeline.alpaca.get_positions_detail() if pipeline.alpaca else []
+    positions = pipeline.broker.get_positions_detail() if pipeline.broker else []
     if positions:
         open_pnl = sum(p.get("pnl_abs", 0) for p in positions)
         open_emoji = "🟢" if open_pnl >= 0 else "🔴"
@@ -134,7 +135,89 @@ def _build_performance_text(pipeline) -> str:
     else:
         sections.append("\n*CLOSED TRADES \\(0\\)*\n  No closed trades yet\\.")
 
+    attr = get_signal_attribution()
+    overall = attr.get("overall", {})
+    if overall:
+        sections.append(
+            f"\n*ATTRIBUTION SNAPSHOT*\n"
+            f"  Avg R: `{overall.get('avg_r', 0):+.2f}` \\| "
+            f"Win Rate: `{overall.get('win_rate', 0):.0f}%`\n"
+            f"  {escape_md(attr.get('sample_warning', ''))}"
+        )
+
     return "\n".join(sections)
+
+
+@authorized
+async def attr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Compact attribution dashboard."""
+    await update.message.reply_text("Generating attribution dashboard...", parse_mode=None)
+    try:
+        text = await run_blocking(
+            operation="attr_command",
+            fn=_build_attr_text,
+            timeout_s=PERFORMANCE_TIMEOUT_S,
+        )
+        await update.message.reply_text(text, parse_mode="MarkdownV2")
+    except BlockingCallTimeout:
+        await update.message.reply_text(
+            f"Attribution request timed out after {PERFORMANCE_TIMEOUT_S}s. Try again shortly.",
+            parse_mode=None,
+        )
+    except Exception as e:
+        log.error("attr_failed", error=str(e))
+        await update.message.reply_text(f"Error: {str(e)[:200]}", parse_mode=None)
+
+
+def _build_attr_text() -> str:
+    data = get_signal_attribution()
+    overall = data.get("overall", {})
+    memo_counts = data.get("memo_counts", {})
+    lines = ["*ATTRIBUTION*", ""]
+    warning = data.get("sample_warning")
+    if warning:
+        lines.append(escape_md(warning))
+        lines.append("")
+    if overall:
+        lines.append(
+            f"Closed: `{overall.get('trades', 0)}` \\| "
+            f"Win rate: `{overall.get('win_rate', 0):.1f}%` \\| "
+            f"Avg R: `{overall.get('avg_r', 0):+.2f}` \\| "
+            f"P&L: `${overall.get('total_pnl', 0):+,.2f}`"
+        )
+    else:
+        lines.append("No closed trades yet\\.")
+    if memo_counts:
+        total = memo_counts.get("total", 0)
+        approved = memo_counts.get("approved", 0)
+        watchlisted = memo_counts.get("watchlisted", 0)
+        rejected = memo_counts.get("rejected", 0)
+        approval_rate = approved / total * 100 if total else 0
+        lines.append(
+            f"Memos: `{total}` \\| Approved: `{approved}` \\(`{approval_rate:.1f}%`\\) "
+            f"\\| Watchlisted: `{watchlisted}` \\| Rejected: `{rejected}`"
+        )
+    groups = data.get("groups", {})
+    for label, values in (("By setup", groups.get("setup_type", {})), ("By direction", groups.get("direction", {})), ("By score", groups.get("score_bucket", {}))):
+        if not values:
+            continue
+        lines.append("")
+        lines.append(f"*{escape_md(label)}*")
+        for name, summary in values.items():
+            lines.append(
+                f"`{escape_md(name)}`: `{summary.get('trades', 0)}` trades, "
+                f"`{summary.get('win_rate', 0):.0f}%` win, "
+                f"`{summary.get('avg_r', 0):+.2f}R`"
+            )
+    agents = data.get("agents", {})
+    if agents:
+        lines.append("")
+        lines.append("*Agent score correlation*")
+        for agent, summary in agents.items():
+            corr = summary.get("correlation")
+            corr_text = "n/a" if corr is None else f"{corr:+.2f}"
+            lines.append(f"`{escape_md(agent)}`: n=`{summary.get('n', 0)}`, corr=`{corr_text}`")
+    return "\n".join(lines)
 
 
 @authorized

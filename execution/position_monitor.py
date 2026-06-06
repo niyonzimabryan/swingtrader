@@ -15,6 +15,8 @@ import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import or_
+
 from database.db import get_session
 from database.models import Trade, Ticker
 from execution.alpaca_client import AlpacaClient
@@ -164,6 +166,7 @@ class PositionMonitor:
                 trade = session.query(Trade).join(Ticker).filter(
                     Trade.status == "open",
                     Ticker.symbol == ticker,
+                    or_(Trade.broker == "alpaca", Trade.broker.is_(None)),
                 ).first()
 
                 if not trade:
@@ -214,7 +217,7 @@ class PositionMonitor:
             breached = True
 
         if breached and self.nm:
-            pnl_abs = pnl_pct * trade.entry_price * trade.shares
+            pnl_abs = self._pnl_abs(trade, pnl_pct)
             await self.nm.position_stop_breached(
                 ticker=ticker,
                 current_price=current_price,
@@ -237,7 +240,7 @@ class PositionMonitor:
 
                 if hit:
                     trade.t1_hit = True
-                    pnl_abs = pnl_pct * trade.entry_price * trade.shares
+                    pnl_abs = self._pnl_abs(trade, pnl_pct)
                     if self.nm:
                         await self.nm.position_target_hit(
                             ticker=ticker,
@@ -251,7 +254,7 @@ class PositionMonitor:
                         )
                 elif distance <= TARGET_APPROACHING_PCT and not trade.t1_approaching_sent:
                     trade.t1_approaching_sent = True
-                    pnl_abs = pnl_pct * trade.entry_price * trade.shares
+                    pnl_abs = self._pnl_abs(trade, pnl_pct)
                     if self.nm:
                         await self.nm.position_target_approaching(
                             ticker=ticker,
@@ -271,7 +274,7 @@ class PositionMonitor:
 
             if hit:
                 trade.t2_hit = True
-                pnl_abs = pnl_pct * trade.entry_price * trade.shares
+                pnl_abs = self._pnl_abs(trade, pnl_pct)
                 if self.nm:
                     await self.nm.position_target_hit(
                         ticker=ticker,
@@ -295,7 +298,7 @@ class PositionMonitor:
         # Time expiring warning (2 days before max)
         if days_held >= max_days - TIME_WARNING_DAYS_BEFORE and not trade.time_warning_sent and days_held < max_days:
             trade.time_warning_sent = True
-            pnl_abs = pnl_pct * trade.entry_price * trade.shares
+            pnl_abs = self._pnl_abs(trade, pnl_pct)
             if self.nm:
                 await self.nm.position_time_expiring(
                     ticker=ticker,
@@ -374,3 +377,7 @@ class PositionMonitor:
             if self.nm:
                 await self.nm.position_near_stop(ticker, pnl_pct_100, trade.stop_loss, trade.id)
                 log.info("position_alert_sent", type="near_stop", ticker=ticker, pnl_pct=pnl_pct_100)
+
+    def _pnl_abs(self, trade: Trade, pnl_pct: float) -> float:
+        basis = trade.filled_notional or (trade.entry_price * trade.shares)
+        return basis * pnl_pct

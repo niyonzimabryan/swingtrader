@@ -23,10 +23,10 @@
 
 - [x] **Pattern Agent is stubbed** — ✅ Built full implementation: Sonnet setup classification → yfinance historical instance search → forward return computation (T+5/T+10/T+15/T+20) → max drawdown → summary stats → Sonnet interpretation → scoring. Cached via SQLite. NVDA: 29 instances, 55.2% win rate. Fixed `revenue_acceleration` routing to use yfinance earnings search.
 - [x] **Reddit Sentiment Agent is stubbed** — ✅ Superseded by `WebResearchAgent` which does live web search via Anthropic's `web_search_20250305` tool. Reddit agent file (`agents/reddit_agent.py`) is orphaned dead code — can be deleted. No PRAW credentials needed.
-- [ ] **1 Telegram command still stubbed** — `/upcoming` returns "coming soon". All others are live including `/watchlist` (view, add, remove with inline buttons).
+- [x] **1 Telegram command still stubbed** — ✅ `/upcoming` MVP is implemented for watchlist/open-position earnings catalysts with regression coverage in `tests/test_upcoming_catalysts.py`.
 - [x] **No test suite / no CI gate** — ✅ Added GitHub Actions CI plus 20 deterministic unit/regression tests covering onboarding, Gemini parsing, discovery recovery, memo delivery fallback, scan-list gating, reports, and approved-trade pending-fill execution.
 - [x] **Broaden safety-critical tests** — ✅ Added/expanded focused unit coverage for scoring weights, risk manager rejection cases, position sizing, short trade parameter inversion, and order-monitor fill/stop/target/time/cancel transitions. Coverage for safety-critical modules now exceeds 70%.
-- [ ] **Signal attribution needs 30+ trades** — `tracking/attribution.py` is a stub. Can't do meaningful signal-level performance analysis until enough closed trades exist
+- [x] **Signal attribution needs 30+ trades** — ✅ Replaced the stub with small-sample-aware attribution: closed trade stats, avg R, group breakdowns, agent score correlations when sample permits, `/attr`, `/performance` snapshot, and Hermes JSON output.
 - [ ] **`run_in_executor` in pipeline** — `run_ad_hoc_async` uses `loop.run_in_executor` which works but isn't ideal. Consider making the full pipeline natively async
 - [ ] **No database migrations** — Using `create_all()` for now. Should add Alembic for schema changes as the project evolves
 - [x] **Scoring weights need rebalancing** — ✅ Updated to: catalyst 40%, fundamental 30%, pattern 22%, sentiment 8%. Revisit after 50+ trades with real attribution data.
@@ -48,6 +48,9 @@
 - [ ] **WATCHLIST/PASS override: Opus-adjusted params** — When Opus recommends watchlist or pass, have Opus still generate adjusted trade params (reduced size, tighter stops) as an "if you must trade" fallback, instead of showing Sonnet's raw draft params. Currently override shows Sonnet's unmodified params which defeats the purpose of the Opus layer.
 - [ ] **Pattern Agent: incorporate own trade history** — Once 30+ closed trades exist, add our own trade outcomes as additional pattern data alongside historical market data. Our trades are higher-signal because they went through the full scoring pipeline.
 - [ ] **RL / training loop for scoring** — Explore reinforcement learning or fine-tuning on top of pattern data + trade outcomes. Use closed trade P&L as reward signal to optimize scoring weights, agent prompts, and setup classification. Could start simple (Bayesian weight optimization from attribution data) and graduate to more sophisticated RL as data accumulates.
+- [x] **Broker adapter layer for Robinhood MCP** — ✅ Added `execution/brokers/` protocol/models, Alpaca adapter, Robinhood MCP adapter, broker router, active-broker Telegram commands, and broker-neutral order/position/report reads.
+- [x] **Robinhood integration plan** — ✅ Implemented attribution/run ledger, broker adapter, Robinhood MCP read/review/live placement path, micro-trading caps, review confirmation, `/broker`/`/mode`/`/orders`/`/attr`, Hermes bridge, and handoff doc. Remaining operational step: configure Agentic account auth/account number and run review-only then deliberate micro live test.
+- [ ] **Railway deploy baseline** — Railway production currently reports SUCCESS, but latest app logs show Telegram polling `Bad Gateway`/`httpx.ReadError`; monitor whether these are transient Telegram errors or recurring runtime noise.
 
 ---
 
@@ -63,6 +66,17 @@
 - [ ] **Approval flow for scheduled scans** — Currently full scans generate memos but there's no batch approval UX. Should scheduled memos queue up for morning review?
 - [ ] **Position sizing confidence** — Should users be able to override the calculated position size, or is the system's sizing authoritative?
 - [x] **Risk parameter tuning** — ✅ Thresholds already configurable via `.env` / environment variables (`drawdown_circuit_breaker_pct`, `daily_loss_halt_pct` in `config/settings.py`). No runtime Telegram command to change them, but that's fine for now.
+
+---
+
+## Open-source Release Readiness (Jun 2, 2026)
+
+- [ ] **Sanitize tracked internal docs before public release** — Root `CLAUDE.md`, `claudehandoff*.md`, `V2_IMPLEMENTATION_SPEC.md`, `docs/BRY-187-pr-body-draft.md`, and parts of `todoscratchpad.md` include internal handoff/BRY/Railway context; move private runbook content to ignored `.claude/` or rewrite it for public docs.
+- [ ] **Complete the end-to-end autonomous scan drill** — Hermes task `t_da82904a` is still blocked; run `/scan`, verify memo delivery, approve one paper trade, and verify Alpaca order submission plus monitor reconciliation.
+- [ ] **Run onboarding doctor with real local keys** — `python -m scripts.doctor --skip-live` currently fails in this checkout because required `.env` keys are absent; rerun after setup wizard or populated private env.
+- [ ] **Release from updated `origin/main`, not stale local branches** — GitHub has merged PRs #10 and #11 with passing CI; local `main` is behind `origin/main` and current `hermes/c8109ab7` is a squash-merged feature branch.
+- [ ] **Prune obsolete Reddit/dead-code surface** — `agents/reddit_agent.py`, `data/reddit_data.py`, and `praw` remain as legacy/stub surface after WebResearchAgent superseded Reddit sentiment.
+- [ ] **Clean stale local branch/worktree refs** — Several local branches track deleted remote branches or old worktree paths; clean before final release operations to reduce operator confusion.
 
 ---
 
@@ -139,3 +153,21 @@
 - [x] **Add regression coverage for perf-review fixes** — Added `tests/test_pipeline_reports_execution.py` covering Tier 2 gating, report schema usage, and the `pending_fill` approved-trade flow.
 - [x] **Confirm Railway deployment `39557038-c880-402a-ad12-371830f10391` reaches SUCCESS** — Production deployment completed successfully and Railway reports `volumeMounts: ["/data"]` on the active build.
 - [x] **Investigate recent low scan volume / low Sonnet escalation** — Langfuse review showed Mar 11-13 scheduled scans often collapsed to discovery-only or a single `HIMS` watchlist pass. Root cause: discovery responses were truncating at the 4096-token cap, causing JSON parse failures and empty discovery output. Fixed by raising discovery output budget to 8192, preserving more raw text on parse errors, and recovering complete discovery ticker objects from truncated JSON. Added `tests/test_discovery_agent.py`.
+
+---
+
+## Robinhood Live-Path Follow-ups (Jun 6, 2026)
+
+Blockers found in pre-landing adversarial review and FIXED before merge (with regression tests in `tests/test_pipeline_reports_execution.py`):
+- [x] **C1 — monitors followed mode-sensitive router** → orphaned live positions on `/mode` switch. Fixed: `OrderMonitor`/`PositionMonitor` bound to `pipeline.paper_broker` and scoped to Alpaca-broker trades (`main.py`, `execution/order_monitor.py`, `execution/position_monitor.py`).
+- [x] **C2 — per-order notional cap skipped limit orders** (only rewrote `dollar_amount`). Fixed: `_effective_notional()` caps on `quantity*limit_price` too, and rejects instead of silently rewriting (`execution/order_manager.py`).
+- [x] **C3 — daily cap racy / non-transactional** under concurrent approvals. Fixed: `asyncio.Lock` serializes the cap-check→place→record section with an atomic in-lock re-check (`execution/order_manager.py`).
+- [x] **H1 — `/broker robinhood` inherited a prior `live` mode**. Fixed: always drop to `review_only` on broker switch; operator must explicitly `/mode live` (`bot/handlers/commands.py`).
+
+Remaining (deferred — live path is gated off by default; fix before relying on unattended live):
+- [ ] **P1 — H3: placement-timeout ambiguity.** If the Robinhood MCP call times out *after* the order reached the broker, code returns `success:False` with no Trade/`placed` event → untracked live order. Add a `placement_unknown` event + `get_orders` reconciliation before declaring failure. (`execution/order_manager.py`, `execution/brokers/robinhood.py`)
+- [ ] **P1 — H4: `BrokerRouter.__getattr__` fragility.** Delegates any unknown attr to `self.active`; guard dunder/internal names and prefer explicit delegation to avoid silent misroute / recursion. (`execution/brokers/factory.py`)
+- [ ] **P2 — M1: validate `ROBINHOOD_ORDER_TYPE` at startup.** A typo silently falls through to limit mode (changes order semantics). (`config/settings.py`)
+- [ ] **P2 — M2: dict subscript access in callbacks.** `p["ticker"]`/`pos["qty"]`/`pos["current_price"]` hard-crash a callback if a broker omits a field — use `.get` with defaults (the SpendSense dict-vs-object lesson). (`bot/handlers/callbacks.py`)
+- [ ] **P2 — M3: scope MCP value extraction.** `_first_number`/`_first_string` deep-scan the whole payload and can surface a nested value as account equity. Scope to the known account object. (`execution/brokers/robinhood.py`)
+- [ ] **P2 — L1: redact persisted raw payloads.** `OrderEvent.raw_payload` / `Trade.order_review_json` store the full raw MCP response; whitelist/scrub before persisting in case account ids/tokens appear. (`execution/order_manager.py`)

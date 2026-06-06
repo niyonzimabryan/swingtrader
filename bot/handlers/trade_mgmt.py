@@ -21,8 +21,8 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = context.args[0].upper()
     pipeline = context.bot_data.get("pipeline")
 
-    if pipeline and pipeline.alpaca:
-        positions = pipeline.alpaca.get_positions_detail()
+    if pipeline and pipeline.broker:
+        positions = pipeline.broker.get_positions_detail()
         pos = next((p for p in positions if p["ticker"] == ticker), None)
         if not pos:
             await update.message.reply_text(f"No open position in {ticker}.", parse_mode=None)
