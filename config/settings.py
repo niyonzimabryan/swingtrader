@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     robinhood_account_number: str = ""
     robinhood_mcp_auth_token: str = ""
     robinhood_mcp_headers_json: str = ""
+    # Fernet key (urlsafe base64) for the encrypted on-disk OAuth token store.
+    # Generate once with: python -m scripts.robinhood_auth --gen-key
+    # Store as a Railway SEALED variable; the app never writes it back.
+    token_encryption_key: str = ""
     robinhood_account_budget: float = 25.0
     robinhood_max_order_notional: float = 5.0
     robinhood_max_daily_notional: float = 10.0
