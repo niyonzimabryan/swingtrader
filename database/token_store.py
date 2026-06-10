@@ -6,10 +6,8 @@ Implements the MCP SDK's `mcp.client.auth.TokenStorage` interface so the SDK's
 auto-refresh) credentials for an unattended service.
 
 Design notes (see docs/ROBINHOOD_TOKEN_STORE.md):
-- The rotating secret lives on the SAME volume as the SQLite DB (Railway /data),
-  NOT in a Railway variable (writing a rotated token back to a Railway var would
-  trigger an auto-redeploy -> restart loop). Only the Fernet KEY belongs in a
-  Railway sealed variable.
+- The rotating secret lives on the SAME persistent volume as the SQLite DB, NOT
+  in an environment variable. Only the Fernet KEY belongs in deployment secrets.
 - Ciphertext only on disk (Fernet / AES-128-CBC + HMAC). Atomic writes
   (temp file -> fsync -> os.replace), mode 0o600.
 - The SDK drives registration/exchange/refresh; this class is just persistence.
@@ -25,7 +23,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
 from mcp.client.auth import TokenStorage
-from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 
 from utils.logger import get_logger
 
@@ -33,6 +31,8 @@ log = get_logger("token_store")
 
 # Refresh-skew buffer: treat the access token as expired this many seconds early.
 EXPIRY_SKEW_SECONDS = 300
+DEFAULT_CALLBACK_PORT = 8765
+DEFAULT_SCOPE = "internal"
 
 
 def generate_key() -> str:
@@ -42,7 +42,7 @@ def generate_key() -> str:
 
 def token_store_path(settings) -> Path:
     """Co-locate the encrypted token file with the SQLite DB (mirrors db.py:19-24
-    so it lands on the Railway /data volume in prod and the project root locally)."""
+    so it lands on the persistent DB volume in prod and the project root locally)."""
     database_url = getattr(settings, "database_url", "sqlite:///swing_trader.db")
     if database_url.startswith("sqlite:///"):
         db_path = database_url.replace("sqlite:///", "")
@@ -57,6 +57,45 @@ def is_configured(settings) -> bool:
     return bool(getattr(settings, "token_encryption_key", "") or "")
 
 
+def build_client_metadata(
+    port: int = DEFAULT_CALLBACK_PORT,
+    scope: str = DEFAULT_SCOPE,
+) -> OAuthClientMetadata:
+    """OAuth metadata shared by the bootstrap script and runtime broker."""
+    return OAuthClientMetadata(
+        client_name="SwingTrader",
+        redirect_uris=[f"http://localhost:{port}/callback"],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+        scope=scope,
+        token_endpoint_auth_method="none",
+    )
+
+
+def build_oauth_provider(
+    settings,
+    *,
+    port: int = DEFAULT_CALLBACK_PORT,
+    scope: str = DEFAULT_SCOPE,
+    redirect_handler=None,
+    callback_handler=None,
+    timeout: float = 300.0,
+):
+    """Return an MCP SDK OAuth provider backed by the encrypted token store."""
+    from mcp.client.auth import OAuthClientProvider
+
+    storage = EncryptedFileTokenStorage(settings)
+    provider = OAuthClientProvider(
+        server_url=getattr(settings, "robinhood_mcp_url", "https://agent.robinhood.com/mcp/trading"),
+        client_metadata=build_client_metadata(port=port, scope=scope),
+        storage=storage,
+        redirect_handler=redirect_handler,
+        callback_handler=callback_handler,
+        timeout=timeout,
+    )
+    return provider, storage
+
+
 class EncryptedFileTokenStorage(TokenStorage):
     """Fernet-encrypted JSON blob holding the OAuth tokens + dynamic client info."""
 
@@ -66,7 +105,7 @@ class EncryptedFileTokenStorage(TokenStorage):
             raise ValueError(
                 "TOKEN_ENCRYPTION_KEY is not set. Generate one with "
                 "`python -m scripts.robinhood_auth --gen-key` and set it as a "
-                "Railway sealed variable."
+                "deployment secret."
             )
         try:
             self._fernet = Fernet(key.encode("ascii") if isinstance(key, str) else key)

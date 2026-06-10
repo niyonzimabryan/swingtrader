@@ -105,6 +105,8 @@ class OrderManager:
                 account=account,
                 positions=positions,
             )
+            if broker_name == "robinhood":
+                order_request.client_context.setdefault("ref_id", self._robinhood_ref_id(memo_id, ticker))
         except ValueError as e:
             return {"success": False, "error": str(e)}
 
@@ -192,6 +194,20 @@ class OrderManager:
             try:
                 placed = await asyncio.to_thread(broker.place_order, review)
             except Exception as e:
+                if broker_name == "robinhood":
+                    return await self._handle_robinhood_placement_exception(
+                        error=e,
+                        active_broker=active_broker,
+                        order_request=order_request,
+                        review=review,
+                        memo_id=memo_id,
+                        ticker=ticker,
+                        ticker_id=ticker_id,
+                        trade_params=trade_params,
+                        signal_breakdown=signal_breakdown,
+                        regime_data=regime_data,
+                        risk_warnings=risk_result.get("warnings", []),
+                    )
                 return {"success": False, "error": f"Order submission failed: {str(e)}"}
 
             if not placed.success:
@@ -438,7 +454,7 @@ class OrderManager:
                     broker_order_id=order_id,
                     broker_stop_order_id=stop_order_id,
                     broker_order_strategy=order_strategy,
-                    order_review_json=json.dumps(review.raw),
+                    order_review_json=json.dumps(_redact_payload(review.raw)),
                     execution_mode=str(getattr(self.settings, "execution_mode", "paper")).lower(),
                     requested_notional=request.requested_notional,
                     filled_notional=filled_notional,
@@ -475,7 +491,7 @@ class OrderManager:
                         event_type=event_type,
                         status=status,
                         notional=notional,
-                        raw_payload=json.dumps(raw_payload or {}),
+                        raw_payload=json.dumps(_redact_payload(raw_payload or {})),
                     )
                 )
         except Exception as e:
@@ -484,6 +500,217 @@ class OrderManager:
     def _account_id(self, broker) -> str:
         return getattr(broker, "account_number", "") or ""
 
+    def _robinhood_ref_id(self, memo_id: int, ticker: str) -> str:
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        return f"swingtrader-{memo_id}-{ticker.upper()}-{timestamp}"
+
+    async def _handle_robinhood_placement_exception(
+        self,
+        *,
+        error: Exception,
+        active_broker,
+        order_request: BrokerOrderRequest,
+        review: BrokerOrderReview,
+        memo_id: int,
+        ticker: str,
+        ticker_id: int,
+        trade_params: dict,
+        signal_breakdown: dict,
+        regime_data: dict,
+        risk_warnings: list,
+    ) -> dict:
+        ref_id = order_request.client_context.get("ref_id", "")
+        error_text = str(error)
+        self._record_order_event(
+            memo_id=memo_id,
+            broker="robinhood",
+            account_id=self._account_id(active_broker),
+            order_id="",
+            event_type="placement_unknown",
+            status="unknown",
+            notional=self._effective_notional(order_request),
+            raw_payload={
+                "error": error_text,
+                "ref_id": ref_id,
+                "request": _request_snapshot(order_request),
+            },
+        )
+
+        reconciled = await asyncio.to_thread(self._reconcile_robinhood_order, active_broker, order_request)
+        if not reconciled:
+            return {
+                "success": False,
+                "status": "unknown",
+                "ticker": ticker,
+                "broker": "robinhood",
+                "error": (
+                    "Robinhood order placement status is unknown after submission error. "
+                    "A placement_unknown audit event was recorded; run /orders and reconcile "
+                    f"ref_id {ref_id}. Error: {error_text}"
+                ),
+                "risk_warnings": risk_warnings,
+            }
+
+        order_id = _payload_string(reconciled, ("order_id", "id", "equity_order_id"))
+        status = _normalize_placement_status(_payload_string(reconciled, ("state", "status")) or "submitted")
+        filled_notional = _payload_number(reconciled, ("filled_notional", "filled_amount"))
+        trade_id = self._create_trade_record(
+            ticker_id=ticker_id,
+            memo_id=memo_id,
+            trade_params=trade_params,
+            signal_breakdown=signal_breakdown,
+            regime_data=regime_data,
+            review=review,
+            status=status,
+            order_id=order_id,
+            stop_order_id="",
+            order_strategy="robinhood_mcp_reconciled",
+            filled_notional=filled_notional,
+        )
+        self._record_order_event(
+            trade_id=trade_id,
+            memo_id=memo_id,
+            broker="robinhood",
+            account_id=self._account_id(active_broker),
+            order_id=order_id,
+            event_type="placed",
+            status=status,
+            notional=self._effective_notional(order_request),
+            raw_payload={"reconciled_after_unknown": True, "ref_id": ref_id, "order": reconciled},
+        )
+        return {
+            "success": True,
+            "status": status,
+            "ticker": ticker,
+            "broker": "robinhood",
+            "shares": order_request.quantity or trade_params.get("shares", 0),
+            "entry_price": order_request.limit_price or trade_params.get("entry_price", 0),
+            "stop_loss": order_request.stop_loss or trade_params.get("stop_loss", 0),
+            "requested_notional": order_request.requested_notional,
+            "entry_order_id": order_id,
+            "stop_order_id": "",
+            "trade_id": trade_id,
+            "risk_warnings": risk_warnings,
+            "review_warnings": review.warnings,
+            "placement_reconciled": True,
+        }
+
+    def _reconcile_robinhood_order(self, broker, request: BrokerOrderRequest) -> dict | None:
+        ref_id = request.client_context.get("ref_id", "")
+        if not ref_id:
+            return None
+        if hasattr(broker, "find_order_by_ref_id"):
+            found = broker.find_order_by_ref_id(ref_id)
+            if found:
+                return found
+        try:
+            orders = broker.get_orders()
+        except Exception as e:
+            log.warning("robinhood_placement_reconcile_failed", error=str(e), ref_id=ref_id)
+            return None
+        for order in orders:
+            if _payload_string(order, ("ref_id", "client_order_id", "client_id", "client_ref_id")) == ref_id:
+                return order
+        return None
+
 
 def _csv_set(value: str) -> set[str]:
     return {item.strip().upper() for item in (value or "").split(",") if item.strip()}
+
+
+SENSITIVE_PAYLOAD_KEYS = {
+    "access_token",
+    "authorization",
+    "bearer",
+    "cookie",
+    "headers",
+    "mfa_code",
+    "password",
+    "refresh_token",
+    "secret",
+    "token",
+}
+ACCOUNT_PAYLOAD_KEYS = {
+    "account",
+    "account_id",
+    "account_number",
+    "broker_account_id",
+    "number",
+}
+
+
+def _redact_payload(value):
+    if isinstance(value, dict):
+        clean = {}
+        for key, item in value.items():
+            normalized = str(key).lower()
+            if any(sensitive in normalized for sensitive in SENSITIVE_PAYLOAD_KEYS):
+                clean[key] = "[REDACTED]"
+            elif normalized in ACCOUNT_PAYLOAD_KEYS:
+                clean[key] = _mask_identifier(item)
+            else:
+                clean[key] = _redact_payload(item)
+        return clean
+    if isinstance(value, list):
+        return [_redact_payload(item) for item in value]
+    if isinstance(value, str) and value.lower().startswith("bearer "):
+        return "[REDACTED]"
+    return value
+
+
+def _mask_identifier(value) -> str:
+    raw = str(value or "")
+    if not raw:
+        return ""
+    if len(raw) <= 4:
+        return "****"
+    return f"****{raw[-4:]}"
+
+
+def _request_snapshot(request: BrokerOrderRequest) -> dict:
+    return {
+        "symbol": request.symbol,
+        "side": request.side,
+        "order_type": request.order_type,
+        "quantity": request.quantity,
+        "dollar_amount": request.dollar_amount,
+        "limit_price": request.limit_price,
+        "requested_notional": request.requested_notional,
+        "ref_id": request.client_context.get("ref_id", ""),
+    }
+
+
+def _payload_string(raw, keys: tuple[str, ...]) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    for key in keys:
+        value = raw.get(key)
+        if value is not None and value != "":
+            return str(value)
+    nested = raw.get("order") or raw.get("equity_order")
+    if isinstance(nested, dict):
+        return _payload_string(nested, keys)
+    return ""
+
+
+def _payload_number(raw, keys: tuple[str, ...]) -> float | None:
+    if not isinstance(raw, dict):
+        return None
+    for key in keys:
+        value = raw.get(key)
+        if value not in (None, ""):
+            try:
+                return float(str(value).replace(",", "").replace("$", ""))
+            except (TypeError, ValueError):
+                return None
+    nested = raw.get("order") or raw.get("equity_order")
+    if isinstance(nested, dict):
+        return _payload_number(nested, keys)
+    return None
+
+
+def _normalize_placement_status(status: str) -> str:
+    normalized = (status or "").lower()
+    if normalized in ("submitted", "new", "queued", "confirmed", "pending_fill", "filled"):
+        return "pending_fill"
+    return normalized or "pending_fill"

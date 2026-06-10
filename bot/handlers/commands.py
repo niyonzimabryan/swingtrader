@@ -512,6 +512,21 @@ def _broker_summary(pipeline) -> str:
         f"Robinhood daily cap: ${getattr(s, 'robinhood_max_daily_notional', 10):,.2f}",
         f"Robinhood order type: {getattr(s, 'robinhood_order_type', 'market')}",
     ]
+    primary = getattr(pipeline, "primary_broker", None)
+    if hasattr(primary, "token_store_status"):
+        try:
+            token_status = primary.token_store_status()
+            if token_status.get("configured"):
+                lines.append(
+                    "Robinhood OAuth store: "
+                    f"{'present' if token_status.get('exists') else 'missing'}; "
+                    f"refresh={'yes' if token_status.get('has_refresh_token') else 'no'}; "
+                    f"reauth={'yes' if token_status.get('needs_reauth') else 'no'}"
+                )
+            else:
+                lines.append("Robinhood OAuth store: disabled (TOKEN_ENCRYPTION_KEY not set)")
+        except Exception as e:
+            lines.append(f"Robinhood OAuth store: unavailable ({str(e)[:120]})")
     if active_name == "robinhood" and not getattr(s, "robinhood_account_number", ""):
         lines.append("Set an Agentic account with /broker robinhood ACCOUNT_NUMBER or ROBINHOOD_ACCOUNT_NUMBER.")
     if getattr(s, "execution_mode", "paper") == "live" and not getattr(s, "allow_live_trading", False):

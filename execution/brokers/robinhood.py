@@ -8,8 +8,7 @@ import uuid
 from datetime import timedelta
 from typing import Any
 
-import httpx
-
+from database.token_store import build_oauth_provider, is_configured as token_store_is_configured
 from execution.brokers.base import BrokerOrderRequest, BrokerOrderResult, BrokerOrderReview
 from utils.logger import get_logger
 
@@ -48,15 +47,16 @@ class RobinhoodMCPBroker:
                 "error": "ROBINHOOD_ACCOUNT_NUMBER is not set.",
             }
         raw = self._call_tool_sync("get_portfolio", {"account_number": self.account_number})
+        portfolio = _select_account_object(raw, self.account_number)
         return {
             "broker": self.name,
             "account_number": _mask_account(self.account_number),
-            "equity": _first_number(raw, ("equity", "portfolio_value", "market_value", "total_value")) or 0.0,
-            "cash": _first_number(raw, ("cash", "cash_available", "buying_power")) or 0.0,
-            "buying_power": _first_number(raw, ("buying_power", "withdrawable_cash", "cash")) or 0.0,
-            "portfolio_value": _first_number(raw, ("portfolio_value", "market_value", "total_value", "equity")) or 0.0,
-            "pnl_today": _first_number(raw, ("pnl_today", "todays_pnl", "day_pnl")) or 0.0,
-            "pnl_today_pct": _first_number(raw, ("pnl_today_pct", "todays_pnl_pct", "day_pnl_pct")) or 0.0,
+            "equity": _first_number(portfolio, ("equity", "portfolio_value", "market_value", "total_value")) or 0.0,
+            "cash": _first_number(portfolio, ("cash", "cash_available", "buying_power")) or 0.0,
+            "buying_power": _first_number(portfolio, ("buying_power", "withdrawable_cash", "cash")) or 0.0,
+            "portfolio_value": _first_number(portfolio, ("portfolio_value", "market_value", "total_value", "equity")) or 0.0,
+            "pnl_today": _first_number(portfolio, ("pnl_today", "todays_pnl", "day_pnl")) or 0.0,
+            "pnl_today_pct": _first_number(portfolio, ("pnl_today_pct", "todays_pnl_pct", "day_pnl_pct")) or 0.0,
             "raw": raw,
         }
 
@@ -202,6 +202,20 @@ class RobinhoodMCPBroker:
             raw=raw,
         )
 
+    def find_order_by_ref_id(self, ref_id: str) -> dict | None:
+        """Best-effort reconciliation for ambiguous placement failures."""
+        if not ref_id:
+            return None
+        for status in (None, "queued", "open", "filled", "cancelled"):
+            try:
+                orders = self.get_orders(status=status)
+            except Exception:
+                continue
+            for order in orders:
+                if _order_ref_id(order) == ref_id:
+                    return order
+        return None
+
     def get_order_status(self, order_id: str) -> dict:
         if not self.account_number:
             return {}
@@ -303,24 +317,35 @@ class RobinhoodMCPBroker:
             return asyncio.run(self._call_tool(name, arguments))
         except ImportError as exc:
             raise RobinhoodMCPError("Install the MCP SDK with `pip install mcp`.") from exc
+        except RobinhoodMCPError:
+            raise
         except Exception as exc:
             log.error("robinhood_mcp_call_failed", tool=name, error=str(exc))
             raise RobinhoodMCPError(f"Robinhood MCP {name} failed: {exc}") from exc
 
     async def _call_tool(self, name: str, arguments: dict) -> dict:
         from mcp import ClientSession, types
-        from mcp.client.streamable_http import streamable_http_client
+        from mcp.client.streamable_http import streamablehttp_client
 
-        headers = self._headers()
-        async with httpx.AsyncClient(headers=headers, timeout=45, follow_redirects=True) as http_client:
-            async with streamable_http_client(self.url, http_client=http_client) as (read_stream, write_stream, _):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    result = await session.call_tool(
-                        name,
-                        arguments=arguments,
-                        read_timeout_seconds=timedelta(seconds=45),
-                    )
+        auth = self._oauth_provider()
+        # When OAuth storage is configured, let the MCP SDK own the Authorization
+        # header and refresh flow. Static env headers remain supported for service
+        # deployments that intentionally manage auth outside this process.
+        headers = self._headers(include_auth_token=auth is None)
+        async with streamablehttp_client(
+            self.url,
+            headers=headers,
+            timeout=45,
+            sse_read_timeout=45,
+            auth=auth,
+        ) as (read_stream, write_stream, _):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    name,
+                    arguments=arguments,
+                    read_timeout_seconds=timedelta(seconds=45),
+                )
         payload: dict[str, Any] = {}
         structured = getattr(result, "structuredContent", None)
         if structured:
@@ -342,10 +367,44 @@ class RobinhoodMCPBroker:
             raise RobinhoodMCPError(payload.get("text") or json.dumps(payload)[:500])
         return payload
 
-    def _headers(self) -> dict[str, str]:
+    def _oauth_provider(self):
+        if not token_store_is_configured(self.settings):
+            return None
+
+        async def redirect_handler(auth_url: str) -> None:
+            raise RobinhoodMCPError(
+                "Robinhood OAuth needs re-authentication. Run "
+                "`python -m scripts.robinhood_auth --status`, then "
+                "`python -m scripts.robinhood_auth` on a desktop browser. "
+                f"Authorization URL from MCP: {auth_url}"
+            )
+
+        async def callback_handler() -> tuple[str, str | None]:
+            raise RobinhoodMCPError(
+                "Robinhood OAuth callback cannot be completed inside the bot process. "
+                "Run `python -m scripts.robinhood_auth` to refresh the encrypted token store."
+            )
+
+        provider, _storage = build_oauth_provider(
+            self.settings,
+            redirect_handler=redirect_handler,
+            callback_handler=callback_handler,
+            timeout=45,
+        )
+        return provider
+
+    def token_store_status(self) -> dict:
+        if not token_store_is_configured(self.settings):
+            return {"configured": False, "reason": "TOKEN_ENCRYPTION_KEY is not set"}
+        _provider, storage = build_oauth_provider(self.settings, timeout=45)
+        status = storage.status()
+        status["configured"] = True
+        return status
+
+    def _headers(self, *, include_auth_token: bool = True) -> dict[str, str]:
         headers: dict[str, str] = {}
         token = getattr(self.settings, "robinhood_mcp_auth_token", "")
-        if token:
+        if token and include_auth_token:
             headers["Authorization"] = f"Bearer {token}"
         raw_headers = getattr(self.settings, "robinhood_mcp_headers_json", "")
         if raw_headers:
@@ -373,6 +432,43 @@ def _extract_list(raw: Any, preferred_keys: tuple[str, ...]) -> list[dict]:
         if isinstance(value, list) and all(isinstance(item, dict) for item in value):
             return value
     return []
+
+
+def _select_account_object(raw: Any, account_number: str) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+
+    candidates: list[dict] = []
+    for key in ("portfolio", "account", "account_portfolio", "result", "data", "structured"):
+        value = raw.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+    for key in ("portfolios", "accounts", "results"):
+        value = raw.get(key)
+        if isinstance(value, list):
+            candidates.extend(item for item in value if isinstance(item, dict))
+
+    for candidate in candidates:
+        if _matches_account(candidate, account_number):
+            return candidate
+    for candidate in candidates:
+        if any(key in candidate for key in ("equity", "portfolio_value", "market_value", "cash", "buying_power")):
+            return candidate
+    return raw
+
+
+def _matches_account(raw: dict, account_number: str) -> bool:
+    if not account_number:
+        return False
+    acct = str(
+        raw.get("account_number")
+        or raw.get("account_id")
+        or raw.get("account")
+        or raw.get("number")
+        or raw.get("id")
+        or ""
+    )
+    return acct == account_number or acct.endswith(account_number[-4:])
 
 
 def _parse_json_text(text: str) -> Any:
@@ -419,6 +515,19 @@ def _first_string(raw: Any, keys: tuple[str, ...]) -> str:
             found = _first_string(item, keys)
             if found:
                 return found
+    return ""
+
+
+def _order_ref_id(raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    for key in ("ref_id", "client_order_id", "client_id", "client_ref_id"):
+        value = raw.get(key)
+        if value:
+            return str(value)
+    nested = raw.get("order") or raw.get("equity_order")
+    if isinstance(nested, dict):
+        return _order_ref_id(nested)
     return ""
 
 

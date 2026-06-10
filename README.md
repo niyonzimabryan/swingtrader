@@ -130,6 +130,7 @@ These are model/provider costs only. They do not include broker fees, market-dat
 
 - Paper trading first. The default mode is Alpaca paper trading.
 - Robinhood live trading requires a dedicated Agentic account, `BROKER_PRIMARY=robinhood`, `EXECUTION_MODE=live`, `ALLOW_LIVE_TRADING=true`, and `ROBINHOOD_ACCOUNT_NUMBER`.
+- Robinhood OAuth setup is optional and documented in [Robinhood Integration Guide](docs/ROBINHOOD_INTEGRATION_PLAN.md) and [Robinhood OAuth Token Store](docs/ROBINHOOD_TOKEN_STORE.md).
 - US equities only.
 - Phase 1 is long-only. Short-side parameters are not production-ready.
 - Swing horizon, roughly days to weeks. This is not a day-trading scalper.
@@ -202,6 +203,7 @@ Broker controls:
 | ROBINHOOD_ACCOUNT_NUMBER | blank | Dedicated Agentic account used by Robinhood MCP tools |
 | ROBINHOOD_MAX_ORDER_NOTIONAL | 5 | Per-order Robinhood micro-trading cap |
 | ROBINHOOD_MAX_DAILY_NOTIONAL | 10 | Daily Robinhood live notional cap |
+| TOKEN_ENCRYPTION_KEY | blank | Enables encrypted Robinhood OAuth token storage |
 
 Telegram broker commands:
 
@@ -217,6 +219,16 @@ Telegram broker commands:
 /orders
 /attr
 ```
+
+Robinhood OAuth bootstrap:
+
+```bash
+.venv/bin/python -m scripts.robinhood_auth --gen-key
+.venv/bin/python -m scripts.robinhood_auth
+.venv/bin/python -m scripts.robinhood_auth --status
+```
+
+`robinhood_token.enc` is local runtime state and must never be committed.
 
 Cost and research controls:
 

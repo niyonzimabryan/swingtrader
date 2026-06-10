@@ -1,4 +1,4 @@
-"""CLI bridge for Hermes and other local automation.
+"""CLI bridge for local automation.
 
 This module exposes read/scan operations only. It does not bypass Telegram
 approval, broker review, or order risk checks.
@@ -20,7 +20,7 @@ from tracking.attribution import get_signal_attribution
 
 def main() -> int:
     argv = [arg for arg in sys.argv[1:] if arg != "--json"]
-    parser = argparse.ArgumentParser(description="Swing Trader Hermes bridge")
+    parser = argparse.ArgumentParser(description="Swing Trader automation bridge")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
     sub.add_parser("positions")

@@ -1,173 +1,34 @@
-# Swing Trader — Scratchpad
+# Swing Trader — Public Project Ledger
 
-> Running capture of ideas, next steps, tech debt, and decisions for the Swing Trader project.
-> Check items off as you complete them. Don't delete — just mark done.
+> Public-safe running list of release tasks, follow-ups, and ideas.
+> Private operator notes should live outside the tracked repo.
 
----
+## Current Tasks
 
-## Setup (Do First)
+- [ ] **End-to-end paper drill** — Run a scheduled or manual scan, approve one Alpaca paper trade, and verify order submission plus monitor reconciliation.
+- [ ] **Onboarding doctor with private keys** — Run `python -m scripts.doctor --skip-live` from a populated local `.env`.
+- [ ] **Robinhood review-only smoke test** — Bootstrap OAuth, run `/broker accounts`, select a dedicated Agentic account, and verify review-only order flow before live mode.
 
-- [x] **Copy Anthropic key** — added to `.env`
-- [x] **Register Alpaca** — paper trading keys added to `.env`
-- [x] **Register Finnhub** — API key added to `.env`
-- [x] **Register FMP** — API key added to `.env`
-- [ ] **Register Alpha Vantage** — _(deferred — FMP covers this for now)_
-- [x] **Register FRED** — API key added to `.env`
-- [x] **Create Telegram bot** — bot token + chat_id added to `.env`
-- [x] **Register Reddit app** — ✅ No longer needed. Reddit agent superseded by WebResearchAgent (live web search).
-- [x] **First live test** — `/test AAPL`, `/test NVDA`, `/test MSFT` all returned memos to Telegram
+## Completed
 
----
+- [x] **Open-source baseline docs** — Added MIT license, financial disclaimer, contributing guide, README setup path, CI, and secret-scan workflow.
+- [x] **Paper-first broker safety** — Kept Alpaca paper as the default broker and gated live trading behind explicit config.
+- [x] **Robinhood broker option** — Added Robinhood MCP broker, Telegram broker/mode controls, micro-trading caps, review-first flow, and audit events.
+- [x] **Robinhood OAuth store** — Added encrypted MCP SDK token storage plus bootstrap/status commands.
+- [x] **Public repo hygiene** — Removed private handoff docs from tracked files and kept local archived copies under ignored `.claude/private_docs/`.
 
-## Technical Debt
+## Future Improvements
 
-- [x] **Pattern Agent is stubbed** — ✅ Built full implementation: Sonnet setup classification → yfinance historical instance search → forward return computation (T+5/T+10/T+15/T+20) → max drawdown → summary stats → Sonnet interpretation → scoring. Cached via SQLite. NVDA: 29 instances, 55.2% win rate. Fixed `revenue_acceleration` routing to use yfinance earnings search.
-- [x] **Reddit Sentiment Agent is stubbed** — ✅ Superseded by `WebResearchAgent` which does live web search via Anthropic's `web_search_20250305` tool. Reddit agent file (`agents/reddit_agent.py`) is orphaned dead code — can be deleted. No PRAW credentials needed.
-- [x] **1 Telegram command still stubbed** — ✅ `/upcoming` MVP is implemented for watchlist/open-position earnings catalysts with regression coverage in `tests/test_upcoming_catalysts.py`.
-- [x] **No test suite / no CI gate** — ✅ Added GitHub Actions CI plus 20 deterministic unit/regression tests covering onboarding, Gemini parsing, discovery recovery, memo delivery fallback, scan-list gating, reports, and approved-trade pending-fill execution.
-- [x] **Broaden safety-critical tests** — ✅ Added/expanded focused unit coverage for scoring weights, risk manager rejection cases, position sizing, short trade parameter inversion, and order-monitor fill/stop/target/time/cancel transitions. Coverage for safety-critical modules now exceeds 70%.
-- [x] **Signal attribution needs 30+ trades** — ✅ Replaced the stub with small-sample-aware attribution: closed trade stats, avg R, group breakdowns, agent score correlations when sample permits, `/attr`, `/performance` snapshot, and Hermes JSON output.
-- [ ] **`run_in_executor` in pipeline** — `run_ad_hoc_async` uses `loop.run_in_executor` which works but isn't ideal. Consider making the full pipeline natively async
-- [ ] **No database migrations** — Using `create_all()` for now. Should add Alembic for schema changes as the project evolves
-- [x] **Scoring weights need rebalancing** — ✅ Updated to: catalyst 40%, fundamental 30%, pattern 22%, sentiment 8%. Revisit after 50+ trades with real attribution data.
-- [ ] **Deep research poll loops on persistent errors** — `deep_research_client.py:205-208` catches all exceptions during polling and continues. If error is persistent (bad task_id, auth failure), it loops for 30 min before timeout. Add consecutive-error counter to break after 5 failures.
-- [ ] **Web research error → neutral 0.5 score** — `_fallback_output()` returns `score=0.5` on failure. Not a bug (0.5 = "no opinion") but could improve by adding `is_valid` flag to AgentOutput and excluding failed agents from weighted average in ScoringEngine.
+- [ ] **Interactive Brokers support** — Evaluate after the Robinhood path is stable and documented.
+- [ ] **Database migrations** — Replace lightweight `create_all()`/inline migrations with Alembic before schema churn grows.
+- [ ] **Email backup channel** — Add a secondary memo/alert delivery path for Telegram outages.
+- [ ] **Backtest framework** — Replay historical candidates through the pipeline to calibrate scoring before wider live use.
+- [ ] **Batch approval UX** — Decide whether scheduled scan memos should queue for a morning review workflow.
 
----
+## Tech Debt & Bugs
 
-## Ideas
+- [ ] **Run logging and cost tracking** — Persist per-scan token/cost/duration metrics beyond provider dashboards.
+- [ ] **Deep research polling cleanup** — Continue hardening persistent-error handling and event-loop cleanup warnings in tests.
+- [ ] **Legacy Reddit surface** — Remove or fully retire old Reddit-related files if web research remains the replacement.
 
-- [x] **Expand ticker universe** — ✅ Already S&P 500 (503 tickers across 11 GICS sectors). Auto-generated via `scripts/update_sp500.py`. Could later add mid-caps or dynamic screener-based refresh.
-- [ ] **Tune scoring weights from real data** — After 50+ closed trades, run attribution analysis to see which agents actually predict winners, then rebalance weights
-- [ ] **Email backup channel** — PRD calls for email delivery as Telegram backup. Not critical for MVP but useful for audit trail
-- [ ] **Backtest framework** — PRD Phase 2 scope. Replay historical data through the pipeline to validate strategy before going live
-- [x] **Dockerfile for deployment** — ✅ Done. Dockerfile + railway.toml deployed to Railway. See Autonomous Operation section.
-- [x] **Watchlist with alerts** — ✅ Full stack: CRUD backend (`orchestrator/universe.py`), lower Haiku threshold for re-scanning, "Watchlist" button on memos, `/watchlist` command (view list, add/remove tickers, inline remove buttons). Remaining idea: dedicated alert notifications when catalysts strengthen between scans.
-- [ ] **Multi-timeframe analysis** — Current system is swing-focused (3-15 day). Could add day-trade and position-trade modes
-- [ ] **Portfolio rebalancing** — Auto-suggest trimming winners and adding to conviction positions based on drift from target allocation
-- [ ] **WATCHLIST/PASS override: Opus-adjusted params** — When Opus recommends watchlist or pass, have Opus still generate adjusted trade params (reduced size, tighter stops) as an "if you must trade" fallback, instead of showing Sonnet's raw draft params. Currently override shows Sonnet's unmodified params which defeats the purpose of the Opus layer.
-- [ ] **Pattern Agent: incorporate own trade history** — Once 30+ closed trades exist, add our own trade outcomes as additional pattern data alongside historical market data. Our trades are higher-signal because they went through the full scoring pipeline.
-- [ ] **RL / training loop for scoring** — Explore reinforcement learning or fine-tuning on top of pattern data + trade outcomes. Use closed trade P&L as reward signal to optimize scoring weights, agent prompts, and setup classification. Could start simple (Bayesian weight optimization from attribution data) and graduate to more sophisticated RL as data accumulates.
-- [x] **Broker adapter layer for Robinhood MCP** — ✅ Added `execution/brokers/` protocol/models, Alpaca adapter, Robinhood MCP adapter, broker router, active-broker Telegram commands, and broker-neutral order/position/report reads.
-- [x] **Robinhood integration plan** — ✅ Implemented attribution/run ledger, broker adapter, Robinhood MCP read/review/live placement path, micro-trading caps, review confirmation, `/broker`/`/mode`/`/orders`/`/attr`, Hermes bridge, and handoff doc. Remaining operational step: configure Agentic account auth/account number and run review-only then deliberate micro live test.
-- [ ] **Railway deploy baseline** — Railway production currently reports SUCCESS, but latest app logs show Telegram polling `Bad Gateway`/`httpx.ReadError`; monitor whether these are transient Telegram errors or recurring runtime noise.
-
----
-
-## Product / UX Questions
-
-- [x] **Open-source onboarding flow** — ✅ Added README-backed setup path + refreshed `.env.example` that treats Anthropic, Telegram bot token/chat ID, Alpaca paper, market/data provider keys (Finnhub, FMP, Alpha Vantage, FRED), and database config as required; Gemini remains an optional add-on.
-- [x] **Config doctor command** — ✅ Added `python -m scripts.doctor` with presence checks, SQLite path check, Telegram/Alpaca/data-provider live validation, and Gemini warning-only handling.
-- [x] **First-run setup wizard** — ✅ Added `python -m scripts.setup_wizard` local web app at `localhost:8765` that creates `.env`, walks users through every required provider key, opens signup docs, discovers `TELEGRAM_CHAT_ID`, tests Telegram delivery, validates provider connectivity, and handles Gemini/observability/advanced integrations separately.
-- [x] **Move search-heavy stages to Gemini Pro** — ✅ `WEB_SEARCH_PROVIDER=gemini` now routes Discovery and WebResearch through Gemini Pro + Google Search grounding, with Anthropic fallback if Gemini is absent; Gemini Flash screening and Gemini deep research remain separate pipeline roles.
-- [x] **Use leading-edge Gemini for search-heavy stages** — ✅ Updated defaults, wizard schema, `.env.example`, local `.env`, and tests to use `gemini-3.1-pro-preview`; live smoke test confirmed grounded search works with the configured key.
-- [x] **Open-source CI and contribution path** — ✅ Added `.github/workflows/ci.yml`, README testing instructions, and `CONTRIBUTING.md`; CI installs dependencies, runs `pip check`, compiles app sources, and runs full `unittest discover`.
-- [x] **Pipeline stage progress messages** — ✅ Implemented: `run_ad_hoc()` accepts `progress_cb` callable, fires at each stage (regime → catalyst → fundamental → pattern → web research → scoring → memo). `/test` handler edits the status message in real-time via `asyncio.run_coroutine_threadsafe()`. `/scan` uses start message + scan completion notification.
-- [ ] **Approval flow for scheduled scans** — Currently full scans generate memos but there's no batch approval UX. Should scheduled memos queue up for morning review?
-- [ ] **Position sizing confidence** — Should users be able to override the calculated position size, or is the system's sizing authoritative?
-- [x] **Risk parameter tuning** — ✅ Thresholds already configurable via `.env` / environment variables (`drawdown_circuit_breaker_pct`, `daily_loss_halt_pct` in `config/settings.py`). No runtime Telegram command to change them, but that's fine for now.
-
----
-
-## Open-source Release Readiness (Jun 2, 2026)
-
-- [ ] **Sanitize tracked internal docs before public release** — Root `CLAUDE.md`, `claudehandoff*.md`, `V2_IMPLEMENTATION_SPEC.md`, `docs/BRY-187-pr-body-draft.md`, and parts of `todoscratchpad.md` include internal handoff/BRY/Railway context; move private runbook content to ignored `.claude/` or rewrite it for public docs.
-- [ ] **Complete the end-to-end autonomous scan drill** — Hermes task `t_da82904a` is still blocked; run `/scan`, verify memo delivery, approve one paper trade, and verify Alpaca order submission plus monitor reconciliation.
-- [ ] **Run onboarding doctor with real local keys** — `python -m scripts.doctor --skip-live` currently fails in this checkout because required `.env` keys are absent; rerun after setup wizard or populated private env.
-- [ ] **Release from updated `origin/main`, not stale local branches** — GitHub has merged PRs #10 and #11 with passing CI; local `main` is behind `origin/main` and current `hermes/c8109ab7` is a squash-merged feature branch.
-- [ ] **Prune obsolete Reddit/dead-code surface** — `agents/reddit_agent.py`, `data/reddit_data.py`, and `praw` remain as legacy/stub surface after WebResearchAgent superseded Reddit sentiment.
-- [ ] **Clean stale local branch/worktree refs** — Several local branches track deleted remote branches or old worktree paths; clean before final release operations to reduce operator confusion.
-
----
-
-## Bugs
-
-- [x] **Implement BRY-66 web research cost controls** — ✅ Lowered `WEB_RESEARCH_MAX_SEARCHES` default from 8 to 5 and added a SQLite same-day web research cache keyed by ticker + UTC date + catalyst hash. Cache hit/miss status is logged and exposed in web research raw data; `.env.example` and README document the knobs.
-
-- [x] **V2 compliance audit (imports/models/pipeline/config/scoring/contracts/errors/time)** — ✅ Completed static scan against `swing-trader-prd.md` Section 16 with file/line findings captured in chat report
-- [x] **Deep research auto-trigger fails on scheduled scans** — ✅ Fixed: replaced `asyncio.get_event_loop().create_task()` with `asyncio.run_coroutine_threadsafe(coro, self.bot_loop)`. Bot event loop ref stored at init via `main.py`. Deep research now schedules correctly from sync scheduler context.
-- [x] **Pattern narrative missing in memo output** — ✅ Fixed: added `"reasoning": pattern.reasoning` to pattern dict in `memo/generator.py:78`. Memo template can now render Sonnet's interpretation text.
-- [x] **Web/catalyst API error responses treated as valid neutral signals** — ✅ Fixed: `_compute_catalyst_score()` now returns (0.1, 0.1, 0.1) when `"error" in sonnet_result`. All 3 Sonnet-calling paths log warning and propagate `sonnet_error` in raw_data. Failed calls score 0.1 instead of 0.5.
-- [x] **UTC consistency cleanup** — ✅ Fixed: replaced `datetime.now()` with `datetime.utcnow()` in `pipeline.py`, `memo/generator.py`, `discovery_agent.py`, `pdf_generator.py`. Data adapters (date range computation) left as-is since they compute relative offsets.
-- [x] **Opus missing V2 pattern similarity stats** — ✅ Fixed: `scoring/engine.py` now includes `total_instances`, `weighted_win_rate_t10`, `hs_count`, `hs_win_rate_t10`, `hs_median_return_t10`, `most_similar_instance` from `pattern.raw_data` in the signal package sent to Opus.
-- [x] **Direction always SHORT** — ✅ Fixed in `scoring/engine.py` (normalize ambiguous→neutral, derive primary_direction from highest-priority non-neutral signal, default to bullish for Phase 1) and `memo/generator.py` (use scoring_result direction instead of catalyst.direction). Verified: all three test tickers show LONG.
-- [x] **Catalyst confidence shows `?` in memos** — ✅ Fixed: merge AgentOutput.confidence into catalyst raw_data dict in `memo/generator.py`, format as percentage in `memo/templates/ic_memo.py`. Verified: NVDA=78%, AAPL=72%, MSFT=75%.
-- [x] **Scoring weights diluted by stubs** — ✅ Updated to catalyst 40%, fundamental 30%, pattern 22%, sentiment 8%.
-- [x] **FMP returning 402 (fundamental data dead)** — ✅ Rewrote `data/fundamental_data.py` to use yfinance as primary source, FMP as optional fallback. Same output schema, no agent changes needed. Verified: AMAT quality=0.26, valuation=0.39, growth=0.27, balance=0.90.
-- [x] **MarkdownV2 escaping broken** — ✅ Fixed `memo/templates/ic_memo.py`: added `fmt()` helper for safe numeric formatting, ensured all dots inside backtick code spans, all free text through `esc()`. Memos now render with bold/code formatting on Telegram.
-- [x] **Opus API calls taking 30+ minutes** — ✅ Added `analyze_with_fallback()` to `utils/anthropic_client.py` with Sonnet fallback on timeout/rate-limit. Reduced retry attempts (3→2), added 120s client timeout. Pipeline now completes in ~50s.
-- [x] **Model upgrade to Sonnet 4.6 + Opus 4.6** — ✅ Updated all model IDs: `claude-sonnet-4-6`, `claude-opus-4-6`. Haiku stays at `claude-haiku-4-5-20251001`. Updated `model_selector.py`, `settings.py`, `anthropic_client.py`.
-- [x] **Message too long for Telegram** — ✅ Fixed: `test_command()` in `bot/handlers/test_idea.py` now uses `split_message()` to chunk memos >4096 chars. Keyboard (approve/reject buttons) attached to last chunk only. Both MarkdownV2 and plain text fallback paths handle splitting.
-- [x] **Inconsistent memo formatting across split Telegram messages** — ✅ Root cause fixed: removed mutating marker repair from `bot/formatters.py`, added deterministic memo splitter (`split_memo_message`) and shared all-or-nothing delivery fallback (`bot/handlers/_memo_delivery.py`) so chunks no longer mix Markdown/plain formatting.
-- [x] **Telegram memo WEB RESEARCH truncation + chunk-2 parse miss** — ✅ Fixed both root causes: removed hard clipping in memo template (`peer_comparison`, WEB RESEARCH dimensions) and expanded Markdown parse detection to catch Telegram `"Can't parse entities"` variants (including reserved `'.'`) so fallback now reliably rolls back + resends full plain text.
-- [x] **Opus thinking mode deprecation** — ✅ Fixed: switched `thinking.type` from `enabled` to `adaptive` in both occurrences in `utils/anthropic_client.py`. Committed & deployed.
-- [x] **Trade params contradict SHORT direction** — ✅ Verified `memo/generator.py` computes direction-aware params (short stop above entry, targets below) and added regression coverage for LONG/SHORT params plus synthetic SHORT memo rendering.
-
----
-
-## Autonomous Operation (Feb 2026)
-
-- [x] **Order Monitor** — `execution/order_monitor.py` polls Alpaca every 30s for fill/stop/target status. Handles: entry fills → update trade + place target sells, stop triggers → close trade + P&L, target hits → partial/full exit, time exits → close after max_holding_days, cancelled orders → cleanup. Wired into `main.py` lifecycle.
-- [x] **`/scan` command** — Triggers `pipeline.run_full_scan()` from Telegram. Runs in executor, reports completion via scan notification.
-- [x] **Enhanced `/performance`** — Full dashboard: live Alpaca equity/cash/day P&L, open positions with stop-loss from DB, closed trade stats (win rate, profit factor, best/worst, avg hold).
-- [x] **Scan completion notifications** — `NotificationManager.scan_complete()` fires at end of every `run_full_scan()`. Shows duration, tickers scanned, memos generated with scores.
-- [x] **Order monitor wired to main.py** — Starts after bot init, stops on shutdown. Runs as async background task.
-- [x] **Railway deployment** — ✅ Deployed to Railway with Dockerfile, volume mount at `/data` for SQLite persistence, tzdata for scheduler, polling conflict retry (10 attempts with backoff). GitHub auto-deploy connected — `git push` to `main` triggers deploy. Project: `e556a6d9-2023-4c81-a031-e32e160a33be`.
-- [x] **Fund Alpaca paper account** — ✅ Confirmed: $100K cash, $200K buying power, 0 positions. Ready for live paper trading.
-- [ ] **First autonomous scan** — Run `/scan` from Telegram, verify memos arrive, approve one, verify order submitted + monitored.
-
----
-
-## Design Notes
-
-- [x] **Memo readability on mobile** — ✅ Polished Telegram MarkdownV2 memo layout for 390px mobile readability: split dense pipe rows, modifier code spans, risk metadata, signal agreement, and trade params into stacked rows. QA evidence lives in `docs/BRY-187-mobile-memo-readability-qa.md`.
-- [x] **Message splitting** — ✅ Deterministic memo split now prefers section boundary before Opus/final params and includes regression tests (`tests/test_memo_formatting_delivery.py`)
-
----
-
-## Architecture Review Follow-ups (Feb 22, 2026)
-
-- [x] **Create architecture trigger guide doc** — Added `/ARCHITECTURE_EVOLUTION_TRIGGERS.md` with measurable thresholds for when to implement handler offloading, parallelization, SQLite hardening, Postgres migration, and Redis.
-- [x] **Create implementation handoff doc** — Added `/claudehandoff.md` with decision context, per-file changes, env vars, fallback behavior, validation notes, rollback steps, and trigger-linked follow-ups.
-- [x] **Retitle completed architecture revisions doc** — Renamed typo file to `/ARCHITECTURE_REVISIONS_FINAL.md` and updated heading to reflect final, completed revisions.
-- [x] **Offload blocking bot handlers from event loop** — Implemented shared blocking helper and moved `/ask`, `/regime`, `/score`, `/performance` heavy sync work to executor with immediate ack + timeout-safe fallback responses.
-- [x] **Parallelize independent agent stages in ad-hoc pipeline** — Implemented shared post-catalyst parallel helper and applied to both `/test` and `/scan` flows (fundamental + pattern + web research).
-- [x] **Add automatic parallel stability controller** — Implemented rolling health tracker with auto degrade/recover (3 bad runs in 12 → workers 3→2, cooldown + healthy streak recovery), plus Telegram/log alerts on mode change.
-- [ ] **(Deferred / potential) Add cache-first reads for repeat analyses** — Keep as an optional optimization later; only implement if repeated same-day ticker analysis becomes common enough to justify added cache complexity.
-- [ ] **Persistent run logging & cost tracking** — Railway logs vanish on redeploy. Need to persist per-scan metrics (token counts per stage, duration, costs, tickers processed/escalated/memoed) to DB or external service. Currently flying blind on API spend. Exploring Langfuse for structured LLM observability — could reuse across all projects.
-- [x] **Harden SQLite for concurrent workload** — Enabled WAL mode + busy_timeout in `database/db.py`, added runtime index creation for hot filters, and added model indexes for `trades.status`, `trades.exit_date`, `memos.status`, and `memos.created_at`.
-- [ ] **Define DB migration path trigger to Postgres** — Keep SQLite now, but migrate when multi-replica/worker deployment or persistent lock contention appears.
-
----
-
-## Perf / Cost Review Follow-ups (Mar 8, 2026)
-
-- [x] **Create DOCX perf/cost review report** — added `/Users/bryanniyonzima/Downloads/AppsinTesting/swingtrader/SwingTrader_Post_Architecture_Perf_Cost_Review_2026-03-08.docx`
-- [x] **Fix Tier 2 gate bypass in scan builder** — `orchestrator/pipeline.py:_build_scan_list()` now only falls back to Tier 1 for tickers Gemini did not screen, so screened names with `escalated=0` no longer leak into Tier 3/4.
-- [x] **Fail closed when Gemini screening is quota-exhausted** — Batch failures now synthesize screened results so Tier 1 names do not fan out into Anthropic stages after Gemini quota/rate-limit failures, and discovery-provider exhaustion disables full-universe fallback.
-- [x] **Propagate Langfuse session context into post-catalyst worker threads** — Wrapped `ThreadPoolExecutor` submissions with `contextvars.copy_context()` so `fundamental`, `pattern`, and `web_research` inherit the active scan/ad-hoc session.
-- [x] **Fix daily digest + weekly report schema drift** — `bot/daily_digest.py` now uses `Memo.created_at` and keeps ORM-derived calculations inside the DB session; `bot/weekly_report.py` now uses `Memo.status`, `Memo.created_at`, and `Trade.pnl_absolute`.
-- [x] **Attach a real Railway volume or move off SQLite-on-/data** — Created Railway volume `swingtrader-volume` and attached it to production at `/data`; new deployment metadata now includes `volumeMounts: ["/data"]`.
-- [x] **Fix Alpaca stop placement for approved trades** — Approved trades now submit as protected OTO limit entries, persist as `pending_fill` until filled, and reconcile attached/fallback stop IDs from the order monitor instead of placing a standalone stop before the entry exists.
-- [x] **Repair pattern-data FMP fallbacks** — `data/pattern_data.py` now uses current FMP endpoints for earnings (`/earnings`) and analyst grades (`/grades`), points insider lookups at the current search endpoint, and logs 402 restricted endpoints clearly.
-- [x] **Add regression coverage for perf-review fixes** — Added `tests/test_pipeline_reports_execution.py` covering Tier 2 gating, report schema usage, and the `pending_fill` approved-trade flow.
-- [x] **Confirm Railway deployment `39557038-c880-402a-ad12-371830f10391` reaches SUCCESS** — Production deployment completed successfully and Railway reports `volumeMounts: ["/data"]` on the active build.
-- [x] **Investigate recent low scan volume / low Sonnet escalation** — Langfuse review showed Mar 11-13 scheduled scans often collapsed to discovery-only or a single `HIMS` watchlist pass. Root cause: discovery responses were truncating at the 4096-token cap, causing JSON parse failures and empty discovery output. Fixed by raising discovery output budget to 8192, preserving more raw text on parse errors, and recovering complete discovery ticker objects from truncated JSON. Added `tests/test_discovery_agent.py`.
-
----
-
-## Robinhood Live-Path Follow-ups (Jun 6, 2026)
-
-Blockers found in pre-landing adversarial review and FIXED before merge (with regression tests in `tests/test_pipeline_reports_execution.py`):
-- [x] **C1 — monitors followed mode-sensitive router** → orphaned live positions on `/mode` switch. Fixed: `OrderMonitor`/`PositionMonitor` bound to `pipeline.paper_broker` and scoped to Alpaca-broker trades (`main.py`, `execution/order_monitor.py`, `execution/position_monitor.py`).
-- [x] **C2 — per-order notional cap skipped limit orders** (only rewrote `dollar_amount`). Fixed: `_effective_notional()` caps on `quantity*limit_price` too, and rejects instead of silently rewriting (`execution/order_manager.py`).
-- [x] **C3 — daily cap racy / non-transactional** under concurrent approvals. Fixed: `asyncio.Lock` serializes the cap-check→place→record section with an atomic in-lock re-check (`execution/order_manager.py`).
-- [x] **H1 — `/broker robinhood` inherited a prior `live` mode**. Fixed: always drop to `review_only` on broker switch; operator must explicitly `/mode live` (`bot/handlers/commands.py`).
-
-Remaining (deferred — live path is gated off by default; fix before relying on unattended live):
-- [ ] **P1 — H3: placement-timeout ambiguity.** If the Robinhood MCP call times out *after* the order reached the broker, code returns `success:False` with no Trade/`placed` event → untracked live order. Add a `placement_unknown` event + `get_orders` reconciliation before declaring failure. (`execution/order_manager.py`, `execution/brokers/robinhood.py`)
-- [ ] **P1 — H4: `BrokerRouter.__getattr__` fragility.** Delegates any unknown attr to `self.active`; guard dunder/internal names and prefer explicit delegation to avoid silent misroute / recursion. (`execution/brokers/factory.py`)
-- [ ] **P2 — M1: validate `ROBINHOOD_ORDER_TYPE` at startup.** A typo silently falls through to limit mode (changes order semantics). (`config/settings.py`)
-- [ ] **P2 — M2: dict subscript access in callbacks.** `p["ticker"]`/`pos["qty"]`/`pos["current_price"]` hard-crash a callback if a broker omits a field — use `.get` with defaults (the SpendSense dict-vs-object lesson). (`bot/handlers/callbacks.py`)
-- [ ] **P2 — M3: scope MCP value extraction.** `_first_number`/`_first_string` deep-scan the whole payload and can surface a nested value as account equity. Scope to the known account object. (`execution/brokers/robinhood.py`)
-- [ ] **P2 — L1: redact persisted raw payloads.** `OrderEvent.raw_payload` / `Trade.order_review_json` store the full raw MCP response; whitelist/scrub before persisting in case account ids/tokens appear. (`execution/order_manager.py`)
+*Last updated: 2026-06-10*
