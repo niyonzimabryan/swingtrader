@@ -511,6 +511,57 @@ class _RacingRobinhoodBroker(_FakeRobinhoodBroker):
         return super().review_order(order)
 
 
+class _TimeoutThenFoundRobinhoodBroker(_FakeRobinhoodBroker):
+    def __init__(self):
+        super().__init__()
+        self.ref_id = ""
+
+    def place_order(self, review):
+        self.ref_id = review.request.client_context["ref_id"]
+        raise TimeoutError("read timed out after placement")
+
+    def find_order_by_ref_id(self, ref_id):
+        if ref_id == self.ref_id:
+            return {
+                "order_id": "rh-reconciled-1",
+                "ref_id": ref_id,
+                "status": "submitted",
+                "symbol": "NVDA",
+            }
+        return None
+
+
+class _LeakyRobinhoodBroker(_FakeRobinhoodBroker):
+    def review_order(self, order):
+        self.reviewed.append(order)
+        return BrokerOrderReview(
+            broker="robinhood",
+            request=order,
+            approved=True,
+            estimated_notional=order.requested_notional,
+            raw={
+                "access_token": "secret-access",
+                "account_number": "RH123456",
+                "nested": {"refresh_token": "secret-refresh"},
+            },
+        )
+
+    def place_order(self, review):
+        self.placed.append(review.request)
+        return BrokerOrderResult(
+            broker="robinhood",
+            success=True,
+            order_id="rh-order-1",
+            status="submitted",
+            order_strategy="robinhood_mcp",
+            raw={
+                "id": "rh-order-1",
+                "headers": {"Authorization": "Bearer secret-access"},
+                "account_id": "RH123456",
+            },
+        )
+
+
 class _RecordingAlpaca:
     """Records every order-status lookup so we can assert which trades the
     monitor actually touched."""
@@ -658,6 +709,36 @@ class RobinhoodLiveSafetyRegressionTests(unittest.TestCase):
         )
         asyncio.run(monitor._check_open_trades())
         self.assertEqual(recorder.status_calls, ["alp-1"])
+
+    def test_placement_timeout_records_unknown_and_reconciles_by_ref_id(self):
+        broker = _TimeoutThenFoundRobinhoodBroker()
+        manager = self._manager(broker=broker)
+
+        result = asyncio.run(manager.execute_approved_trade(1))
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["placement_reconciled"])
+        self.assertEqual(result["entry_order_id"], "rh-reconciled-1")
+        with get_session() as session:
+            events = session.query(OrderEvent).order_by(OrderEvent.id).all()
+            self.assertEqual([e.event_type for e in events], ["review", "placement_unknown", "placed"])
+            self.assertIn("read timed out after placement", events[1].raw_payload)
+
+    def test_persisted_robinhood_payloads_are_redacted(self):
+        broker = _LeakyRobinhoodBroker()
+        manager = self._manager(broker=broker)
+
+        result = asyncio.run(manager.execute_approved_trade(1))
+
+        self.assertTrue(result["success"])
+        with get_session() as session:
+            trade = session.query(Trade).first()
+            events = session.query(OrderEvent).order_by(OrderEvent.id).all()
+            persisted = "\n".join([trade.order_review_json, *[e.raw_payload for e in events]])
+            self.assertNotIn("secret-access", persisted)
+            self.assertNotIn("secret-refresh", persisted)
+            self.assertNotIn("RH123456", persisted)
+            self.assertIn("****3456", persisted)
 
 
 class BrokerSwitchSafetyTests(unittest.TestCase):

@@ -1,4 +1,5 @@
 from dotenv import load_dotenv
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -49,6 +50,10 @@ class Settings(BaseSettings):
     robinhood_account_number: str = ""
     robinhood_mcp_auth_token: str = ""
     robinhood_mcp_headers_json: str = ""
+    # Fernet key (urlsafe base64) for the encrypted on-disk OAuth token store.
+    # Generate once with: python -m scripts.robinhood_auth --gen-key
+    # Store as a deployment secret; the app never writes it back.
+    token_encryption_key: str = ""
     robinhood_account_budget: float = 25.0
     robinhood_max_order_notional: float = 5.0
     robinhood_max_daily_notional: float = 10.0
@@ -143,3 +148,11 @@ class Settings(BaseSettings):
     parallel_alert_on_state_change: bool = True
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+    @field_validator("robinhood_order_type")
+    @classmethod
+    def validate_robinhood_order_type(cls, value: str) -> str:
+        normalized = (value or "market").strip().lower()
+        if normalized not in {"market", "limit"}:
+            raise ValueError("ROBINHOOD_ORDER_TYPE must be 'market' or 'limit'")
+        return normalized

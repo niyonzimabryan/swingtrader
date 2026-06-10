@@ -20,3 +20,4 @@ opentelemetry-instrumentation-anthropic>=0.1
 google-genai>=1.0
 firecrawl-py>=2.0
 mcp>=1.27.2
+cryptography>=42,<47

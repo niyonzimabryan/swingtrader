@@ -7,6 +7,23 @@ from execution.brokers.alpaca import AlpacaBroker
 from execution.brokers.robinhood import RobinhoodMCPBroker
 
 
+DELEGATED_BROKER_ATTRS = {
+    "cancel_order",
+    "close_position",
+    "get_account_info",
+    "get_order_status",
+    "get_orders",
+    "get_positions_detail",
+    "get_quotes",
+    "get_tradability",
+    "review_order",
+    "place_order",
+    "submit_limit_cover",
+    "submit_limit_sell",
+    "submit_stop_loss",
+}
+
+
 class BrokerRouter:
     """Delegates broker calls to paper or primary broker based on EXECUTION_MODE."""
 
@@ -40,6 +57,8 @@ class BrokerRouter:
         self.primary_broker = broker
 
     def __getattr__(self, item):
+        if item.startswith("_") or item not in DELEGATED_BROKER_ATTRS:
+            raise AttributeError(f"{type(self).__name__!s} has no attribute {item!r}")
         return getattr(self.active, item)
 
 

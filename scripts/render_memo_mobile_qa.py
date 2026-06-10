@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render representative Telegram memo HTML for 390px mobile QA.
 
-This is a local QA helper for BRY-187. It does not call Telegram or the live bot.
+This is a local QA helper. It does not call Telegram or the live bot.
 It approximates Telegram MarkdownV2 visually enough to catch mobile line-break,
 code-span, and section density issues.
 """
@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from memo.templates.ic_memo import format_memo_telegram  # noqa: E402
 
-OUT_DIR = ROOT / "docs" / "assets" / "bry-187-mobile-memo-qa"
+OUT_DIR = ROOT / "docs" / "assets" / "mobile-memo-qa"
 
 
 def _base_memo(ticker: str, recommendation: str) -> dict:
@@ -165,7 +165,7 @@ def render(label: str) -> None:
         )
     html_doc = f"""<!doctype html>
 <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
-<title>BRY-187 {label} mobile memo QA</title>
+<title>{label.title()} mobile memo QA</title>
 <style>
 :root {{ color-scheme: light dark; }}
 body {{ margin: 0; background: #0f172a; font: 15px/1.38 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }}
@@ -181,7 +181,7 @@ code {{ display: inline; background: #eef2f7; border: 1px solid #dbe4ef; border-
   .phone {{ background: #111827; }} .bubble {{ background: #1f2937; color: #f9fafb; }}
   .header, .meta, em {{ color: #cbd5e1; }} code {{ background: #111827; border-color: #334155; color: #f8fafc; }}
 }}
-</style></head><body><main class='phone'><div class='header'>BRY-187 {label.upper()} · 390px Telegram-style preview</div>{''.join(cards)}</main></body></html>"""
+</style></head><body><main class='phone'><div class='header'>{label.upper()} · 390px Telegram-style preview</div>{''.join(cards)}</main></body></html>"""
     html_path = OUT_DIR / f"{label}.html"
     html_path.write_text(html_doc, encoding="utf-8")
     print(html_path)

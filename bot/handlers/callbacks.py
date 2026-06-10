@@ -464,24 +464,29 @@ async def handle_pos_sell50(query, context, ticker: str):
     if pipeline and pipeline.broker:
         try:
             positions = pipeline.broker.get_positions_detail()
-            pos = next((p for p in positions if p["ticker"] == ticker), None)
+            pos = _position_for_ticker(positions, ticker)
             if not pos:
                 await query.message.reply_text(f"⚠️ No open position in {ticker}.", parse_mode=None)
                 return
-            reduce_qty = pos["qty"] // 2
+            qty = _position_qty(pos)
+            current_price = _position_price(pos)
+            if current_price <= 0:
+                await query.message.reply_text(f"⚠️ Missing current price for {ticker}.", parse_mode=None)
+                return
+            reduce_qty = qty // 2
             if reduce_qty <= 0:
-                await query.message.reply_text(f"⚠️ Position too small to split (only {pos['qty']} shares).", parse_mode=None)
+                await query.message.reply_text(f"⚠️ Position too small to split (only {qty} shares).", parse_mode=None)
                 return
             is_short = pos.get("side") == "short"
             if is_short:
-                pipeline.broker.submit_limit_cover(ticker, reduce_qty, pos["current_price"])
+                pipeline.broker.submit_limit_cover(ticker, reduce_qty, current_price)
                 action = "Covering"
             else:
-                pipeline.broker.submit_limit_sell(ticker, reduce_qty, pos["current_price"])
+                pipeline.broker.submit_limit_sell(ticker, reduce_qty, current_price)
                 action = "Selling"
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text(
-                f"✅ {action} {reduce_qty} of {pos['qty']} shares of {ticker} @ ${pos['current_price']:,.2f}.",
+                f"✅ {action} {reduce_qty} of {qty} shares of {ticker} @ ${current_price:,.2f}.",
                 parse_mode=None,
             )
         except Exception as e:
@@ -503,12 +508,18 @@ async def handle_pos_t1exit(query, context, ticker: str):
 
     try:
         positions = pipeline.broker.get_positions_detail()
-        pos = next((p for p in positions if p["ticker"] == ticker), None)
+        pos = _position_for_ticker(positions, ticker)
         if not pos:
             await query.message.reply_text(f"⚠️ No open position in {ticker}.", parse_mode=None)
             return
 
-        reduce_qty = pos["qty"] // 2
+        qty = _position_qty(pos)
+        current_price = _position_price(pos)
+        entry_price = _position_entry_price(pos) or current_price
+        if current_price <= 0:
+            await query.message.reply_text(f"⚠️ Missing current price for {ticker}.", parse_mode=None)
+            return
+        reduce_qty = qty // 2
         if reduce_qty <= 0:
             await query.message.reply_text(f"⚠️ Position too small to split.", parse_mode=None)
             return
@@ -517,9 +528,9 @@ async def handle_pos_t1exit(query, context, ticker: str):
 
         # Reduce 50% (sell for long, cover for short)
         if is_short:
-            pipeline.broker.submit_limit_cover(ticker, reduce_qty, pos["current_price"])
+            pipeline.broker.submit_limit_cover(ticker, reduce_qty, current_price)
         else:
-            pipeline.broker.submit_limit_sell(ticker, reduce_qty, pos["current_price"])
+            pipeline.broker.submit_limit_sell(ticker, reduce_qty, current_price)
 
         # Move stop to breakeven
         with get_session() as session:
@@ -533,7 +544,7 @@ async def handle_pos_t1exit(query, context, ticker: str):
                 # Cancel old stop
                 pipeline.broker.cancel_order(stop_order_id)
                 # Place new stop at entry price (breakeven)
-                remaining = pos["qty"] - reduce_qty
+                remaining = qty - reduce_qty
                 if not hasattr(pipeline.broker, "submit_stop_loss"):
                     new_stop_id = ""
                 else:
@@ -547,7 +558,7 @@ async def handle_pos_t1exit(query, context, ticker: str):
         action = "Covered" if is_short else "Sold"
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text(
-            f"✅ {ticker}: {action} {reduce_qty} shares, stop moved to breakeven (${pos['entry_price']:,.2f}).",
+            f"✅ {ticker}: {action} {reduce_qty} shares, stop moved to breakeven (${entry_price:,.2f}).",
             parse_mode=None,
         )
     except Exception as e:
@@ -579,3 +590,32 @@ async def handle_pos_extend(query, context, trade_id: int):
             )
         else:
             await query.message.reply_text("⚠️ Trade not found.", parse_mode=None)
+
+
+def _position_for_ticker(positions: list[dict], ticker: str) -> dict | None:
+    target = (ticker or "").upper()
+    return next((p for p in positions if str(p.get("ticker") or p.get("symbol") or "").upper() == target), None)
+
+
+def _position_qty(position: dict) -> int:
+    raw = position.get("qty", position.get("quantity", position.get("shares", 0)))
+    try:
+        return int(float(raw or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _position_price(position: dict) -> float:
+    raw = position.get("current_price", position.get("last_trade_price", position.get("price", 0)))
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _position_entry_price(position: dict) -> float:
+    raw = position.get("entry_price", position.get("avg_entry_price", position.get("average_price", 0)))
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
