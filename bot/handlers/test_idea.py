@@ -1,11 +1,11 @@
 """
-/test and /score command handlers.
-/test TICKER thesis — run full pipeline, return scored memo
+/eval and /score command handlers.
+/eval TICKER thesis — run full pipeline, return scored memo
 /score TICKER — quick fundamental snapshot
 """
 
-# Prevent pytest from collecting this handler module because its filename and
-# command function names begin with "test".
+# Prevent pytest from collecting this handler module because its legacy filename
+# begins with "test".
 __test__ = False
 
 import asyncio
@@ -19,17 +19,17 @@ from bot.formatters import escape_md, format_memo
 from bot.keyboards import memo_approval_keyboard
 from utils.logger import get_logger
 
-log = get_logger("bot_test_idea")
+log = get_logger("bot_eval_idea")
 SCORE_TIMEOUT_S = 120
 
 
 @authorized
-async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def eval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Run full analysis pipeline for a ticker + thesis."""
     if not context.args or len(context.args) < 1:
         await update.message.reply_text(
-            "Usage: `/test TICKER your thesis here`\n"
-            "Example: `/test NVDA Strong AI demand driving datacenter revenue growth`",
+            "Usage: `/eval TICKER your thesis here`\n"
+            "Example: `/eval NVDA Strong AI demand driving datacenter revenue growth`",
             parse_mode=None,
         )
         return
@@ -98,11 +98,11 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=update.effective_chat.id,
             memo_text=memo_text,
             keyboard=keyboard,
-            source="test_command",
+            source="eval_command",
         )
 
     except Exception as e:
-        log.error("test_command_failed", ticker=ticker, error=str(e))
+        log.error("eval_command_failed", ticker=ticker, error=str(e))
         try:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,

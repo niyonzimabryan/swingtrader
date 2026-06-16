@@ -2,7 +2,7 @@
 
 Scope: Telegram MarkdownV2 memo readability on a 390px-wide mobile viewport.
 
-Note: This run did not start the live Telegram bot because another deployment may be polling the same bot token. The QA evidence uses the local MarkdownV2 memo renderer with three representative `/test`-style memo payloads: `NVDA` / proceed, `AAPL` / watchlist, and `MSFT` / pass.
+Note: This run did not start the live Telegram bot because another deployment may be polling the same bot token. The QA evidence uses the local MarkdownV2 memo renderer with three representative `/eval`-style memo payloads: `NVDA` / proceed, `AAPL` / watchlist, and `MSFT` / pass.
 
 ## Before / after grid
 

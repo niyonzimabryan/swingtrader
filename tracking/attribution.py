@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 
+from sqlalchemy.orm import joinedload
+
 from database.db import get_session
 from database.models import Memo, Trade
 from utils.logger import get_logger
@@ -15,7 +17,12 @@ log = get_logger("attribution")
 def get_signal_attribution() -> dict:
     """Analyze which signals contributed to winners vs losers."""
     with get_session() as session:
-        closed = session.query(Trade).filter(Trade.status == "closed").all()
+        closed = (
+            session.query(Trade)
+            .options(joinedload(Trade.ticker), joinedload(Trade.memo))
+            .filter(Trade.status == "closed")
+            .all()
+        )
         memos = session.query(Memo).all()
 
         memo_counts = {

@@ -27,7 +27,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/risk` \\- Risk dashboard\n\n"
         "*Analysis*\n"
         "`/regime` \\- Current macro regime\n"
-        "`/test TICKER thesis` \\- Full analysis pipeline\n"
+        "`/eval TICKER thesis` \\- Full analysis pipeline\n"
         "`/score TICKER` \\- Quick fundamental snapshot\n"
         "`/watchlist` \\- Active watchlist\n"
         "`/upcoming` \\- Upcoming catalysts\n\n"

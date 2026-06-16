@@ -9,6 +9,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from bot.daily_digest import DailyDigest
+from bot.handlers.performance import _build_performance_text
 from bot.weekly_report import WeeklyReport
 from database import db as db_module
 from database.db import get_session, init_db
@@ -208,6 +209,61 @@ class ReportingSchemaTests(unittest.TestCase):
         self.assertEqual(data["realized_pnl"], 100.0)
         self.assertEqual(data["wins"], 1)
         self.assertEqual(data["losses"], 0)
+
+    def test_performance_dashboard_handles_closed_trades(self):
+        pipeline = SimpleNamespace(broker=_FakeAlpaca())
+
+        text = _build_performance_text(pipeline)
+
+        self.assertIn("*CLOSED TRADES \\(1\\)*", text)
+        self.assertIn("Total P&L: 🟢 `$+100.00`", text)
+        self.assertIn("Best: `AAPL` `+13.9%`", text)
+
+    def test_performance_dashboard_shows_active_trades_with_pnl(self):
+        with get_session() as session:
+            ticker = Ticker(symbol="MSFT", sector="Technology", in_universe=True)
+            session.add(ticker)
+            session.flush()
+            session.add(
+                Trade(
+                    ticker_id=ticker.id,
+                    direction="long",
+                    entry_price=250.0,
+                    entry_date=datetime.utcnow(),
+                    shares=3,
+                    stop_loss=240.0,
+                    status="pending_fill",
+                    broker="robinhood",
+                )
+            )
+
+        pipeline = SimpleNamespace(broker=_FakeAlpaca())
+        text = _build_performance_text(pipeline)
+
+        self.assertIn("*ACTIVE TRADES \\(2\\)*", text)
+        self.assertIn("`AAPL` `open` `long`", text)
+        self.assertIn("🟢 `$+50.00` \\(`+5.0%`\\)", text)
+        self.assertIn("`MSFT` `pending fill` `long`", text)
+        self.assertIn("P&L: `n/a`", text)
+
+    def test_performance_dashboard_calculates_missing_broker_pnl(self):
+        class _BrokerMissingPnl(_FakeAlpaca):
+            def get_positions_detail(self):
+                return [
+                    {
+                        "ticker": "AAPL",
+                        "qty": 10,
+                        "entry_price": 100.0,
+                        "current_price": 105.0,
+                        "side": "long",
+                    }
+                ]
+
+        pipeline = SimpleNamespace(broker=_BrokerMissingPnl())
+        text = _build_performance_text(pipeline)
+
+        self.assertIn("`AAPL` `open` `long`", text)
+        self.assertIn("🟢 `$+50.00` \\(`+5.0%`\\)", text)
 
 
 class _FakeRiskManager:

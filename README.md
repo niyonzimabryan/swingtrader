@@ -80,7 +80,7 @@ Do not run this locally while another deployed instance is polling the same Tele
 6. In Telegram, send your bot a test request.
 
 ```text
-/test AAPL Strong services growth and buyback support
+/eval AAPL Strong services growth and buyback support
 ```
 
 You should receive a research memo with the setup, score, risks, suggested paper-trade parameters, and action buttons.
@@ -91,7 +91,7 @@ Swing Trader has two jobs: produce better trade memos, and keep paper-trade oper
 
 1. Discovery finds candidates.
    - Scheduled scans look across the configured universe.
-   - Ad-hoc `/test TICKER thesis` skips the broad scan and researches one idea.
+   - Ad-hoc `/eval TICKER thesis` skips the broad scan and researches one idea.
 
 2. Research builds the case.
    - Catalyst, fundamental, pattern, macro, and web-research agents collect evidence.
@@ -113,11 +113,11 @@ Observed API cost:
 | Run type | Observed runs | Average | p50 | p95 |
 |---|---:|---:|---:|---:|
 | Scheduled scan | 11 | $1.34/scan | $0.78 | $3.26 |
-| Ad-hoc `/test` memo | 13 | $0.18/test | $0.09 | $0.47 |
+| Ad-hoc `/eval` memo | 13 | $0.18/eval | $0.09 | $0.47 |
 
 Planning numbers:
 
-- 10 ad-hoc `/test` runs cost about $1.76 at the observed average.
+- 10 ad-hoc `/eval` runs cost about $1.76 at the observed average.
 - 3 scheduled scans per weekday means about 66 scans/month.
 - At the observed average, that is about $88.76/month.
 - At observed p95 cost every time, budget about $215.04/month.
@@ -191,7 +191,7 @@ Core required settings:
 | ALPHA_VANTAGE_API_KEY | Backup financial data provider |
 | FRED_API_KEY | Macro rates, yield curve, credit spreads |
 | DATABASE_URL | Local default: sqlite:///swing_trader.db |
-| SCHEDULER_ENABLED | Start with false; set true only after `/test` works |
+| SCHEDULER_ENABLED | Start with false; set true only after `/eval` works |
 
 Broker controls:
 
