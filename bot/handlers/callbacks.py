@@ -235,7 +235,7 @@ async def handle_close_confirm(query, context, ticker: str):
 async def handle_deep_research(query, context, memo_id: int):
     """
     Operator-triggered deep research from Telegram button.
-    Allows deep research on /test results where auto-trigger is disabled.
+    Allows deep research on /eval results where auto-trigger is disabled.
     """
     log.info("deep_research_requested", memo_id=memo_id)
 

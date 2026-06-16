@@ -13,7 +13,7 @@ from bot.handlers.commands import (
     watchlist_command, upcoming_command, pause_command, resume_command, config_command,
     scan_command, broker_command, mode_command, orders_command,
 )
-from bot.handlers.test_idea import test_command, score_command
+from bot.handlers.test_idea import eval_command, score_command
 from bot.handlers.callbacks import handle_callback
 from bot.handlers.trade_mgmt import close_command, adjust_command
 from bot.handlers.performance import performance_command, history_command, memo_command, attr_command
@@ -44,7 +44,7 @@ class SwingTraderBot:
         self.app.add_handler(CommandHandler("status", status_command))
         self.app.add_handler(CommandHandler("positions", positions_command))
         self.app.add_handler(CommandHandler("regime", regime_command))
-        self.app.add_handler(CommandHandler("test", test_command))
+        self.app.add_handler(CommandHandler("eval", eval_command))
         self.app.add_handler(CommandHandler("score", score_command))
         self.app.add_handler(CommandHandler("agents", agents_command))
         self.app.add_handler(CommandHandler("exposure", exposure_command))
