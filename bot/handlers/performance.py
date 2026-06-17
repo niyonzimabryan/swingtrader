@@ -11,11 +11,11 @@ from bot.formatters import escape_md
 from database.db import get_session
 from database.models import Trade, Memo, Ticker
 from tracking.attribution import get_signal_attribution
+from tracking.position_reconciliation import ACTIVE_TRADE_STATUSES, reconcile_broker_positions
 from utils.logger import get_logger
 
 log = get_logger("bot_performance")
 PERFORMANCE_TIMEOUT_S = 180
-ACTIVE_TRADE_STATUSES = ("open", "pending_fill")
 
 
 @authorized
@@ -66,6 +66,17 @@ def _build_performance_text(pipeline) -> str:
 
     # --- ACTIVE TRADES section (DB trades enriched with live broker P&L) ---
     positions = pipeline.broker.get_positions_detail() if pipeline.broker else []
+    active_broker = getattr(getattr(pipeline, "broker", None), "active", getattr(pipeline, "broker", None))
+    broker_name = getattr(active_broker, "name", "alpaca")
+    broker_account_id = getattr(active_broker, "account_number", "") or None
+    execution_mode = str(getattr(getattr(pipeline, "settings", None), "execution_mode", "paper")).lower()
+    reconcile_broker_positions(
+        positions,
+        broker_name=broker_name,
+        broker_account_id=broker_account_id,
+        execution_mode=execution_mode,
+        source="performance_command",
+    )
     position_map = {
         str(p.get("ticker", "")).upper(): p
         for p in positions
@@ -95,7 +106,7 @@ def _build_performance_text(pipeline) -> str:
             active_lines.append(_format_broker_only_position_line(pos))
 
     if active_lines:
-        open_pnl = sum(_float_value(p.get("pnl_abs")) or 0 for p in positions)
+        open_pnl = sum(_position_pnl_values(p)[0] or 0 for p in positions)
         open_emoji = "🟢" if open_pnl >= 0 else "🔴"
         pos_lines = [f"\n*ACTIVE TRADES \\({len(active_lines)}\\)*"]
         pos_lines.extend(active_lines)
@@ -201,10 +212,7 @@ def _format_broker_only_position_line(position: dict) -> str:
 def _format_position_pnl(position: dict | None) -> str:
     if not position:
         return "P&L: `n/a`"
-    pnl_abs = _float_value(position.get("pnl_abs"))
-    pnl_pct = _float_value(position.get("pnl_pct"))
-    if pnl_abs is None and pnl_pct is None:
-        pnl_abs, pnl_pct = _calculate_position_pnl(position)
+    pnl_abs, pnl_pct = _position_pnl_values(position)
     if pnl_abs is None and pnl_pct is None:
         return "P&L: `n/a`"
     basis = pnl_abs if pnl_abs is not None else pnl_pct
@@ -212,6 +220,14 @@ def _format_position_pnl(position: dict | None) -> str:
     abs_part = f"`${pnl_abs:+,.2f}`" if pnl_abs is not None else "`n/a`"
     pct_part = f"`{pnl_pct:+.1f}%`" if pnl_pct is not None else "`n/a`"
     return f"{emoji} {abs_part} \\({pct_part}\\)"
+
+
+def _position_pnl_values(position: dict) -> tuple[float | None, float | None]:
+    pnl_abs = _float_value(position.get("pnl_abs"))
+    pnl_pct = _float_value(position.get("pnl_pct"))
+    if pnl_abs is None and pnl_pct is None:
+        pnl_abs, pnl_pct = _calculate_position_pnl(position)
+    return pnl_abs, pnl_pct
 
 
 def _calculate_position_pnl(position: dict) -> tuple[float | None, float | None]:

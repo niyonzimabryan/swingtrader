@@ -17,6 +17,7 @@ from database.models import Memo, OrderEvent, Ticker, Trade
 from execution.brokers.base import BrokerOrderRequest, BrokerOrderResult, BrokerOrderReview
 from execution.order_manager import OrderManager
 from execution.order_monitor import OrderMonitor
+from main import _reconcile_startup_positions
 from orchestrator.pipeline import TradingPipeline
 from screening.gemini_screener import GeminiBatchResult, GeminiScreenResult
 
@@ -264,6 +265,87 @@ class ReportingSchemaTests(unittest.TestCase):
 
         self.assertIn("`AAPL` `open` `long`", text)
         self.assertIn("🟢 `$+50.00` \\(`+5.0%`\\)", text)
+
+    def test_performance_dashboard_backfills_broker_only_positions(self):
+        class _BrokerWithUntrackedPosition(_FakeAlpaca):
+            def get_positions_detail(self):
+                return [
+                    {
+                        "ticker": "AAPL",
+                        "qty": 10,
+                        "entry_price": 100.0,
+                        "current_price": 105.0,
+                        "market_value": 1_050.0,
+                        "pnl_abs": 50.0,
+                        "pnl_pct": 5.0,
+                        "side": "long",
+                    },
+                    {
+                        "ticker": "AMZN",
+                        "qty": 20,
+                        "entry_price": 204.34,
+                        "current_price": 247.0,
+                        "market_value": 4_940.0,
+                        "pnl_abs": 853.2,
+                        "pnl_pct": 20.9,
+                        "side": "long",
+                    },
+                ]
+
+        pipeline = SimpleNamespace(broker=_BrokerWithUntrackedPosition())
+        text = _build_performance_text(pipeline)
+
+        self.assertIn("`AMZN` `open` `long`", text)
+        self.assertNotIn("not tracked in DB", text)
+        with get_session() as session:
+            trade = session.query(Trade).join(Ticker).filter(Ticker.symbol == "AMZN").first()
+            self.assertIsNotNone(trade)
+            self.assertEqual(trade.status, "open")
+            self.assertEqual(trade.broker, "alpaca")
+            self.assertEqual(trade.shares, 20)
+            self.assertIn("RECONCILED_FROM_BROKER_POSITION", trade.operator_notes)
+
+        _build_performance_text(pipeline)
+        with get_session() as session:
+            count = session.query(Trade).join(Ticker).filter(Ticker.symbol == "AMZN").count()
+            self.assertEqual(count, 1)
+
+    def test_startup_reconciliation_labels_paper_and_active_modes(self):
+        class _PaperBroker(_FakeAlpaca):
+            name = "alpaca"
+
+        class _RobinhoodBroker:
+            name = "robinhood"
+            account_number = "rh-account-1"
+
+            def get_positions_detail(self):
+                return [
+                    {
+                        "ticker": "NOW",
+                        "qty": 2,
+                        "entry_price": 100.0,
+                        "market_value": 210.0,
+                        "side": "long",
+                    }
+                ]
+
+        pipeline = SimpleNamespace(
+            paper_broker=_PaperBroker(),
+            broker=SimpleNamespace(active=_RobinhoodBroker()),
+        )
+        settings = SimpleNamespace(execution_mode="live")
+        log = SimpleNamespace(info=lambda *args, **kwargs: None, warning=lambda *args, **kwargs: None)
+
+        _reconcile_startup_positions(pipeline, settings, log)
+
+        with get_session() as session:
+            aapl = session.query(Trade).join(Ticker).filter(Ticker.symbol == "AAPL", Trade.status == "open").first()
+            now = session.query(Trade).join(Ticker).filter(Ticker.symbol == "NOW", Trade.status == "open").first()
+
+            self.assertEqual(aapl.execution_mode, "paper")
+            self.assertEqual(now.execution_mode, "live")
+            self.assertEqual(now.broker, "robinhood")
+            self.assertEqual(now.broker_account_id, "rh-account-1")
 
 
 class _FakeRiskManager:
