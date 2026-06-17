@@ -20,6 +20,7 @@ from sqlalchemy import or_
 from database.db import get_session
 from database.models import Trade, Ticker
 from execution.alpaca_client import AlpacaClient
+from tracking.position_reconciliation import reconcile_broker_positions
 from utils.logger import get_logger
 
 log = get_logger("position_monitor")
@@ -157,6 +158,12 @@ class PositionMonitor:
         positions = self.alpaca.get_positions_detail()
         if not positions:
             return
+        reconcile_broker_positions(
+            positions,
+            broker_name="alpaca",
+            execution_mode="paper",
+            source="position_monitor",
+        )
 
         with get_session() as session:
             for pos in positions:

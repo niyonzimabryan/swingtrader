@@ -20,6 +20,7 @@ from execution.order_monitor import OrderMonitor
 from execution.position_monitor import PositionMonitor
 from bot.daily_digest import DailyDigest
 from bot.weekly_report import WeeklyReport
+from tracking.position_reconciliation import reconcile_broker_positions
 from utils.logger import setup_logging, get_logger
 
 
@@ -63,6 +64,36 @@ def _init_langfuse(settings):
         return None
 
 
+def _reconcile_startup_positions(pipeline, settings, log):
+    """Backfill DB trade rows for any broker positions already open at startup."""
+    brokers = []
+    paper = getattr(pipeline, "paper_broker", None)
+    active = getattr(getattr(pipeline, "broker", None), "active", None)
+    for broker, execution_mode in (
+        (paper, "paper"),
+        (active, str(getattr(settings, "execution_mode", "paper")).lower()),
+    ):
+        if broker and all(id(broker) != id(existing[0]) for existing in brokers):
+            brokers.append((broker, execution_mode))
+
+    for broker, execution_mode in brokers:
+        broker_name = getattr(broker, "name", "alpaca")
+        broker_account_id = getattr(broker, "account_number", "") or None
+        try:
+            positions = broker.get_positions_detail()
+            result = reconcile_broker_positions(
+                positions,
+                broker_name=broker_name,
+                broker_account_id=broker_account_id,
+                execution_mode=execution_mode,
+                source="startup",
+            )
+            if result["created"] or result["updated"]:
+                log.info("startup_positions_reconciled", broker=broker_name, **result)
+        except Exception as e:
+            log.warning("startup_position_reconciliation_failed", broker=broker_name, error=str(e))
+
+
 async def main():
     # Setup logging
     setup_logging("INFO")
@@ -102,6 +133,7 @@ async def main():
     # Initialize pipeline
     pipeline = TradingPipeline(settings)
     log.info("pipeline_ready")
+    _reconcile_startup_positions(pipeline, settings, log)
 
     # Initialize Telegram bot
     bot = SwingTraderBot(settings, pipeline)
