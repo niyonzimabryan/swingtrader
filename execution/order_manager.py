@@ -13,6 +13,7 @@ from execution.position_manager import PositionManager
 from database.db import get_session
 from database.models import Memo, OrderEvent, Trade, Ticker
 from utils.logger import get_logger
+from utils.redaction import redact_payload as _redact_payload
 
 log = get_logger("order_manager")
 
@@ -616,55 +617,6 @@ class OrderManager:
 
 def _csv_set(value: str) -> set[str]:
     return {item.strip().upper() for item in (value or "").split(",") if item.strip()}
-
-
-SENSITIVE_PAYLOAD_KEYS = {
-    "access_token",
-    "authorization",
-    "bearer",
-    "cookie",
-    "headers",
-    "mfa_code",
-    "password",
-    "refresh_token",
-    "secret",
-    "token",
-}
-ACCOUNT_PAYLOAD_KEYS = {
-    "account",
-    "account_id",
-    "account_number",
-    "broker_account_id",
-    "number",
-}
-
-
-def _redact_payload(value):
-    if isinstance(value, dict):
-        clean = {}
-        for key, item in value.items():
-            normalized = str(key).lower()
-            if any(sensitive in normalized for sensitive in SENSITIVE_PAYLOAD_KEYS):
-                clean[key] = "[REDACTED]"
-            elif normalized in ACCOUNT_PAYLOAD_KEYS:
-                clean[key] = _mask_identifier(item)
-            else:
-                clean[key] = _redact_payload(item)
-        return clean
-    if isinstance(value, list):
-        return [_redact_payload(item) for item in value]
-    if isinstance(value, str) and value.lower().startswith("bearer "):
-        return "[REDACTED]"
-    return value
-
-
-def _mask_identifier(value) -> str:
-    raw = str(value or "")
-    if not raw:
-        return ""
-    if len(raw) <= 4:
-        return "****"
-    return f"****{raw[-4:]}"
 
 
 def _request_snapshot(request: BrokerOrderRequest) -> dict:

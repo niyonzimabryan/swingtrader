@@ -111,6 +111,26 @@ class Settings(BaseSettings):
     web_research_cache_enabled: bool = True
     web_research_cache_ttl_hours: int = 24
 
+    # --- Historical Pattern Analog Engine ---
+    perplexity_api_key: str = ""
+    perplexity_search_enabled: bool = True
+    perplexity_search_max_requests_per_run: int = 20
+    pattern_event_search_provider: str = "gemini"  # gemini | perplexity | hybrid
+    pattern_event_search_enabled: bool = True
+    pattern_event_cache_ttl_days: int = 90
+    pattern_peer_cache_ttl_days: int = 30
+    pattern_max_peer_count: int = 20
+    pattern_min_direct_matches: int = 5
+    pattern_min_total_matches: int = 10
+    pattern_max_search_queries_per_catalyst: int = 8
+    pattern_max_events_per_query: int = 10
+    pattern_embedding_provider: str = "gemini"  # gemini | perplexity | off
+    pattern_analog_engine_enabled: bool = False
+    pattern_stage_wallclock_budget_s: int = 45
+    pattern_cold_ticker_async_backfill: bool = True
+    pattern_price_source: str = "fmp"  # fmp | yfinance
+    pattern_backfill_queue_path: str = ".pattern_backfill_queue.jsonl"
+
     # --- V2: Deep Research (Phase C) ---
     openai_api_key: str = ""
     deep_research_provider: str = "gemini"  # "gemini" or "openai"
