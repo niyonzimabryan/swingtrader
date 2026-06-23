@@ -83,6 +83,17 @@ class WebSearchClient:
         else:
             raise ValueError(f"Unsupported web search provider: {self.provider}")
 
+    def search_and_analyze_json_with_grounding(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str = None,
+        max_searches: int = 10,
+        max_tokens: int = 8192,
+    ) -> dict:
+        """Return parsed JSON plus grounding metadata when the provider exposes it."""
+        return self.search_and_analyze_json(system_prompt, user_prompt, model, max_searches, max_tokens)
+
     def search_and_analyze_json_with_thinking(
         self,
         system_prompt: str,
