@@ -99,17 +99,22 @@ pattern_peer_cache_ttl_days: int = 30
 pattern_max_peer_count: int = 20
 pattern_min_direct_matches: int = 5
 pattern_min_total_matches: int = 10
-pattern_max_search_queries_per_catalyst: int = 8
+pattern_max_search_queries_per_catalyst: int = 8  # TOTAL queries per run, not per-peer
 pattern_max_events_per_query: int = 10
 pattern_embedding_provider: str = "gemini"  # gemini | perplexity | off
 pattern_analog_engine_enabled: bool = False
+pattern_stage_wallclock_budget_s: int = 45  # hard cap on inline discovery in the live memo path
+pattern_cold_ticker_async_backfill: bool = True  # enqueue backfill instead of doing full fan-out inline
+pattern_price_source: str = "fmp"  # fmp | yfinance — outcome/context price source (see Outcome Computation)
 ```
+
+Flag precedence (document explicitly to avoid confusion): `pattern_analog_engine_enabled` is the master switch. When it is `False`, none of `pattern_event_search_enabled` / `perplexity_search_enabled` / `pattern_cold_ticker_async_backfill` take effect and the legacy path runs unchanged. `pattern_max_search_queries_per_catalyst` is a per-run total budget shared across all peers, NOT a per-peer multiplier.
 
 Rollout rule: leave `pattern_analog_engine_enabled=False` until schema, adapters, tests, and backfill command are present. Then enable locally, test on known failures, and only then enable in Railway.
 
 ## Data Model
 
-Add new SQLAlchemy models in `database/models.py`. This repo currently uses lightweight `create_all()`/inline migration style, so also update DB initialization/migration logic in `database/db.py` if needed.
+Add new SQLAlchemy models in `database/models.py`. This repo uses `Base.metadata.create_all()` + manual `ALTER` migrations in `database/db.py:_run_migrations()`. The 6 new tables here are purely additive, so `create_all()` creates them (and their declared indexes) automatically on existing prod DBs — no `ALTER` migration is needed for new tables. Only add to `_run_migrations()` if you later add a column to an EXISTING table; do not invent a migration for the new tables.
 
 ### CompanyProfile
 
@@ -223,8 +228,10 @@ Indexes:
 Dedupe key:
 
 ```text
-sha256(normalized_ticker + event_type + event_date + canonicalized_source_domain + normalized_headline)
+sha256(normalized_ticker + event_type + event_date_bucket)
 ```
+
+where `event_date_bucket` collapses dates within a small window (e.g. same date +/- 1 trading day) so the same real event found on different days does not split. Do NOT include source_domain or headline in the dedupe key: the same event discovered via Gemini vs Perplexity has different domains/headlines, and including them would let duplicates survive and inflate `total_instances`. Instead, when a collision occurs, MERGE: keep the highest-confidence / most-primary `source_type` (company_ir > sec_filing > transcript > press_release > regulator > news > analyst_report > recap), and retain all distinct `source_url`s in `raw_json.sources[]`. Headline/domain are evidence to store, not identity.
 
 ### EventOutcome
 
@@ -262,20 +269,27 @@ Purpose: similarity inputs at the event date.
 
 Fields:
 
+Point-in-time (PIT) safety is mandatory here: every field must reflect only information that was public on `event_date`. Fields are split into PIT-safe (price/market-derived, computed from history) and PIT-reconstructable (valuation from as-of-filed financials). Forward P/E and short interest are intentionally excluded because they cannot be sourced PIT on the current FMP plan (see "Point-in-Time Sourcing Rules" below).
+
+Fields:
+
 - `id`
 - `event_id` foreign key unique
-- `macro_regime`
-- `vix_level`
-- `sp500_distance_200ma`
-- `sector_momentum_20d`
-- `ticker_momentum_20d`
-- `ticker_volatility_20d`
-- `market_cap`
-- `fwd_pe_ratio`
-- `ev_sales`
-- `short_interest_pct_float`
+- `macro_regime`            # PIT-safe: derived from VIX/SPY history at event_date
+- `vix_level`               # PIT-safe: ^VIX close at event_date
+- `sp500_distance_200ma`    # PIT-safe: SPY history
+- `sector_momentum_20d`     # PIT-safe: sector ETF history
+- `ticker_momentum_20d`     # PIT-safe: ticker price history
+- `ticker_volatility_20d`   # PIT-safe: ticker price history
+- `market_cap`              # PIT-reconstructable: FMP historical-market-capitalization at event_date
+- `trailing_pe_ratio`       # PIT-reconstructable: historical market cap / TTM EPS from financials filed <= event_date (REPLACES fwd_pe_ratio)
+- `ev_sales`                # PIT-reconstructable: (historical mkt cap + net debt from last filed balance sheet) / TTM revenue filed <= event_date
+- `valuation_source_filing_date`  # accepted/filing date of the financials used; proves no lookahead
+- `pit_quality`             # string: full | partial | price_only | unavailable — how much PIT context was sourced
 - `raw_json`
 - `computed_at`
+
+NOTE: `fwd_pe_ratio` and `short_interest_pct_float` are removed from this model. Do not store current-as-of values here and pretend they are historical. If a future PIT data vendor is added, reintroduce them behind a new flag with their own as-of date.
 
 ### Migration Compatibility
 
@@ -321,6 +335,8 @@ Tier C, unsupported until decomposed:
 - `general_negative_catalyst`
 - `momentum_without_identified_catalyst`
 - `rumor_unconfirmed`
+
+Taxonomy reconciliation: this taxonomy renames/extends the current `ALL_SETUP_TYPES` in `agents/pattern_agent.py` (e.g. `analyst_downgrade` -> `analyst_downgrade_cluster`). Update the classifier prompt to emit the new vocabulary, and provide a mapping from legacy `setup_type` strings already stored in `historical_patterns` so old cached rows still resolve under the legacy path during rollout. Do not orphan existing rows.
 
 Tier C behavior:
 
@@ -413,24 +429,31 @@ Input object:
 
 Generate search queries by catalyst type and peer set. Use deterministic templates first, then Gemini for extra query expansion if needed.
 
-Examples:
+CRITICAL — outcome-neutral queries (anti-survivorship-bias rule): discovery queries MUST NOT contain any term that conditions on the price outcome. The entire purpose of the engine is to measure an honest base rate (win rate, median return); if discovery only finds events where "the stock rose," every statistic it produces is upward-biased and a memo reader will trust a structurally optimistic number. Direction/outcome is determined ONLY from price data after the event is found, never from the query.
+
+- Banned tokens in any generated query (case-insensitive): rose, jumped, jump, surged, surge, soared, rallied, rally, popped, plunged, plummeted, sank, fell, dropped, crashed, tanked, gained, gainer, loser, winner, "shares rise", "shares fall", "stock up", "stock down", "best/worst performing", "after beating", "stock reaction" framed as a result.
+- Queries should describe the EVENT, optionally with a year/quarter to pin the date, never the result.
+
+Examples (outcome-neutral):
 
 - Product launch:
-  - `"{peer}" product launch stock rose after announcement`
-  - `"{peer}" unveils new product shares jump`
-  - `"{peer}" product launch earnings call transcript demand`
+  - `"{peer}" product launch announcement {year}`
+  - `"{peer}" unveils new product press release {year}`
+  - `"{peer}" earnings call transcript product roadmap {year}`
 - Analyst upgrade cluster:
-  - `"{peer}" multiple analyst upgrades shares`
-  - `"{peer}" upgraded by analysts price target raised`
+  - `"{peer}" analyst rating change {year}`
+  - `"{peer}" analyst price target revision {year}`
 - Management change:
-  - `"{peer}" names new CEO shares rise`
-  - `"{peer}" CEO resignation shares fall`
+  - `"{peer}" names new CEO {year}`
+  - `"{peer}" CEO transition announcement {year}`
 - Regulatory approval:
-  - `"{peer}" FDA approval shares`
-  - `"{peer}" regulatory approval press release stock`
+  - `"{peer}" FDA approval announcement {year}`
+  - `"{peer}" regulatory decision press release {year}`
 - Sector catalyst:
-  - `"{industry}" sector catalyst stocks rallied`
-  - `"{sector ETF}" regulation shares`
+  - `"{industry}" sector regulation announcement {year}`
+  - `"{sector ETF}" policy change {year}`
+
+Implementation requirement: a single `assert_outcome_neutral(query)` guard runs on every generated query (deterministic templates AND Gemini-expanded queries) and rejects/strips any containing a banned token. This is covered by a dedicated unit test (see Testing).
 
 Search domains to prefer:
 
@@ -501,6 +524,7 @@ Acceptance rules:
 
 - `ticker`, `event_type`, `event_date`, `headline` or `summary`, and at least one source URL are required.
 - `event_date` must be a concrete date, not just a year/month.
+- `event_date` is the date the catalyst became public, derived from the SOURCE CONTENT (filing date, press-release dateline, transcript date). It must NOT be copied from a provider's result `date`/`last_updated` field — for Perplexity Search and Gemini grounding those reflect the page's publish/crawl date, which is frequently a years-later recap. If the content does not yield a concrete public date, reject the event (do not fall back to the result date).
 - `confidence >= 0.55` for storage.
 - For analyst/news events, source must be published near the event date where possible.
 - For after-the-fact recap articles, use them only to discover the event, then search for or infer the original event date/source. Mark `source_type="recap"` only if no original source is found and reduce confidence.
@@ -509,6 +533,8 @@ Acceptance rules:
 ## Outcome Computation
 
 Extend `data/pattern_data.py` or create `data/event_outcomes.py`. Prefer a new file to keep the old adapter stable.
+
+Price source (important — yfinance flakiness/rate-limiting was an original root cause of the empty-result bug): default to FMP historical prices (`pattern_price_source="fmp"`), which is already authenticated on this plan, and fetch a full window once per ticker then slice all horizons from it. yfinance is a fallback only. Whichever source is used, results MUST be cached (a `price_history` cache keyed by ticker+date-range) and rate-limited with backoff, because computing T+1..T+60 + abnormal returns across many events x many peers will otherwise hammer the provider. Batch by ticker: one fetch covers all of that ticker's events.
 
 Anchor rules:
 
@@ -535,17 +561,24 @@ Create `scripts/backfill_event_contexts.py`.
 
 For every `HistoricalEvent` with missing context:
 
-- Load ticker profile as of best available current/historical proxy.
-- Pull VIX, SPY, sector ETF, ticker price history around the event.
-- Compute:
-  - macro regime
-  - VIX level
-  - SPY distance from 200-day MA
-  - ticker momentum 20d
-  - ticker volatility 20d
-  - sector momentum 20d
-  - market cap/valuation if available
+- Pull VIX, SPY, sector ETF, ticker price history around the event (PIT-safe by construction).
+- Compute the price-derived fields: macro regime, VIX level, SPY distance from 200-day MA, ticker momentum 20d, ticker volatility 20d, sector momentum 20d.
+- Compute PIT-reconstructable valuation (see rules below): market cap, trailing P/E, EV/Sales, and record `valuation_source_filing_date`.
+- Set `pit_quality` based on how many fields were sourced (`full` / `partial` / `price_only` / `unavailable`).
 - Insert/update `EventContext`.
+
+#### Point-in-Time Sourcing Rules (no lookahead)
+
+These rules are mandatory; they are what make historical context honest rather than leaking the future.
+
+- Market cap at `event_date`: FMP `historical-market-capitalization?symbol=&from=&to=` (do NOT use current `/profile` market cap for a past event).
+- Valuation multiples are reconstructed from the most-recently-FILED financials whose `acceptedDate`/`fillingDate <= event_date` — never the fiscal period-end. A quarter ending Dec 31 is not public until the ~Feb filing; using period-end leaks ~6 weeks of hindsight. Use FMP `/income-statement` and `/balance-sheet-statement` (already on this plan) with `period=quarter`, then filter by filing date.
+  - `trailing_pe_ratio = historical_market_cap / TTM_diluted_EPS` (TTM from the 4 most recent quarters filed before the event).
+  - `ev_sales = (historical_market_cap + total_debt - cash_and_equivalents) / TTM_revenue`, using the last balance sheet filed before the event.
+- EXCLUDED — cannot be sourced PIT on the current FMP plan, so they are intentionally NOT stored: forward P/E (FMP `/analyst-estimates` returns only current estimates, no as-of-date snapshot — estimates are revised over time) and short interest (sparse/gated history, float drifts). Do not approximate these with current values.
+- If valuation cannot be reconstructed (e.g. missing historical market cap), set those fields null and `pit_quality` accordingly; never fall back to current values.
+
+Verification note: this was assessed against FMP's documented endpoints and the endpoints already proven on this plan, NOT live-tested (no key/network in the review environment). Implementer should confirm `historical-market-capitalization` returns data on the production key during Phase 2; if it does not, escalate and we will pick a PIT source rather than degrade to current-as-of values.
 
 Also add a compatibility script to fill existing `HistoricalContext` rows for current `HistoricalPattern` records so the old path is not degraded during rollout.
 
@@ -573,11 +606,18 @@ analog_score =
   0.05 * outcome_completeness
 ```
 
+Embedding cost/availability (semantic similarity is the largest weight at 0.35, but `embedding_json` is nullable and embeddings cost money/latency):
+
+- Bound the candidate set BEFORE embedding. Candidates are first filtered by hard predicates (same `event_type`, ticker in {self, resolved peers, base-rate universe}, outcome maturity) and capped (e.g. top N by recency/peer-score). Only then embed/compare. Never embed the whole event store per memo.
+- Compute and cache embeddings at write time (during discovery/backfill), not at ranking time, so the live path reads `embedding_json` from the DB.
+- Fallback when an embedding is missing or `pattern_embedding_provider="off"`: substitute a deterministic lexical/structured similarity (event_type exact match + subtype token overlap + magnitude proximity), and renormalize the 0.35 weight across the remaining terms so a null embedding does not silently zero out a candidate. SQLite has no vector index; brute-force cosine over the bounded candidate set is acceptable precisely because the set is capped.
+
 Similarity requirements:
 
 - Same ticker analogs can rank high even with weaker semantic match.
 - Peer analogs require both event type match and peer score >= 0.45.
 - Broad base-rate analogs must be labeled as broad evidence and not mixed with high-confidence peers without disclosure.
+- Context similarity uses ONLY PIT-safe `EventContext` fields (see Data Model). Never weight a historical analog by current-as-of fundamentals.
 
 Output should include evidence tiers:
 
@@ -656,7 +696,11 @@ Update memo rendering so historical precedent is not a black box:
   - similarity score
 - Show a warning if broad base-rate evidence dominates.
 
-Update `scoring/engine.py` if needed so unsupported/no-data pattern output does not drag a strong catalyst down as if it were bearish evidence. Treat low-confidence neutral pattern output as "no opinion" unless the raw data status is `active` or `decomposed`.
+Update `scoring/engine.py` so unsupported/no-data pattern output does not drag a strong catalyst down. Be precise about the mechanism: the existing disagreement penalty already excludes `neutral` directions, so direction is NOT the problem. The problem is the raw weighted composite (`raw_score = ... + pattern.score * SIGNAL_WEIGHTS["pattern"]`): a `no_data`/`unsupported` pattern returns `score=0.5` at full pattern weight (0.22), which pulls an 0.8 catalyst toward the mean regardless of direction.
+
+Required fix: when `pattern.raw_data["status"]` is NOT in `{active, decomposed}`, EXCLUDE pattern from the weighted sum and renormalize the remaining signal weights to sum to 1 (redistribute pattern's weight pro-rata across catalyst/fundamental/sentiment). Do the same for any other agent that reports a non-active/no-opinion status, so "no opinion" means "not counted," not "counted as 0.5." 
+
+Acceptance test: `strong_catalyst + unsupported_pattern` must score >= `strong_catalyst + pattern_absent` and must not score lower than the same inputs with a neutral-but-active pattern at 0.5.
 
 ## Telemetry And Cost Tracking
 
@@ -677,11 +721,24 @@ Log events:
 - `analog_ranked`
 - `pattern_status`
 
-## Cost Controls
+### Live-path budget and cold-ticker policy (prevents the timeout/cost blowup on uncached tickers)
+
+The tickers that fail today (`OSCR`, `HNGE`, `DFTX`) are obscure and uncached, so a naive implementation would run the FULL fan-out inline on first request: peer resolution (FMP + maybe Perplexity + Gemini) + discovery across up to `pattern_max_peer_count` peers x `pattern_max_search_queries_per_catalyst` queries x `pattern_max_events_per_query` events + an extraction LLM call per result + a price fetch per event + context per event. That is dozens of LLM calls and potentially hundreds of price fetches inside one memo, and it will exceed `parallel_timeout_pattern_s` and the cost caps — on exactly the tickers this project is meant to fix.
+
+Mandatory two-phase, budget-bounded flow:
+
+- The live pattern stage enforces a hard wall-clock budget `pattern_stage_wallclock_budget_s` (default 45s) AND the per-run request caps, whichever binds first.
+- Within budget the live stage does: peer resolution (cached first) + a CAPPED discovery pass that stops as soon as it reaches `pattern_min_total_matches` or exhausts the budget.
+- If the budget/caps are hit before reaching `pattern_min_total_matches` and `pattern_cold_ticker_async_backfill=True`: enqueue an async backfill job (peers + full discovery + outcomes + context) and RETURN THIS RUN with a typed partial status (`insufficient_forward_returns`, `no_matches`, or `low_confidence_peers` as applicable) plus whatever partial evidence was gathered. The next run for that ticker reads warm cache.
+- Backfill jobs run outside the memo hot path (scheduled/queue worker) and populate `HistoricalEvent`/`EventOutcome`/`EventContext`/`PeerEdge`.
+- Acceptance: a cold obscure ticker must return within the pattern stage timeout and must never block memo generation on unbounded provider fan-out.
+
+### Caching and gating
 
 - Cache peers for 30 days by default.
 - Cache search results by query/filter hash for 90 days.
 - Cache extracted events forever unless source changes; events are historical.
+- Cache price history per ticker+range so outcome/context computation does not refetch.
 - Run expensive search only when local DB has fewer than `pattern_min_total_matches`.
 - Cap Perplexity Search API calls per ticker/run.
 - For scheduled scans, only run semantic event discovery after catalyst confidence passes existing escalation threshold.
@@ -700,6 +757,7 @@ Expected steady-state:
 - Add settings.
 - Ensure screenshots/API keys are not copied into repo.
 - Rotate the Perplexity key from the screenshot before using it in production.
+- Redact persisted provider payloads: `PatternSearchRun.provider_plan_json`/`queries_json` and `HistoricalEvent.raw_json` will contain raw provider responses, and provider error envelopes can echo the request (including the API key). Route every persisted blob through the existing redaction helper used by the Robinhood broker audit path before writing. Add a test asserting no stored blob contains a key-shaped token.
 
 ### Phase 1 - Peer Resolver
 
@@ -800,6 +858,8 @@ Tasks:
 - Seed peer edges for current universe/watchlist.
 - Backfill events for Tier A/B catalyst types across top peers.
 - Evaluate 20-30 known examples, including recent failures.
+- Determinism: the evaluation replays from STORED `HistoricalEvent`/`EventOutcome` rows (not live Gemini/Perplexity, which drift run-to-run). Discovery is run once to populate the store; the bakeoff reads the store so results are reproducible. Discovery unit tests use frozen fixtures.
+- Bias control: include a neutral-query control. Because survivorship bias is the top correctness risk (H1), the bakeoff must report measured win rates and median returns and sanity-check them against a plausible base rate. A computed win rate that is implausibly high (e.g. >75% across a broad event class) is a red flag that outcome-conditioned discovery leaked in — investigate before trusting the engine.
 - Compare:
   - legacy pattern status
   - new status
@@ -807,6 +867,7 @@ Tasks:
   - direct/peer/broad mix
   - provider calls
   - cost estimate
+  - measured win rate / median return (with bias sanity-check)
   - memo usefulness
 
 ## Bakeoff Examples
@@ -830,8 +891,27 @@ Include at least:
 - Recent events with immature T+10/T+20 returns are stored as partial, not discarded.
 - Existing earnings examples still work.
 - Memo historical precedent section shows evidence tiers or an explicit unavailable reason.
-- Tests cover peer fallback, event extraction, event outcome maturity, unsupported catalysts, Perplexity fallback budget, and pattern-agent raw_data compatibility.
+- A cold, uncached, obscure ticker returns within the pattern-stage wall-clock budget and never blocks memo generation on unbounded provider fan-out.
+- No generated discovery query contains an outcome-conditioned token (anti-survivorship-bias guard).
+- `EventContext` for a past event never contains current-as-of forward P/E or short interest; valuation carries a `valuation_source_filing_date <= event_date`.
+- A strong catalyst paired with an unsupported/no-data pattern does not score lower than the same catalyst with pattern absent.
 - Provider calls are cached and capped.
+
+Tests must cover:
+
+- Peer fallback (manual / FMP / screener / correlation / search), including `OSCR`/`HNGE`/`DFTX` returning non-empty candidates or an explicit low-confidence status.
+- `assert_outcome_neutral` query guard rejects banned outcome tokens (H1).
+- Point-in-time context: a past-dated event reconstructs valuation only from financials filed before the event; forward P/E and short interest are absent (H3).
+- Cold-ticker budget: discovery halts at the wall-clock/request cap and returns a typed partial status; async backfill is enqueued (H2).
+- Scoring: pattern weight is dropped and renormalized when status not in {active, decomposed} (H4).
+- Cross-provider dedup: the same event from Gemini and Perplexity collapses to one `HistoricalEvent` with merged sources (M1).
+- Event extraction: `event_date` derived from content, rejected when only a provider result `date` is available (M4).
+- Embedding-absent fallback ranks candidates without an embedding instead of zeroing them (M3).
+- Event outcome maturity (partial vs complete vs insufficient).
+- Unsupported / decomposed / no-match catalyst statuses.
+- Perplexity fallback request budget enforced.
+- Pattern-agent raw_data compatibility: BOTH `hs_count` and `highly_similar_count`, and BOTH `most_similar` and `most_similar_instance`, are populated and consumed correctly by the scoring path (`scoring/engine.py`) AND the memo path (`memo/templates/ic_memo.py`), which currently read different keys.
+- Redaction: no persisted provider blob contains a key-shaped token (M5).
 
 ## Quick Questions For Bryan
 
