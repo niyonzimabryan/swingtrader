@@ -11,6 +11,19 @@ from utils.logger import get_logger
 
 log = get_logger("scoring_engine")
 
+ACTIVE_OPINION_STATUSES = {"active", "decomposed"}
+NO_OPINION_STATUSES = {
+    "disabled",
+    "error",
+    "insufficient_forward_returns",
+    "low_confidence_peers",
+    "no_data",
+    "no_matches",
+    "provider_error",
+    "stub",
+    "unsupported",
+}
+
 
 class ScoringEngine:
     def __init__(self, settings, anthropic_client=None):
@@ -34,30 +47,32 @@ class ScoringEngine:
         """
         log.info("scoring_start", ticker=ticker)
 
-        # 1. Raw weighted score
-        raw_score = (
-            catalyst.score * SIGNAL_WEIGHTS["catalyst"]
-            + fundamental.score * SIGNAL_WEIGHTS["fundamental"]
-            + pattern.score * SIGNAL_WEIGHTS["pattern"]
-            + web_research.score * SIGNAL_WEIGHTS["web_research"]
-        )
-
-        # 2. Confidence-weighted direction alignment
-        def _normalize_dir(d):
-            return "neutral" if d in ("neutral", "ambiguous") else d
-
         agents = {
             "catalyst": (catalyst, SIGNAL_WEIGHTS["catalyst"]),
             "fundamental": (fundamental, SIGNAL_WEIGHTS["fundamental"]),
             "pattern": (pattern, SIGNAL_WEIGHTS["pattern"]),
             "web_research": (web_research, SIGNAL_WEIGHTS["web_research"]),
         }
+        counted_agents, effective_weights = self._effective_signal_weights(agents)
+
+        # 1. Raw weighted score
+        raw_score = (
+            sum(agent.score * effective_weights[name] for name, (agent, _) in counted_agents.items())
+            if counted_agents
+            else 0.5
+        )
+
+        # 2. Confidence-weighted direction alignment
+        def _normalize_dir(d):
+            return "neutral" if d in ("neutral", "ambiguous") else d
 
         directions = {name: _normalize_dir(agent.direction) for name, (agent, _) in agents.items()}
 
         # Derive primary_direction from highest-weight non-neutral signal
         primary_direction = "neutral"
         for agent_name in ("catalyst", "fundamental", "pattern", "web_research"):
+            if agent_name not in counted_agents:
+                continue
             if directions[agent_name] not in ("neutral",):
                 primary_direction = directions[agent_name]
                 break
@@ -69,7 +84,8 @@ class ScoringEngine:
         disagreement_penalty = 0.0
         total_non_neutral_weight = 0.0
 
-        for agent_name, (agent, weight) in agents.items():
+        for agent_name, (agent, _) in counted_agents.items():
+            weight = effective_weights[agent_name]
             d = directions[agent_name]
             if d == "neutral":
                 continue
@@ -120,6 +136,7 @@ class ScoringEngine:
                     "score": pattern.score,
                     "confidence": pattern.confidence,
                     "direction": pattern.direction,
+                    "status": pattern.raw_data.get("status"),
                     "reasoning": pattern.reasoning,
                     # V2: similarity-weighted stats for Opus evaluation
                     "total_instances": pattern.raw_data.get("total_instances"),
@@ -180,10 +197,10 @@ class ScoringEngine:
             "direction": primary_direction,
             "directions": directions,
             "signal_breakdown": {
-                "catalyst": {"score": round(catalyst.score, 3), "weight": SIGNAL_WEIGHTS["catalyst"], "direction": catalyst.direction, "confidence": catalyst.confidence},
-                "fundamental": {"score": round(fundamental.score, 3), "weight": SIGNAL_WEIGHTS["fundamental"], "direction": fundamental.direction, "confidence": fundamental.confidence},
-                "pattern": {"score": round(pattern.score, 3), "weight": SIGNAL_WEIGHTS["pattern"], "direction": pattern.direction, "confidence": pattern.confidence},
-                "web_research": {"score": round(web_research.score, 3), "weight": SIGNAL_WEIGHTS["web_research"], "direction": web_research.direction, "confidence": web_research.confidence},
+                "catalyst": self._breakdown_entry("catalyst", catalyst, effective_weights),
+                "fundamental": self._breakdown_entry("fundamental", fundamental, effective_weights),
+                "pattern": self._breakdown_entry("pattern", pattern, effective_weights),
+                "web_research": self._breakdown_entry("web_research", web_research, effective_weights),
             },
             "regime": regime,
             "opus_evaluation": opus_result,
@@ -198,6 +215,33 @@ class ScoringEngine:
         )
 
         return result
+
+    def _effective_signal_weights(self, agents: dict) -> tuple[dict, dict]:
+        counted = {}
+        for name, (agent, original_weight) in agents.items():
+            status = (agent.raw_data or {}).get("status")
+            if status in NO_OPINION_STATUSES and status not in ACTIVE_OPINION_STATUSES:
+                continue
+            counted[name] = (agent, original_weight)
+
+        total_weight = sum(weight for _, weight in counted.values())
+        weights = {name: 0.0 for name in agents}
+        if total_weight <= 0:
+            return counted, weights
+        for name, (_, weight) in counted.items():
+            weights[name] = weight / total_weight
+        return counted, weights
+
+    def _breakdown_entry(self, name: str, agent: AgentOutput, effective_weights: dict) -> dict:
+        return {
+            "score": round(agent.score, 3),
+            "weight": SIGNAL_WEIGHTS[name],
+            "effective_weight": round(effective_weights.get(name, 0.0), 4),
+            "counted": effective_weights.get(name, 0.0) > 0,
+            "direction": agent.direction,
+            "confidence": agent.confidence,
+            "status": (agent.raw_data or {}).get("status"),
+        }
 
     def _classify(self, score: float) -> str:
         """Classify score into conviction levels."""

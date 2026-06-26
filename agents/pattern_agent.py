@@ -13,10 +13,18 @@ Flow:
 """
 
 import numpy as np
+import json
+import time
 from datetime import datetime as dt
+from pathlib import Path
 from agents.base_agent import BaseAgent, AgentOutput
-from config.peers import get_peers
+from config.peers import get_peer_resolution, get_peers
+from data.analog_ranker import AnalogRanker
+from data.event_discovery import EVENT_SUPPORTED_TYPES, TIER_C_TYPES, EventDiscoveryEngine
 from data.pattern_data import PatternDataAdapter
+from database.db import get_session
+from utils.perplexity_search_client import PerplexitySearchClient
+from utils.web_search_client import WebSearchClient
 from utils.model_selector import get_model
 from utils.logger import get_logger
 
@@ -49,6 +57,15 @@ UNSTRUCTURED_SETUP_TYPES = {
 }
 
 ALL_SETUP_TYPES = STRUCTURED_SETUP_TYPES | UNSTRUCTURED_SETUP_TYPES
+
+ANALOG_SETUP_TYPES = EVENT_SUPPORTED_TYPES | TIER_C_TYPES
+LEGACY_TO_ANALOG_SETUP_TYPE = {
+    "analyst_downgrade": "analyst_downgrade_cluster",
+    "dividend_initiation": "dividend_initiation_or_raise",
+    "regulatory_approval": "fda_or_regulatory_approval",
+    "m_and_a": "m_and_a_confirmed",
+}
+ANALOG_TO_LEGACY_SETUP_TYPE = {v: k for k, v in LEGACY_TO_ANALOG_SETUP_TYPE.items()}
 
 # Fallback chain: when a sub-type has < MIN_FALLBACK_INSTANCES, try broader types
 SETUP_TYPE_FALLBACKS = {
@@ -86,6 +103,7 @@ class PatternAgent(BaseAgent):
     def __init__(self, settings, anthropic_client=None):
         super().__init__(settings, anthropic_client)
         self.pattern_data = PatternDataAdapter(settings.fmp_api_key)
+        self.analog_ranker = AnalogRanker(settings)
 
     def analyze(self, ticker: str = None, **kwargs) -> AgentOutput:
         """
@@ -109,6 +127,9 @@ class PatternAgent(BaseAgent):
         setup = self._classify_setup(ticker, catalyst_data, catalyst_reasoning)
         setup_type = setup.get("setup_type", "general_positive_catalyst")
         log.info("setup_classified", ticker=ticker, setup_type=setup_type)
+
+        if getattr(self.settings, "pattern_analog_engine_enabled", False):
+            return self._analyze_event_analogs(ticker, setup_type, setup, catalyst_data, catalyst_reasoning)
 
         # Step 2: Search for historical instances (with fallback chain)
         peers = get_peers(ticker)
@@ -139,6 +160,10 @@ class PatternAgent(BaseAgent):
                     "peer_instances": 0,
                     "sample_size_warning": True,
                     "status": "no_data",
+                    "highly_similar_count": 0,
+                    "hs_count": 0,
+                    "most_similar": {},
+                    "most_similar_instance": {},
                 },
                 run_id=self.run_id,
             )
@@ -198,9 +223,11 @@ class PatternAgent(BaseAgent):
                 "status": "active",
                 # V2: Similarity data
                 "highly_similar_count": len(highly_similar),
+                "hs_count": len(highly_similar),
                 "weighted_win_rate_t10": stats.get("weighted_win_rate_t10", stats.get("win_rate_t10", 0)),
                 "weighted_median_return_t10": stats.get("weighted_median_return_t10", stats.get("median_return_t10", 0)),
                 "most_similar": most_similar,
+                "most_similar_instance": most_similar,
             },
             run_id=self.run_id,
         )
@@ -210,9 +237,15 @@ class PatternAgent(BaseAgent):
     def _classify_setup(self, ticker: str, catalyst_data: dict, catalyst_reasoning: str) -> dict:
         """Classify the current thesis into a standardized setup type via Sonnet."""
         if not self.client:
+            hinted = catalyst_data.get("setup_type") or catalyst_data.get("catalyst_type")
+            allowed = ANALOG_SETUP_TYPES if getattr(self.settings, "pattern_analog_engine_enabled", False) else ALL_SETUP_TYPES
+            if hinted in allowed:
+                return {"setup_type": hinted, "setup_params": {}, "search_strategy": "hinted"}
             return {"setup_type": "general_positive_catalyst", "setup_params": {}, "search_strategy": "default"}
 
-        setup_types_str = "\n".join(f"- {st}" for st in sorted(ALL_SETUP_TYPES))
+        use_analog_taxonomy = getattr(self.settings, "pattern_analog_engine_enabled", False)
+        allowed_types = ANALOG_SETUP_TYPES if use_analog_taxonomy else ALL_SETUP_TYPES
+        setup_types_str = "\n".join(f"- {st}" for st in sorted(allowed_types))
 
         prompt = (
             f"Classify this trade catalyst for {ticker} into one of the standardized setup types.\n\n"
@@ -238,13 +271,342 @@ class PatternAgent(BaseAgent):
             )
             # Validate setup_type
             st = result.get("setup_type", "general_positive_catalyst")
-            if st not in ALL_SETUP_TYPES:
+            if st not in allowed_types:
                 st = "general_positive_catalyst"
                 result["setup_type"] = st
             return result
         except Exception as e:
             log.error("setup_classification_failed", ticker=ticker, error=str(e))
             return {"setup_type": "general_positive_catalyst", "setup_params": {}, "search_strategy": "default"}
+
+    # ── Event Analog Engine Path ───────────────────────────────────
+
+    def _analyze_event_analogs(
+        self,
+        ticker: str,
+        setup_type: str,
+        setup: dict,
+        catalyst_data: dict,
+        catalyst_reasoning: str,
+    ) -> AgentOutput:
+        started = time.monotonic()
+        original_setup_type = setup_type
+        setup_type = LEGACY_TO_ANALOG_SETUP_TYPE.get(setup_type, setup_type)
+        fallback_note = None
+        status_prefix = None
+
+        if setup_type in TIER_C_TYPES:
+            decomposed = self._decompose_setup(ticker, setup_type, catalyst_data, catalyst_reasoning)
+            if decomposed.get("setup_type") in EVENT_SUPPORTED_TYPES and decomposed.get("confidence", 0) >= 0.65:
+                setup_type = decomposed["setup_type"]
+                status_prefix = "decomposed"
+                fallback_note = f"Vague catalyst decomposed to {setup_type.replace('_', ' ')}."
+            else:
+                return self._status_output(
+                    ticker=ticker,
+                    status="unsupported",
+                    setup_type=original_setup_type,
+                    setup_type_used=setup_type,
+                    reasoning="Pattern analysis unsupported for vague/general catalyst; no specific catalyst class could be tested.",
+                    confidence=0.10,
+                    fallback_note=None,
+                )
+
+        if setup_type not in EVENT_SUPPORTED_TYPES:
+            return self._status_output(
+                ticker=ticker,
+                status="unsupported",
+                setup_type=original_setup_type,
+                setup_type_used=setup_type,
+                reasoning=f"Pattern analysis unsupported for setup type '{setup_type}'.",
+                confidence=0.10,
+                fallback_note=None,
+            )
+
+        try:
+            with get_session() as session:
+                peer_resolution = get_peer_resolution(ticker, self.settings, session=session, allow_network=True)
+                request = {
+                    "target_ticker": ticker,
+                    "ticker": ticker,
+                    "company_name": catalyst_data.get("company_name", ""),
+                    "setup_type": setup_type,
+                    "catalyst_summary": catalyst_data.get("catalyst_summary", catalyst_reasoning[:500]),
+                    "direction": catalyst_data.get("direction", "neutral"),
+                    "magnitude": catalyst_data.get("magnitude"),
+                    "peers": peer_resolution.get("peers", []),
+                    "current_context": self._current_analog_context(ticker, catalyst_data),
+                }
+                ranked = self.analog_ranker.rank(session, request, peer_resolution)
+                min_total = int(getattr(self.settings, "pattern_min_total_matches", 10))
+
+                if ranked.get("summary_stats", {}).get("total_instances", 0) < min_total and self._live_budget_remaining(started):
+                    discovery = self._build_discovery_engine(session)
+                    if discovery and getattr(self.settings, "pattern_event_search_enabled", True):
+                        discovery_result = discovery.discover_and_store(session, request, self.run_id)
+                        ranked = self.analog_ranker.rank(session, request, peer_resolution)
+                    else:
+                        discovery_result = {
+                            "status": "no_matches",
+                            "provider_usage": {},
+                            "search_run_id": None,
+                            "reason": "event discovery provider unavailable; queued async backfill if enabled",
+                        }
+                else:
+                    discovery_result = {"status": "cache_hit", "provider_usage": {}, "search_run_id": None}
+
+                total = ranked.get("summary_stats", {}).get("total_instances", 0)
+                if total < min_total and getattr(self.settings, "pattern_cold_ticker_async_backfill", True):
+                    self._enqueue_pattern_backfill(ticker, request)
+
+                if peer_resolution.get("status") == "low_confidence_peers" and ranked.get("status") == "active":
+                    status = "low_confidence_peers"
+                elif ranked.get("status") == "active" and status_prefix == "decomposed":
+                    status = "decomposed"
+                else:
+                    status = ranked.get("status") or discovery_result.get("status") or "no_matches"
+
+                if status not in {"active", "decomposed"} and total == 0 and discovery_result.get("status") == "provider_error":
+                    status = "provider_error"
+
+                return self._analog_output(
+                    ticker=ticker,
+                    setup_type=original_setup_type,
+                    setup_type_used=setup_type,
+                    status=status,
+                    ranked=ranked,
+                    peer_resolution=peer_resolution,
+                    fallback_note=fallback_note,
+                    provider_usage=discovery_result.get("provider_usage", {}),
+                    search_run_id=discovery_result.get("search_run_id"),
+                    elapsed_s=time.monotonic() - started,
+                )
+        except Exception as exc:
+            log.error("event_analog_engine_failed", ticker=ticker, error=str(exc))
+            return self._status_output(
+                ticker=ticker,
+                status="provider_error",
+                setup_type=original_setup_type,
+                setup_type_used=setup_type,
+                reasoning=f"Pattern analog engine failed: {exc}",
+                confidence=0.10,
+                fallback_note=fallback_note,
+            )
+
+    def _decompose_setup(self, ticker: str, setup_type: str, catalyst_data: dict, catalyst_reasoning: str) -> dict:
+        if not self.client:
+            return {"setup_type": setup_type, "confidence": 0.0}
+        prompt = (
+            f"Decompose this vague catalyst for {ticker} into one specific historical event type if possible.\n"
+            f"Current type: {setup_type}\n"
+            f"Summary: {catalyst_data.get('catalyst_summary', catalyst_reasoning[:500])}\n"
+            f"Allowed types: {', '.join(sorted(EVENT_SUPPORTED_TYPES))}\n"
+            'Return JSON: {"setup_type": "...", "confidence": 0.0, "reason": "..."}'
+        )
+        try:
+            result = self.client.analyze_json(
+                get_model("pattern_interpret", self.settings),
+                "You map vague trade catalysts into specific event analog classes.",
+                prompt,
+                max_tokens=300,
+            )
+            if result.get("setup_type") not in EVENT_SUPPORTED_TYPES:
+                result["confidence"] = 0.0
+            return result
+        except Exception as exc:
+            log.warning("setup_decomposition_failed", ticker=ticker, error=str(exc))
+            return {"setup_type": setup_type, "confidence": 0.0}
+
+    def _build_discovery_engine(self, session):
+        web_client = None
+        provider = getattr(self.settings, "pattern_event_search_provider", "gemini")
+        if provider in ("gemini", "hybrid") and getattr(self.settings, "gemini_api_key", ""):
+            web_client = WebSearchClient("gemini", self.client, self.settings)
+        perplexity = None
+        if (
+            provider in ("perplexity", "hybrid", "gemini")
+            and getattr(self.settings, "perplexity_search_enabled", True)
+            and getattr(self.settings, "perplexity_api_key", "")
+        ):
+            perplexity = PerplexitySearchClient(self.settings, session=session)
+        if not web_client and not perplexity:
+            return None
+        return EventDiscoveryEngine(self.settings, web_search_client=web_client, perplexity_client=perplexity)
+
+    def _live_budget_remaining(self, started: float) -> bool:
+        budget = float(getattr(self.settings, "pattern_stage_wallclock_budget_s", 45))
+        return (time.monotonic() - started) < max(1.0, budget - 2.0)
+
+    def _enqueue_pattern_backfill(self, ticker: str, request: dict) -> None:
+        path = Path(getattr(self.settings, "pattern_backfill_queue_path", ".pattern_backfill_queue.jsonl"))
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        payload = {
+            "ticker": ticker,
+            "setup_type": request.get("setup_type"),
+            "catalyst_summary": request.get("catalyst_summary"),
+            "queued_at": dt.utcnow().isoformat() + "Z",
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload) + "\n")
+            log.info("pattern_backfill_enqueued", ticker=ticker, setup_type=request.get("setup_type"))
+        except Exception as exc:
+            log.warning("pattern_backfill_enqueue_failed", ticker=ticker, error=str(exc))
+
+    def _current_analog_context(self, ticker: str, catalyst_data: dict) -> dict:
+        legacy = self._get_current_context(ticker, catalyst_data)
+        return {
+            "macro_regime": legacy.get("macro_regime"),
+            "vix_level": legacy.get("vix"),
+            "ticker_momentum_20d": legacy.get("momentum_20d"),
+            "trailing_pe_ratio": None,
+            "market_cap": catalyst_data.get("market_cap"),
+        }
+
+    def _analog_output(
+        self,
+        ticker: str,
+        setup_type: str,
+        setup_type_used: str,
+        status: str,
+        ranked: dict,
+        peer_resolution: dict,
+        fallback_note: str | None,
+        provider_usage: dict,
+        search_run_id,
+        elapsed_s: float,
+    ) -> AgentOutput:
+        stats = ranked.get("summary_stats", {})
+        total = stats.get("total_instances", 0)
+        top_analogs = ranked.get("top_analogs", [])
+        same_count = len(ranked.get("evidence_tiers", {}).get("same_ticker", []))
+        close_peer_count = len(ranked.get("evidence_tiers", {}).get("close_peer", []))
+        sector_peer_count = len(ranked.get("evidence_tiers", {}).get("sector_peer", []))
+        broad_count = len(ranked.get("evidence_tiers", {}).get("broad_base_rate", []))
+
+        if status in {"active", "decomposed"}:
+            score, confidence, direction = self._compute_analog_score(status, stats, peer_resolution)
+            reasoning = self._analog_reasoning(status, stats, ranked.get("warnings", []))
+        elif status == "insufficient_forward_returns":
+            score, confidence, direction = 0.5, 0.20, "neutral"
+            reasoning = "Historical events exist, but forward-return horizons are not mature enough yet."
+        elif status == "low_confidence_peers":
+            score, confidence, direction = 0.5, min(0.35, peer_resolution.get("confidence", 0.35)), "neutral"
+            reasoning = "Peer resolution is low confidence; pattern evidence is not counted as a directional view."
+        elif status == "provider_error":
+            score, confidence, direction = 0.5, 0.10, "neutral"
+            reasoning = "Pattern provider path failed or was unavailable; no directional pattern view."
+        else:
+            score, confidence, direction = 0.5, 0.15, "neutral"
+            reasoning = "No matured historical analog matches found for this catalyst type."
+
+        most_similar = top_analogs[0] if top_analogs else {}
+        raw = {
+            "status": status,
+            "setup_type": setup_type,
+            "setup_type_used": setup_type_used,
+            "fallback_note": fallback_note,
+            "same_ticker_instances": same_count,
+            "peer_instances": close_peer_count + sector_peer_count,
+            "broad_base_rate_instances": broad_count,
+            "total_instances": total,
+            "highly_similar_count": len([a for a in top_analogs if a.get("similarity_score", 0) >= HIGH_SIMILARITY_THRESHOLD]),
+            "hs_count": len([a for a in top_analogs if a.get("similarity_score", 0) >= HIGH_SIMILARITY_THRESHOLD]),
+            "most_similar": most_similar,
+            "most_similar_instance": most_similar,
+            "top_analogs": top_analogs,
+            "evidence_tiers": ranked.get("evidence_tiers", {}),
+            "provider_usage": provider_usage,
+            "search_run_id": search_run_id,
+            "warnings": ranked.get("warnings", []),
+            "peer_resolution": peer_resolution,
+            "duration_s": round(elapsed_s, 3),
+            "win_rate_t10": stats.get("win_rate_t10", 0.5),
+            "median_return_t10": stats.get("median_return_t10", 0.0),
+            "median_return_t20": stats.get("median_return_t20", 0.0),
+            "avg_winner_t10": stats.get("avg_winner_t10", 0.0),
+            "avg_loser_t10": stats.get("avg_loser_t10", 0.0),
+            "sample_size_warning": total < 10,
+        }
+        return AgentOutput(
+            agent_type=self.agent_type,
+            ticker=ticker,
+            score=score,
+            confidence=confidence,
+            direction=direction,
+            reasoning=reasoning,
+            raw_data=raw,
+            run_id=self.run_id,
+        )
+
+    def _status_output(
+        self,
+        ticker: str,
+        status: str,
+        setup_type: str,
+        setup_type_used: str,
+        reasoning: str,
+        confidence: float,
+        fallback_note: str | None,
+    ) -> AgentOutput:
+        raw = {
+            "status": status,
+            "setup_type": setup_type,
+            "setup_type_used": setup_type_used,
+            "fallback_note": fallback_note,
+            "same_ticker_instances": 0,
+            "peer_instances": 0,
+            "broad_base_rate_instances": 0,
+            "total_instances": 0,
+            "highly_similar_count": 0,
+            "hs_count": 0,
+            "most_similar": {},
+            "most_similar_instance": {},
+            "top_analogs": [],
+            "provider_usage": {},
+            "search_run_id": None,
+            "warnings": [],
+        }
+        return AgentOutput(
+            agent_type=self.agent_type,
+            ticker=ticker,
+            score=0.5,
+            confidence=confidence,
+            direction="neutral",
+            reasoning=reasoning,
+            raw_data=raw,
+            run_id=self.run_id,
+        )
+
+    def _compute_analog_score(self, status: str, stats: dict, peer_resolution: dict) -> tuple[float, float, str]:
+        win_rate = stats.get("win_rate_t10", 0.5)
+        median_ret = stats.get("median_return_t10", 0.0)
+        total = stats.get("total_instances", 0)
+        matured = stats.get("matured_t10_count", 0)
+        sample_conf = min(1.0, max(0.25, matured / 20))
+        peer_conf = peer_resolution.get("confidence", 0.5)
+        confidence = min(0.9, sample_conf * 0.65 + peer_conf * 0.35)
+        if status == "decomposed":
+            confidence *= 0.85
+        score = max(0.0, min(1.0, win_rate * 0.75 + (0.5 + median_ret / 50) * 0.25))
+        direction = "bullish" if median_ret > 0 else "bearish" if median_ret < -1 else "neutral"
+        if total < 5:
+            confidence = min(confidence, 0.35)
+        return round(score, 3), round(confidence, 3), direction
+
+    def _analog_reasoning(self, status: str, stats: dict, warnings: list[str]) -> str:
+        label = "decomposed catalyst analogs" if status == "decomposed" else "historical analogs"
+        text = (
+            f"{label.title()}: {stats.get('total_instances', 0)} stored events, "
+            f"{stats.get('matured_t10_count', 0)} with T+10 returns; "
+            f"win rate {stats.get('win_rate_t10', 0.5):.0%}, "
+            f"median T+10 {stats.get('median_return_t10', 0.0):+.1f}%."
+        )
+        if warnings:
+            text += " " + " ".join(warnings[:2])
+        return text
 
     # ── Step 2: Historical Search ────────────────────────────────────
 

@@ -429,6 +429,188 @@ class HistoricalContext(Base):
     pattern = relationship("HistoricalPattern")
 
 
+class CompanyProfile(Base):
+    """Cached structured company profile used for peers, context, and query building."""
+    __tablename__ = "company_profiles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), unique=True, nullable=False, index=True)
+    name = Column(String(200), default="")
+    exchange = Column(String(40), default="")
+    sector = Column(String(100), default="")
+    industry = Column(String(160), default="")
+    market_cap = Column(Float, nullable=True)
+    beta = Column(Float, nullable=True)
+    description = Column(Text, default="")
+    country = Column(String(60), default="")
+    currency = Column(String(20), default="")
+    raw_json = Column(Text, default="{}")
+    profile_source = Column(String(40), default="")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+
+class PeerEdge(Base):
+    """Cached ranked peer edge for a target ticker."""
+    __tablename__ = "peer_edges"
+    __table_args__ = (
+        UniqueConstraint("target_ticker", "peer_ticker", "source", "as_of_date", name="uq_peer_edge_source_date"),
+        Index("ix_peer_edges_target", "target_ticker"),
+        Index("ix_peer_edges_peer", "peer_ticker"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    target_ticker = Column(String(10), nullable=False, index=True)
+    peer_ticker = Column(String(10), nullable=False, index=True)
+    rank = Column(Integer, default=0)
+    score = Column(Float, default=0)
+    source = Column(String(80), default="")
+    reasons_json = Column(Text, default="[]")
+    as_of_date = Column(Date, default=date.today)
+    expires_at = Column(DateTime, nullable=True)
+
+
+class PatternSearchRun(Base):
+    """Auditable event analog search run and failure/status envelope."""
+    __tablename__ = "pattern_search_runs"
+    __table_args__ = (
+        Index("ix_pattern_search_runs_ticker_created", "ticker", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(80), nullable=False, index=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    setup_type = Column(String(80), default="")
+    catalyst_hash = Column(String(64), default="")
+    status = Column(String(40), default="")
+    provider_plan_json = Column(Text, default="{}")
+    queries_json = Column(Text, default="[]")
+    peer_set_json = Column(Text, default="[]")
+    result_counts_json = Column(Text, default="{}")
+    cost_estimate = Column(Float, nullable=True)
+    duration_s = Column(Float, nullable=True)
+    error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PatternProviderCache(Base):
+    """Cached raw search-provider result keyed by provider/query/filter hash."""
+    __tablename__ = "pattern_provider_cache"
+    __table_args__ = (
+        UniqueConstraint("cache_key", name="uq_pattern_provider_cache_key"),
+        Index("ix_pattern_provider_cache_provider", "provider", "expires_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cache_key = Column(String(120), nullable=False)
+    provider = Column(String(30), default="")
+    query = Column(Text, default="")
+    filters_json = Column(Text, default="{}")
+    result_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+
+class HistoricalEvent(Base):
+    """Canonical normalized historical catalyst/event row for analog retrieval."""
+    __tablename__ = "historical_events"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_historical_event_dedupe_key"),
+        Index("ix_historical_events_ticker_type_date", "ticker", "event_type", "event_date"),
+        Index("ix_historical_events_type_date", "event_type", "event_date"),
+        Index("ix_historical_events_dedupe", "dedupe_key"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    company_name = Column(String(200), default="")
+    event_type = Column(String(80), nullable=False, index=True)
+    event_subtype = Column(String(120), default="")
+    event_date = Column(Date, nullable=False)
+    event_timestamp = Column(DateTime, nullable=True)
+    event_timing = Column(String(20), default="unknown")
+    polarity = Column(String(20), default="neutral")
+    magnitude = Column(Float, nullable=True)
+    headline = Column(Text, default="")
+    summary = Column(Text, default="")
+    evidence = Column(Text, default="")
+    source_url = Column(Text, default="")
+    source_domain = Column(String(160), default="")
+    source_type = Column(String(40), default="other")
+    provider = Column(String(30), default="")
+    provider_query = Column(Text, default="")
+    confidence = Column(Float, default=0)
+    dedupe_key = Column(String(64), nullable=False, unique=True, index=True)
+    embedding_json = Column(Text, nullable=True)
+    raw_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    outcome = relationship("EventOutcome", back_populates="event", uselist=False, cascade="all, delete-orphan")
+    context = relationship("EventContext", back_populates="event", uselist=False, cascade="all, delete-orphan")
+
+
+class EventOutcome(Base):
+    """Deterministic forward price outcomes after a canonical event."""
+    __tablename__ = "event_outcomes"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_event_outcome_event"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(Integer, ForeignKey("historical_events.id"), nullable=False, index=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    anchor_price = Column(Float, nullable=True)
+    anchor_trade_date = Column(Date, nullable=True)
+    return_t1 = Column(Float, nullable=True)
+    return_t3 = Column(Float, nullable=True)
+    return_t5 = Column(Float, nullable=True)
+    return_t10 = Column(Float, nullable=True)
+    return_t20 = Column(Float, nullable=True)
+    return_t60 = Column(Float, nullable=True)
+    abnormal_return_t5 = Column(Float, nullable=True)
+    abnormal_return_t10 = Column(Float, nullable=True)
+    abnormal_return_t20 = Column(Float, nullable=True)
+    benchmark_symbol = Column(String(20), default="SPY")
+    sector_benchmark_symbol = Column(String(20), default="")
+    max_drawdown_t20 = Column(Float, nullable=True)
+    max_drawdown_day = Column(Integer, nullable=True)
+    volume_ratio_t1 = Column(Float, nullable=True)
+    gap_pct = Column(Float, nullable=True)
+    matured_horizons_json = Column(Text, default="[]")
+    status = Column(String(40), default="")
+    computed_at = Column(DateTime, default=datetime.utcnow)
+
+    event = relationship("HistoricalEvent", back_populates="outcome")
+
+
+class EventContext(Base):
+    """Point-in-time similarity inputs as of the event date."""
+    __tablename__ = "event_contexts"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_event_context_event"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(Integer, ForeignKey("historical_events.id"), nullable=False, unique=True, index=True)
+    macro_regime = Column(String(20), default="")
+    vix_level = Column(Float, nullable=True)
+    sp500_distance_200ma = Column(Float, nullable=True)
+    sector_momentum_20d = Column(Float, nullable=True)
+    ticker_momentum_20d = Column(Float, nullable=True)
+    ticker_volatility_20d = Column(Float, nullable=True)
+    market_cap = Column(Float, nullable=True)
+    trailing_pe_ratio = Column(Float, nullable=True)
+    ev_sales = Column(Float, nullable=True)
+    valuation_source_filing_date = Column(Date, nullable=True)
+    pit_quality = Column(String(20), default="unavailable")
+    raw_json = Column(Text, default="{}")
+    computed_at = Column(DateTime, default=datetime.utcnow)
+
+    event = relationship("HistoricalEvent", back_populates="context")
+
+
 class DeepResearchRequest(Base):
     """Tracks async deep research tasks for high-conviction ideas."""
     __tablename__ = "deep_research_requests"

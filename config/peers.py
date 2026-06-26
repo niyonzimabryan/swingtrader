@@ -66,8 +66,53 @@ PEER_GROUPS = {
 }
 
 
+def get_peer_resolution(ticker: str, settings=None, session=None, allow_network: bool = True) -> dict:
+    """Resolve peers with metadata. Manual overrides remain the first source."""
+    symbol = (ticker or "").upper().strip()
+    if symbol in PEER_GROUPS:
+        peers = [
+            {
+                "ticker": peer,
+                "score": round(1.0 - idx * 0.02, 3),
+                "rank": idx + 1,
+                "source": "manual",
+                "reasons": ["manual peer override"],
+            }
+            for idx, peer in enumerate(PEER_GROUPS[symbol])
+        ]
+        return {
+            "ticker": symbol,
+            "peers": peers,
+            "status": "active",
+            "confidence": 0.95,
+            "generated_at": "",
+            "warnings": [],
+        }
+
+    try:
+        from config.settings import Settings
+        from data.peer_resolver import PeerResolver
+        from database.db import get_session
+
+        resolved_settings = settings or Settings()
+        if session is not None:
+            resolver = PeerResolver(resolved_settings, manual_peers=PEER_GROUPS)
+            return resolver.resolve(symbol, session=session, allow_network=allow_network)
+
+        resolver = PeerResolver(resolved_settings, manual_peers=PEER_GROUPS, session_factory=get_session)
+        return resolver.resolve(symbol, allow_network=allow_network)
+    except Exception as exc:
+        return {
+            "ticker": symbol,
+            "peers": [],
+            "status": "low_confidence_peers",
+            "confidence": 0.0,
+            "generated_at": "",
+            "warnings": [f"peer resolver unavailable: {exc}"],
+        }
+
+
 def get_peers(ticker: str) -> list[str]:
-    """Get peer group for a ticker. Falls back to sector-based matching."""
-    if ticker in PEER_GROUPS:
-        return PEER_GROUPS[ticker]
-    return []
+    """Get peer group for a ticker. Falls back to cached/structured resolution when available."""
+    resolution = get_peer_resolution(ticker)
+    return [peer["ticker"] for peer in resolution.get("peers", [])]

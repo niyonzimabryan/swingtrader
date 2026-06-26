@@ -103,7 +103,52 @@ def format_memo_telegram(memo_data: dict) -> str:
     # Historical Precedent
     pattern = d.get("pattern", {})
     lines.append("*HISTORICAL PRECEDENT*")
-    if pattern.get("status") == "stub":
+    pattern_status = pattern.get("status")
+    if pattern_status in {"unsupported", "no_matches", "insufficient_forward_returns", "provider_error", "low_confidence_peers", "disabled"}:
+        status_copy = {
+            "unsupported": "Pattern analysis unsupported for vague/general catalyst.",
+            "no_matches": "No matured forward-return analogs found yet.",
+            "insufficient_forward_returns": "Historical events found, but forward returns are not mature yet.",
+            "provider_error": "Pattern provider path failed or was unavailable.",
+            "low_confidence_peers": "Peer set was low confidence; pattern evidence is capped.",
+            "disabled": "Pattern analog engine disabled.",
+        }.get(pattern_status, "Pattern analysis unavailable.")
+        lines.append(esc(status_copy))
+        if pattern.get("reasoning"):
+            lines.append(esc(pattern.get("reasoning", "")))
+    elif pattern_status in {"active", "decomposed"} and pattern.get("top_analogs"):
+        total = pattern.get("total_instances", 0)
+        same = pattern.get("same_ticker_instances", 0)
+        peer = pattern.get("peer_instances", 0)
+        broad = pattern.get("broad_base_rate_instances", 0)
+        win_rate = pattern.get("win_rate_t10", 0)
+        median_ret = pattern.get("median_return_t10", 0)
+        lines.append(f"Status: `{esc(pattern_status)}`")
+        lines.append(f"Setup: `{pattern.get('setup_type_used', pattern.get('setup_type', 'N/A')).replace('_', ' ').title()}`")
+        fallback_note = pattern.get("fallback_note")
+        if fallback_note:
+            lines.append(f"_{esc(fallback_note)}_")
+        lines.append(f"Instances: `{total}`")
+        lines.append(f"Self: `{same}` \\| Peers: `{peer}` \\| Broad: `{broad}`")
+        lines.append(f"Win rate \\(T\\+10\\): `{win_rate:.0%}`")
+        lines.append(f"Median: `{fmt(median_ret, '+.1f')}%`")
+        if pattern.get("warnings"):
+            lines.append(esc("Warning: " + pattern["warnings"][0]))
+        for analog in pattern.get("top_analogs", [])[:3]:
+            ret10 = analog.get("return_t10")
+            ret20 = analog.get("return_t20")
+            ret10_str = "partial" if ret10 is None else f"{fmt(ret10, '+.1f')}%"
+            ret20_str = "partial" if ret20 is None else f"{fmt(ret20, '+.1f')}%"
+            headline = esc((analog.get("headline") or analog.get("summary") or "")[:80])
+            lines.append(
+                f"• `{esc(analog.get('ticker', '?'))}` {esc(analog.get('date', '?'))}: {headline}"
+            )
+            lines.append(
+                f"  T\\+10 `{ret10_str}` \\| T\\+20 `{ret20_str}` \\| {esc(analog.get('source_domain', 'source'))} \\| sim `{fmt(analog.get('similarity_score', 0), '.0%')}`"
+            )
+        if pattern.get("reasoning"):
+            lines.append(esc(pattern.get("reasoning", "")))
+    elif pattern.get("status") == "stub":
         lines.append(esc("Insufficient historical data."))
     elif pattern.get("status") == "no_data":
         lines.append(esc(pattern.get("reasoning", "No historical data available.")))
@@ -388,7 +433,44 @@ def format_memo_plain(memo_data: dict) -> str:
 
     pattern = d.get("pattern", {})
     lines.append(f"\nHISTORICAL PRECEDENT")
-    if pattern.get("status") == "active":
+    pattern_status = pattern.get("status")
+    if pattern_status in {"unsupported", "no_matches", "insufficient_forward_returns", "provider_error", "low_confidence_peers", "disabled"}:
+        status_copy = {
+            "unsupported": "Pattern analysis unsupported for vague/general catalyst.",
+            "no_matches": "No matured forward-return analogs found yet.",
+            "insufficient_forward_returns": "Historical events found, but forward returns are not mature yet.",
+            "provider_error": "Pattern provider path failed or was unavailable.",
+            "low_confidence_peers": "Peer set was low confidence; pattern evidence is capped.",
+            "disabled": "Pattern analog engine disabled.",
+        }.get(pattern_status, "Pattern analysis unavailable.")
+        lines.append(status_copy)
+        if pattern.get("reasoning"):
+            lines.append(pattern.get("reasoning", ""))
+    elif pattern_status in {"active", "decomposed"} and pattern.get("top_analogs"):
+        total = pattern.get("total_instances", 0)
+        win_rate = pattern.get("win_rate_t10", 0)
+        median_ret = pattern.get("median_return_t10", 0)
+        lines.append(f"Status: {pattern_status}")
+        lines.append(f"Setup: {pattern.get('setup_type_used', pattern.get('setup_type', 'N/A'))}")
+        lines.append(
+            f"Instances: {total} | Self: {pattern.get('same_ticker_instances', 0)} | "
+            f"Peers: {pattern.get('peer_instances', 0)} | Broad: {pattern.get('broad_base_rate_instances', 0)}"
+        )
+        lines.append(f"Win rate (T+10): {win_rate:.0%} | Median return: {median_ret:+.1f}%")
+        if pattern.get("warnings"):
+            lines.append(f"Warning: {pattern['warnings'][0]}")
+        for analog in pattern.get("top_analogs", [])[:3]:
+            ret10 = analog.get("return_t10")
+            ret20 = analog.get("return_t20")
+            ret10_str = "partial" if ret10 is None else f"{ret10:+.1f}%"
+            ret20_str = "partial" if ret20 is None else f"{ret20:+.1f}%"
+            lines.append(
+                f"- {analog.get('ticker', '?')} {analog.get('date', '?')}: "
+                f"{analog.get('headline') or analog.get('summary', '')} "
+                f"| T+10 {ret10_str} | T+20 {ret20_str} | "
+                f"{analog.get('source_domain', 'source')} | sim {analog.get('similarity_score', 0):.0%}"
+            )
+    elif pattern.get("status") == "active":
         total = pattern.get("total_instances", 0)
         win_rate = pattern.get("win_rate_t10", 0)
         median_ret = pattern.get("median_return_t10", 0)
