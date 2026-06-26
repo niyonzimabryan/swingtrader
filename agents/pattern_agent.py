@@ -346,7 +346,12 @@ class PatternAgent(BaseAgent):
                         discovery_result = discovery.discover_and_store(session, request, self.run_id)
                         ranked = self.analog_ranker.rank(session, request, peer_resolution)
                     else:
-                        discovery_result = {"status": "provider_error", "provider_usage": {}, "search_run_id": None}
+                        discovery_result = {
+                            "status": "no_matches",
+                            "provider_usage": {},
+                            "search_run_id": None,
+                            "reason": "event discovery provider unavailable; queued async backfill if enabled",
+                        }
                 else:
                     discovery_result = {"status": "cache_hit", "provider_usage": {}, "search_run_id": None}
 

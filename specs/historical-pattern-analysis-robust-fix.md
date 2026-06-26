@@ -698,7 +698,7 @@ Update memo rendering so historical precedent is not a black box:
 
 Update `scoring/engine.py` so unsupported/no-data pattern output does not drag a strong catalyst down. Be precise about the mechanism: the existing disagreement penalty already excludes `neutral` directions, so direction is NOT the problem. The problem is the raw weighted composite (`raw_score = ... + pattern.score * SIGNAL_WEIGHTS["pattern"]`): a `no_data`/`unsupported` pattern returns `score=0.5` at full pattern weight (0.22), which pulls an 0.8 catalyst toward the mean regardless of direction.
 
-Required fix: when `pattern.raw_data["status"]` is NOT in `{active, decomposed}`, EXCLUDE pattern from the weighted sum and renormalize the remaining signal weights to sum to 1 (redistribute pattern's weight pro-rata across catalyst/fundamental/sentiment). Do the same for any other agent that reports a non-active/no-opinion status, so "no opinion" means "not counted," not "counted as 0.5." 
+Required fix: when `pattern.raw_data["status"]` is NOT in `{active, decomposed}`, EXCLUDE pattern from the weighted sum and renormalize the remaining signal weights to sum to 1 (redistribute pattern's weight pro-rata across catalyst/fundamental/sentiment). Do the same for any other agent that reports a non-active/no-opinion status, so "no opinion" means "not counted," not "counted as 0.5."
 
 Acceptance test: `strong_catalyst + unsupported_pattern` must score >= `strong_catalyst + pattern_absent` and must not score lower than the same inputs with a neutral-but-active pattern at 0.5.
 
