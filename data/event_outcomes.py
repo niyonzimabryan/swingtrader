@@ -16,7 +16,7 @@ import yfinance as yf
 from database.models import EventContext, EventOutcome, HistoricalEvent, PatternProviderCache
 from utils.logger import get_logger
 from utils.rate_limiter import rate_limiter
-from utils.redaction import redact_payload
+from utils.redaction import redact_payload, redact_text
 
 log = get_logger("event_outcomes")
 
@@ -187,7 +187,7 @@ class PriceHistoryCache:
             response.raise_for_status()
             return response.json()
         except Exception as exc:
-            log.warning("price_fmp_request_failed", endpoint=endpoint, error=str(exc))
+            log.warning("price_fmp_request_failed", endpoint=endpoint, error=redact_text(str(exc)))
             return None
 
 
@@ -381,7 +381,7 @@ class EventOutcomeEngine:
             response.raise_for_status()
             return response.json()
         except Exception as exc:
-            log.warning("event_context_fmp_request_failed", endpoint=endpoint, error=str(exc))
+            log.warning("event_context_fmp_request_failed", endpoint=endpoint, error=redact_text(str(exc)))
             return None
 
 
