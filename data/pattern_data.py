@@ -14,6 +14,7 @@ from database.db import get_session
 from database.models import HistoricalPattern, Ticker
 from utils.rate_limiter import rate_limiter
 from utils.logger import get_logger
+from utils.redaction import redact_text
 
 log = get_logger("pattern_data")
 
@@ -344,5 +345,5 @@ class PatternDataAdapter:
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
-            log.error("fmp_request_failed", endpoint=endpoint, error=str(e))
+            log.error("fmp_request_failed", endpoint=endpoint, error=redact_text(str(e)))
             return None

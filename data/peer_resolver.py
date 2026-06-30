@@ -14,7 +14,7 @@ import httpx
 from database.models import CompanyProfile, PeerEdge
 from utils.logger import get_logger
 from utils.rate_limiter import rate_limiter
-from utils.redaction import redact_payload
+from utils.redaction import redact_payload, redact_text
 
 log = get_logger("peer_resolver")
 
@@ -444,7 +444,7 @@ class PeerResolver:
             response.raise_for_status()
             return response.json()
         except Exception as exc:
-            log.warning("peer_fmp_request_failed", endpoint=endpoint, error=str(exc))
+            log.warning("peer_fmp_request_failed", endpoint=endpoint, error=redact_text(str(exc)))
             return None
 
 
