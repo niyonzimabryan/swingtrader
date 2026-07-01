@@ -1,5 +1,5 @@
 # GENERATED — do not edit here. Source: model-registry/check_models.py
-# Re-sync with: model-registry/sync.sh /Users/bryanniyonzima/AppsinTesting/swingtrader
+# Re-sync with: model-registry/sync.sh /private/tmp/claude-501/-Users-bryanniyonzima/c7bde0be-63a5-4b6d-b480-02d5e40b7ec3/scratchpad/swingtrader-sync
 #!/usr/bin/env python3
 """
 check_models.py — LLM model-ID linter.
@@ -23,8 +23,8 @@ Exit codes:
     0  clean (or only warnings, without --strict)
     1  found retired/deprecated models (or any finding with --strict)
 
-Registry last reviewed: 2026-06-30. Sources: claude-api skill (Anthropic,
-authoritative) + web research (Google Gemini, June 2026).
+Registry last reviewed: 2026-07-01. Sources: platform.claude.com models doc
+(Anthropic, authoritative) + web research (Google Gemini, June/July 2026).
 """
 from __future__ import annotations
 
@@ -55,8 +55,9 @@ REGISTRY: dict[str, dict] = {
     "claude-opus-4-5":           {"provider": "anthropic", "status": "current", "upgrade": "claude-opus-4-8", "note": "legacy-active"},
     "claude-opus-4-1":           {"provider": "anthropic", "status": "deprecated", "replace": "claude-opus-4-8", "note": "retires 2026-08-05"},
     "claude-opus-4-0":           {"provider": "anthropic", "status": "deprecated", "replace": "claude-opus-4-8", "note": "retires 2026-06-15"},
-    "claude-sonnet-4-6":         {"provider": "anthropic", "status": "current", "note": "current Sonnet, $3/$15"},
-    "claude-sonnet-4-5":         {"provider": "anthropic", "status": "current", "upgrade": "claude-sonnet-4-6", "note": "legacy-active; 4-6 is same price"},
+    "claude-sonnet-5":           {"provider": "anthropic", "status": "current", "note": "current Sonnet, $3/$15 (intro $2/$10 to 2026-08-31)"},
+    "claude-sonnet-4-6":         {"provider": "anthropic", "status": "current", "upgrade": "claude-sonnet-5", "note": "legacy; sonnet-5 is same $3/$15, newer/more agentic"},
+    "claude-sonnet-4-5":         {"provider": "anthropic", "status": "current", "upgrade": "claude-sonnet-5", "note": "legacy; sonnet-5 same price, newer"},
     "claude-sonnet-4-0":         {"provider": "anthropic", "status": "deprecated", "replace": "claude-sonnet-4-6", "note": "retires 2026-06-15"},
     "claude-haiku-4-5":          {"provider": "anthropic", "status": "current", "note": "current Haiku, $1/$5"},
     "claude-3-7-sonnet":         {"provider": "anthropic", "status": "retired", "replace": "claude-sonnet-4-6", "note": "retired 2026-02-19"},
