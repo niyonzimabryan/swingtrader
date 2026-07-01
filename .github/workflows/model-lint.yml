@@ -1,0 +1,21 @@
+name: model-lint
+
+# Fails the build if any code references a retired or deprecated LLM model ID.
+# Preview aliases and free-upgrade opportunities are reported as warnings (non-failing).
+# The linter is vendored at tools/check_models.py — synced from the model-registry repo.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  model-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Lint model IDs
+        run: python tools/check_models.py .

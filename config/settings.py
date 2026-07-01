@@ -102,7 +102,7 @@ class Settings(BaseSettings):
 
     # --- Gemini Flash Screening (Tier 2) ---
     gemini_api_key: str = ""
-    gemini_flash_model: str = "gemini-2.0-flash"
+    gemini_flash_model: str = "gemini-2.5-flash"
     gemini_search_model: str = "gemini-3.1-pro-preview"
     gemini_discovery_model: str = "gemini-3.1-pro-preview"
     gemini_web_research_model: str = "gemini-3.1-pro-preview"

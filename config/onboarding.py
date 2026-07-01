@@ -355,8 +355,8 @@ ENV_FIELDS = [
         description="Optional add-on setting used when Gemini is configured.",
         required=False,
         secret=False,
-        default="gemini-2.0-flash",
-        placeholder="gemini-2.0-flash",
+        default="gemini-2.5-flash",
+        placeholder="gemini-2.5-flash",
     ),
     EnvField(
         name="LANGFUSE_PUBLIC_KEY",
