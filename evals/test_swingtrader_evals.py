@@ -9,7 +9,7 @@ import sqlite3
 import pytest
 
 from evals import _bootstrap  # noqa: F401
-from evals import pnl_monitor, shadow_log, tasks
+from evals import build_dataset, pnl_monitor, shadow_log, tasks
 from model_evals import decide as D
 from model_evals.catalog import Catalog
 from model_evals.run import evaluate
@@ -57,6 +57,33 @@ def test_decision_of():
     assert shadow_log.decision_of({"opus_evaluation": {"recommendation": "proceed"}}) == "act"
     assert shadow_log.decision_of({"opus_evaluation": {"recommendation": "pass"}}) == "skip"
     assert shadow_log.decision_of({"opus_evaluation": {"recommendation": "watchlist"}}) == "skip"
+
+
+# ── Langfuse trace parsing (offline; mirrors the real captured shape) ─────────
+def test_parse_opus_json_from_fenced_output():
+    # Real OTEL shape: assistant msg with a reasoning part + a ```json-fenced text part
+    output = [{"role": "assistant", "parts": [
+        {"type": "reasoning", "content": "Let me analyze this trade...\n**Catalyst** weak."},
+        {"type": "text", "content": '```json\n{"final_score": 0.22, "conviction": "pass", '
+                                    '"recommendation": "pass"}\n```'},
+    ]}]
+    ev = build_dataset._parse_opus_json(output)
+    assert ev is not None and ev["recommendation"] == "pass" and ev["conviction"] == "pass"
+
+
+def test_parse_opus_json_handles_nested_and_plain():
+    nested = [{"role": "assistant", "parts": [
+        {"type": "text", "content": '{"opus_evaluation": {"recommendation": "proceed"}}'}]}]
+    assert build_dataset._parse_opus_json(nested)["recommendation"] == "proceed"
+    assert build_dataset._parse_opus_json("not json") is None
+    assert build_dataset._parse_opus_json([{"role": "assistant", "parts": [
+        {"type": "text", "content": "no decision here"}]}]) is None
+
+
+def test_loads_loose_strips_prose_and_fences():
+    assert build_dataset._loads_loose('```json\n{"a":1}\n```') == {"a": 1}
+    assert build_dataset._loads_loose('prefix {"a":1} suffix') == {"a": 1}
+    assert build_dataset._loads_loose('no braces') is None
 
 
 # ── scoring parity ───────────────────────────────────────────────────────────

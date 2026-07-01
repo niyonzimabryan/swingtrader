@@ -36,7 +36,12 @@ def _candidate_map(path):
 
 
 def _scoring(args) -> int:
-    records = build_dataset.from_jsonl(args.corpus)
+    if args.from_traces:
+        records = build_dataset.from_traces(args.from_traces)
+        print(f"pulled {len(records)} scoring records from Langfuse traces "
+              f"since {args.from_traces}", file=sys.stderr)
+    else:
+        records = build_dataset.from_jsonl(args.corpus)
     spec = tasks.scoring_spec()
     if args.candidate_out:
         cof = _candidate_map(args.candidate_out)
@@ -62,7 +67,10 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="swingtrader model-eval CLI (report-only).")
     sub = p.add_subparsers(dest="mode", required=True)
     s = sub.add_parser("scoring")
-    s.add_argument("--corpus", required=True)
+    s.add_argument("--corpus", help="JSONL snapshot of shadow-logged records")
+    s.add_argument("--from-traces", metavar="ISO_TS",
+                   help="pull scoring corpus live from Langfuse traces since this timestamp "
+                        "(e.g. 2026-04-01T00:00:00Z); needs LANGFUSE_* env")
     s.add_argument("--candidate", required=True)
     s.add_argument("--candidate-out", help="JSONL of candidate decisions; else sanity mode")
     s.set_defaults(func=_scoring)

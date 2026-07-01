@@ -5,32 +5,40 @@ Model-swap evals + a P&L rollback monitor. Report-only — **nothing here edits
 
 ## Run
 ```bash
-python -m pytest evals                        # adapter tests (4)
+python -m pytest evals                        # adapter tests (7)
 
-# scoring parity (Opus vs candidate) over the shadow-logged corpus:
-python -m evals.run_evals scoring --corpus evals/corpus/scoring.jsonl \
-    --candidate claude-sonnet-5 --candidate-out evals/corpus/sonnet5.jsonl
+# scoring parity — pull the corpus LIVE from Langfuse traces (needs LANGFUSE_* env):
+export $(grep LANGFUSE ~/.env | xargs)
+python -m evals.run_evals scoring --from-traces 2026-04-01T00:00:00Z --candidate claude-sonnet-5
+
+# ...or from a local JSONL snapshot:
+python -m evals.run_evals scoring --corpus evals/corpus/scoring.jsonl --candidate claude-sonnet-5
 
 # P&L rollback monitor around a swap date (reads the SQLite outcomes DB):
 python -m evals.run_evals pnl --db /data/swing_trader.db --swap-date 2026-08-01
 ```
 
-## The data situation (read this)
-swingtrader is **not** offline-backfillable (a scoring input is market-state at a
-moment). Today Langfuse holds ~19 historical scoring calls and the local DB is empty,
-so the scoring eval reports **UNDERPOWERED** (n < N_min=150) — by design, not a bug.
-The job now is to *accumulate forward*:
+## Capture is already on — no prod change needed (read this)
+The bot's Langfuse OTEL auto-instrumentation **already captures every scoring call**
+as a trace tagged `scoring` with full replayable input + the opus decision JSON.
+`build_dataset.from_traces(...)` pulls that corpus directly (`langfuse_api.py`, a
+stdlib REST reader — no SDK, works locally/CI). So "turning on shadow-logging"
+needed **no edit to the money-bot hot path and no deploy**.
 
-1. In prod, after each scoring call, `shadow_log.record_from_scoring(...)` →
-   `shadow_log.materialize_langfuse(...)` appends a replay-record to a Langfuse dataset.
-2. When the dataset clears 150 items across ≥2 market regimes, the scoring parity
-   verdict becomes powered.
-3. Meanwhile `pnl_monitor` watches realized P&L (rollback signal only — P&L never
-   gates a swap; design §2).
+Verified 2026-07-01: pulls real records (tickers HIMS/TMCI/OSCR/…), decisions and
+convictions parse, inputs are replayable. swingtrader is **not** offline-backfillable
+(a scoring input is market-state at a moment), and only ~11–19 scoring calls exist,
+so the eval correctly reports **UNDERPOWERED** (n < N_min=150). It becomes powered as
+the bot runs and the trace corpus grows — nothing to accumulate manually.
+
+`shadow_log.py` (explicit Langfuse *dataset* writes) stays available if you later want
+a curated store instead of raw traces, but it's optional and unused in v1. `pnl_monitor`
+watches realized P&L as a rollback signal only (P&L never gates; §2).
 
 ## Files
-- `shadow_log.py` — freeze scoring calls into replay-records (→ Langfuse dataset)
+- `langfuse_api.py` — stdlib REST reader for Langfuse (tolerant of the flaky endpoint)
+- `build_dataset.py` — `from_traces` (live pull), `from_jsonl`, `from_langfuse`
 - `pnl_monitor.py` — closed-trade P&L join (memos→trades→tickers); pre/post-swap regression check
-- `build_dataset.py` — corpus from JSONL or a Langfuse dataset
+- `shadow_log.py` — optional explicit dataset writes (unused in v1)
 - `tasks.py` — `scoring_spec` (act/skip agreement ≥ 0.90), `filter_spec` (traded-ticker recall ≥ 0.98)
 - `run_evals.py` — the CLI
