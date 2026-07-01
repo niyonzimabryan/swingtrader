@@ -134,6 +134,13 @@ def format_memo_telegram(memo_data: dict) -> str:
         lines.append(f"Median: `{fmt(median_ret, '+.1f')}%`")
         if pattern.get("warnings"):
             lines.append(esc("Warning: " + pattern["warnings"][0]))
+        private = pattern.get("private_trade_history", {})
+        if private.get("status") == "active":
+            lines.append(
+                f"Own trade history: `{private.get('matched_trade_count', 0)}` closed trades \\| "
+                f"win rate `{fmt(private.get('win_rate', 0), '.0%')}` \\| "
+                f"median `{fmt(private.get('median_return_pct', 0), '+.1f')}%`"
+            )
         for analog in pattern.get("top_analogs", [])[:3]:
             ret10 = analog.get("return_t10")
             ret20 = analog.get("return_t20")
@@ -198,6 +205,14 @@ def format_memo_telegram(memo_data: dict) -> str:
         lines.append(f"Avg loser: `{fmt(avg_loser, '.1f')}%`")
         lines.append(f"Max DD median: `{fmt(dd_median, '.1f')}%`")
         lines.append(f"Max DD worst: `{fmt(dd_worst, '.1f')}%`")
+
+        private = pattern.get("private_trade_history", {})
+        if private.get("status") == "active":
+            lines.append(
+                f"Own trade history: `{private.get('matched_trade_count', 0)}` closed trades \\| "
+                f"win rate `{fmt(private.get('win_rate', 0), '.0%')}` \\| "
+                f"median `{fmt(private.get('median_return_pct', 0), '+.1f')}%`"
+            )
 
         # V2: Show most similar instance
         if most_similar and most_similar.get("ticker"):
@@ -457,6 +472,13 @@ def format_memo_plain(memo_data: dict) -> str:
             f"Peers: {pattern.get('peer_instances', 0)} | Broad: {pattern.get('broad_base_rate_instances', 0)}"
         )
         lines.append(f"Win rate (T+10): {win_rate:.0%} | Median return: {median_ret:+.1f}%")
+        private = pattern.get("private_trade_history", {})
+        if private.get("status") == "active":
+            lines.append(
+                f"Own trade history: {private.get('matched_trade_count', 0)} closed trades | "
+                f"Win rate: {private.get('win_rate', 0):.0%} | "
+                f"Median: {private.get('median_return_pct', 0):+.1f}%"
+            )
         if pattern.get("warnings"):
             lines.append(f"Warning: {pattern['warnings'][0]}")
         for analog in pattern.get("top_analogs", [])[:3]:
@@ -490,6 +512,14 @@ def format_memo_plain(memo_data: dict) -> str:
 
         if weighted_wr is not None and abs(weighted_wr - win_rate) > 0.02:
             lines.append(f"Similarity-weighted win rate: {weighted_wr:.0%} | Weighted median: {weighted_med:+.1f}%")
+
+        private = pattern.get("private_trade_history", {})
+        if private.get("status") == "active":
+            lines.append(
+                f"Own trade history: {private.get('matched_trade_count', 0)} closed trades | "
+                f"Win rate: {private.get('win_rate', 0):.0%} | "
+                f"Median: {private.get('median_return_pct', 0):+.1f}%"
+            )
 
         if most_similar and most_similar.get("ticker"):
             sim_ret = most_similar.get("return_t10", 0)

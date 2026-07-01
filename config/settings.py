@@ -126,6 +126,7 @@ class Settings(BaseSettings):
     pattern_max_events_per_query: int = 10
     pattern_embedding_provider: str = "gemini"  # gemini | perplexity | off
     pattern_analog_engine_enabled: bool = False
+    pattern_private_trade_history_enabled: bool = True
     pattern_stage_wallclock_budget_s: int = 45
     pattern_cold_ticker_async_backfill: bool = True
     pattern_price_source: str = "fmp"  # fmp | yfinance

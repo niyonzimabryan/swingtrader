@@ -145,6 +145,7 @@ class ScoringEngine:
                     "hs_win_rate_t10": pattern.raw_data.get("hs_win_rate_t10"),
                     "hs_median_return_t10": pattern.raw_data.get("hs_median_return_t10"),
                     "most_similar_instance": pattern.raw_data.get("most_similar_instance"),
+                    "private_trade_history": pattern.raw_data.get("private_trade_history"),
                 },
                 "web_research": {
                     "score": web_research.score,

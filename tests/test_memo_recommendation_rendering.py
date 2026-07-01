@@ -98,6 +98,39 @@ class MemoRenderingByRecommendationTests(unittest.TestCase):
                 self.assertNotIn("REFERENCE PARAMS", out)
 
 
+    def test_private_trade_history_pattern_evidence_renders_as_aggregate_only(self):
+        memo = _base_memo("proceed")
+        memo["pattern"] = {
+            "status": "active",
+            "setup_type_used": "product_launch",
+            "total_instances": 30,
+            "same_ticker_instances": 0,
+            "peer_instances": 0,
+            "broad_base_rate_instances": 0,
+            "win_rate_t10": 0.7,
+            "median_return_t10": 6.0,
+            "top_analogs": [],
+            "private_trade_history": {
+                "status": "active",
+                "source": "private_local_trade_history",
+                "publishable": False,
+                "closed_trade_count": 30,
+                "matched_trade_count": 30,
+                "same_ticker_trade_count": 30,
+                "win_rate": 0.7,
+                "median_return_pct": 6.0,
+            },
+        }
+
+        out = format_memo_plain(memo)
+
+        self.assertIn("Own trade history", out)
+        self.assertIn("30 closed trades", out)
+        self.assertIn("70%", out)
+        self.assertNotIn("private-order-id", out)
+        self.assertNotIn("operator_notes", out)
+
+
 class MemoTradeParameterDirectionTests(unittest.TestCase):
     def setUp(self):
         self.generator = MemoGenerator(_memo_settings(), anthropic_client=None)

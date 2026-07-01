@@ -17,12 +17,14 @@ import json
 import time
 from datetime import datetime as dt
 from pathlib import Path
+from statistics import median
 from agents.base_agent import BaseAgent, AgentOutput
 from config.peers import get_peer_resolution, get_peers
 from data.analog_ranker import AnalogRanker
 from data.event_discovery import EVENT_SUPPORTED_TYPES, TIER_C_TYPES, EventDiscoveryEngine
 from data.pattern_data import PatternDataAdapter
 from database.db import get_session
+from database.models import Ticker, Trade
 from utils.perplexity_search_client import PerplexitySearchClient
 from utils.web_search_client import WebSearchClient
 from utils.model_selector import get_model
@@ -83,6 +85,11 @@ MIN_FALLBACK_INSTANCES = 5
 
 # Max historical instances to process (ticker + peers combined)
 MAX_INSTANCES = 30
+
+# Private trade history only becomes pattern evidence after enough closed local trades
+# to avoid overfitting one operator's tiny sample. The code is open source; the
+# evidence is local-only aggregate data and never serializes trade/order details.
+PRIVATE_TRADE_HISTORY_MIN_CLOSED = 30
 
 # V2: Contextual similarity weights
 SIMILARITY_WEIGHTS = {
@@ -356,6 +363,7 @@ class PatternAgent(BaseAgent):
                     discovery_result = {"status": "cache_hit", "provider_usage": {}, "search_run_id": None}
 
                 total = ranked.get("summary_stats", {}).get("total_instances", 0)
+                private_trade_history = self._private_trade_history_evidence(session, ticker, setup_type)
                 if total < min_total and getattr(self.settings, "pattern_cold_ticker_async_backfill", True):
                     self._enqueue_pattern_backfill(ticker, request)
 
@@ -365,6 +373,9 @@ class PatternAgent(BaseAgent):
                     status = "decomposed"
                 else:
                     status = ranked.get("status") or discovery_result.get("status") or "no_matches"
+
+                if private_trade_history.get("status") == "active" and status in {"no_matches", "insufficient_forward_returns"}:
+                    status = "active"
 
                 if status not in {"active", "decomposed"} and total == 0 and discovery_result.get("status") == "provider_error":
                     status = "provider_error"
@@ -380,6 +391,7 @@ class PatternAgent(BaseAgent):
                     provider_usage=discovery_result.get("provider_usage", {}),
                     search_run_id=discovery_result.get("search_run_id"),
                     elapsed_s=time.monotonic() - started,
+                    private_trade_history=private_trade_history,
                 )
         except Exception as exc:
             log.error("event_analog_engine_failed", ticker=ticker, error=str(exc))
@@ -465,6 +477,93 @@ class PatternAgent(BaseAgent):
             "market_cap": catalyst_data.get("market_cap"),
         }
 
+    def _private_trade_history_evidence(self, session, ticker: str, setup_type: str) -> dict:
+        """Return local-only aggregate closed-trade evidence for this setup.
+
+        Open-source/privacy contract: this reads only the operator's local DB,
+        activates only after 30+ closed trades, and serializes aggregate stats
+        only. No trade IDs, order IDs, broker account IDs, notes, or raw rows.
+        """
+        if not getattr(self.settings, "pattern_private_trade_history_enabled", True):
+            return _private_trade_history_disabled()
+
+        min_closed = int(getattr(self.settings, "pattern_private_trade_history_min_closed", PRIVATE_TRADE_HISTORY_MIN_CLOSED))
+        closed = (
+            session.query(Trade)
+            .join(Ticker, Ticker.id == Trade.ticker_id)
+            .filter(Trade.status == "closed")
+            .all()
+        )
+        closed_count = len(closed)
+        base = {
+            "status": "insufficient_closed_trades",
+            "source": "private_local_trade_history",
+            "publishable": False,
+            "min_closed_trades": min_closed,
+            "closed_trade_count": closed_count,
+            "matched_trade_count": 0,
+            "same_ticker_trade_count": 0,
+        }
+        if closed_count < min_closed:
+            return base
+
+        setup_aliases = {setup_type, ANALOG_TO_LEGACY_SETUP_TYPE.get(setup_type, setup_type)}
+        matched = [trade for trade in closed if (trade.setup_type or "") in setup_aliases]
+        returns = [_trade_return_pct(trade) for trade in matched]
+        returns = [value for value in returns if value is not None]
+        if not returns:
+            return {**base, "status": "no_setup_matches", "closed_trade_count": closed_count}
+
+        winners = [value for value in returns if value > 0]
+        losers = [value for value in returns if value <= 0]
+        same_ticker = sum(1 for trade in matched if trade.ticker and trade.ticker.symbol == ticker)
+        return {
+            **base,
+            "status": "active",
+            "closed_trade_count": closed_count,
+            "matched_trade_count": len(returns),
+            "same_ticker_trade_count": same_ticker,
+            "win_rate": round(len(winners) / len(returns), 3),
+            "median_return_pct": round(float(median(returns)), 2),
+            "avg_winner_pct": round(float(np.mean(winners)), 2) if winners else 0.0,
+            "avg_loser_pct": round(float(np.mean(losers)), 2) if losers else 0.0,
+        }
+
+    def _stats_with_private_trade_history(self, stats: dict, private_trade_history: dict) -> dict:
+        if private_trade_history.get("status") != "active":
+            return stats
+
+        private_count = int(private_trade_history.get("matched_trade_count") or 0)
+        public_count = int(stats.get("matured_t10_count") or stats.get("total_instances") or 0)
+        if private_count <= 0:
+            return stats
+        if public_count <= 0:
+            return {
+                **stats,
+                "total_instances": private_count,
+                "matured_t10_count": private_count,
+                "win_rate_t10": private_trade_history.get("win_rate", 0.5),
+                "median_return_t10": private_trade_history.get("median_return_pct", 0.0),
+                "median_return_t20": stats.get("median_return_t20", 0.0),
+                "avg_winner_t10": private_trade_history.get("avg_winner_pct", 0.0),
+                "avg_loser_t10": private_trade_history.get("avg_loser_pct", 0.0),
+            }
+
+        total = public_count + private_count
+        return {
+            **stats,
+            "total_instances": int(stats.get("total_instances") or public_count) + private_count,
+            "matured_t10_count": total,
+            "win_rate_t10": round(
+                (stats.get("win_rate_t10", 0.5) * public_count + private_trade_history.get("win_rate", 0.5) * private_count) / total,
+                3,
+            ),
+            "median_return_t10": round(
+                (stats.get("median_return_t10", 0.0) * public_count + private_trade_history.get("median_return_pct", 0.0) * private_count) / total,
+                2,
+            ),
+        }
+
     def _analog_output(
         self,
         ticker: str,
@@ -477,9 +576,12 @@ class PatternAgent(BaseAgent):
         provider_usage: dict,
         search_run_id,
         elapsed_s: float,
+        private_trade_history: dict | None = None,
     ) -> AgentOutput:
         stats = ranked.get("summary_stats", {})
-        total = stats.get("total_instances", 0)
+        private_trade_history = private_trade_history or _private_trade_history_disabled()
+        effective_stats = self._stats_with_private_trade_history(stats, private_trade_history)
+        total = effective_stats.get("total_instances", 0)
         top_analogs = ranked.get("top_analogs", [])
         same_count = len(ranked.get("evidence_tiers", {}).get("same_ticker", []))
         close_peer_count = len(ranked.get("evidence_tiers", {}).get("close_peer", []))
@@ -487,8 +589,8 @@ class PatternAgent(BaseAgent):
         broad_count = len(ranked.get("evidence_tiers", {}).get("broad_base_rate", []))
 
         if status in {"active", "decomposed"}:
-            score, confidence, direction = self._compute_analog_score(status, stats, peer_resolution)
-            reasoning = self._analog_reasoning(status, stats, ranked.get("warnings", []))
+            score, confidence, direction = self._compute_analog_score(status, effective_stats, peer_resolution)
+            reasoning = self._analog_reasoning(status, effective_stats, ranked.get("warnings", []), private_trade_history)
         elif status == "insufficient_forward_returns":
             score, confidence, direction = 0.5, 0.20, "neutral"
             reasoning = "Historical events exist, but forward-return horizons are not mature enough yet."
@@ -523,12 +625,13 @@ class PatternAgent(BaseAgent):
             "warnings": ranked.get("warnings", []),
             "peer_resolution": peer_resolution,
             "duration_s": round(elapsed_s, 3),
-            "win_rate_t10": stats.get("win_rate_t10", 0.5),
-            "median_return_t10": stats.get("median_return_t10", 0.0),
-            "median_return_t20": stats.get("median_return_t20", 0.0),
-            "avg_winner_t10": stats.get("avg_winner_t10", 0.0),
-            "avg_loser_t10": stats.get("avg_loser_t10", 0.0),
+            "win_rate_t10": effective_stats.get("win_rate_t10", 0.5),
+            "median_return_t10": effective_stats.get("median_return_t10", 0.0),
+            "median_return_t20": effective_stats.get("median_return_t20", 0.0),
+            "avg_winner_t10": effective_stats.get("avg_winner_t10", 0.0),
+            "avg_loser_t10": effective_stats.get("avg_loser_t10", 0.0),
             "sample_size_warning": total < 10,
+            "private_trade_history": private_trade_history,
         }
         return AgentOutput(
             agent_type=self.agent_type,
@@ -568,6 +671,7 @@ class PatternAgent(BaseAgent):
             "provider_usage": {},
             "search_run_id": None,
             "warnings": [],
+            "private_trade_history": _private_trade_history_disabled(),
         }
         return AgentOutput(
             agent_type=self.agent_type,
@@ -596,14 +700,19 @@ class PatternAgent(BaseAgent):
             confidence = min(confidence, 0.35)
         return round(score, 3), round(confidence, 3), direction
 
-    def _analog_reasoning(self, status: str, stats: dict, warnings: list[str]) -> str:
+    def _analog_reasoning(self, status: str, stats: dict, warnings: list[str], private_trade_history: dict | None = None) -> str:
         label = "decomposed catalyst analogs" if status == "decomposed" else "historical analogs"
         text = (
-            f"{label.title()}: {stats.get('total_instances', 0)} stored events, "
-            f"{stats.get('matured_t10_count', 0)} with T+10 returns; "
+            f"{label.title()}: {stats.get('total_instances', 0)} evidence points, "
+            f"{stats.get('matured_t10_count', 0)} with T+10-style outcomes; "
             f"win rate {stats.get('win_rate_t10', 0.5):.0%}, "
-            f"median T+10 {stats.get('median_return_t10', 0.0):+.1f}%."
+            f"median outcome {stats.get('median_return_t10', 0.0):+.1f}%."
         )
+        if private_trade_history and private_trade_history.get("status") == "active":
+            text += (
+                f" Includes {private_trade_history.get('matched_trade_count', 0)} own closed trades "
+                "from the private local DB."
+            )
         if warnings:
             text += " " + " ".join(warnings[:2])
         return text
@@ -1298,8 +1407,8 @@ class PatternAgent(BaseAgent):
         """Generate a basic interpretation without Sonnet (V2: includes similarity data)."""
         total = stats.get("total_instances", 0)
         win_rate = stats.get("win_rate_t10", 0)
-        median = stats.get("median_return_t10", 0)
         dd = stats.get("max_drawdown_median", 0)
+        median = stats.get("median_return_t10", 0)
 
         if total < 5:
             size_note = "Very small sample size limits reliability."
@@ -1325,3 +1434,25 @@ class PatternAgent(BaseAgent):
             base += sim_note
 
         return base
+
+
+def _private_trade_history_disabled() -> dict:
+    return {
+        "status": "disabled",
+        "source": "private_local_trade_history",
+        "publishable": False,
+        "min_closed_trades": PRIVATE_TRADE_HISTORY_MIN_CLOSED,
+        "closed_trade_count": 0,
+        "matched_trade_count": 0,
+        "same_ticker_trade_count": 0,
+    }
+
+
+def _trade_return_pct(trade: Trade) -> float | None:
+    if trade.pnl_pct is not None:
+        return float(trade.pnl_pct)
+    if not trade.entry_price or trade.exit_price is None:
+        return None
+    if trade.direction == "short":
+        return round((trade.entry_price - trade.exit_price) / trade.entry_price * 100, 4)
+    return round((trade.exit_price - trade.entry_price) / trade.entry_price * 100, 4)

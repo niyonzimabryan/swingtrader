@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,7 +16,7 @@ from data.event_extractor import EventExtractor, EventValidationError, make_dedu
 from data.event_outcomes import EventOutcomeEngine, HistoricalMarketCapUnavailable, PriceBar
 from data.peer_resolver import PeerResolver
 from database.db import get_session, init_db
-from database.models import EventOutcome, HistoricalEvent, PatternProviderCache, PatternSearchRun
+from database.models import EventOutcome, HistoricalEvent, PatternProviderCache, PatternSearchRun, Ticker, Trade
 from scoring.engine import ScoringEngine
 from utils.perplexity_search_client import PERPLEXITY_SEARCH_URL, PerplexitySearchClient
 
@@ -262,6 +262,83 @@ class HistoricalPatternEngineTests(unittest.TestCase):
         self.assertAlmostEqual(unsupported_result["raw_score"], expected_absent, places=4)
         self.assertGreaterEqual(unsupported_result["raw_score"], neutral_result["raw_score"])
         self.assertFalse(unsupported_result["signal_breakdown"]["pattern"]["counted"])
+
+    def test_private_trade_history_waits_for_thirty_closed_trades(self):
+        settings = _settings(
+            pattern_event_search_enabled=False,
+            pattern_cold_ticker_async_backfill=False,
+            pattern_private_trade_history_enabled=True,
+        )
+        agent = PatternAgent(settings, anthropic_client=None)
+        self._seed_closed_trades(count=29, wins=20, setup_type="product_launch")
+
+        with patch("agents.pattern_agent.get_peer_resolution", return_value={"status": "active", "confidence": 0.9, "peers": []}):
+            out = agent.analyze(
+                "AAPL",
+                catalyst_data={"setup_type": "product_launch", "catalyst_summary": "AI product launch", "direction": "bullish"},
+            )
+
+        private = out.raw_data["private_trade_history"]
+        self.assertEqual(private["status"], "insufficient_closed_trades")
+        self.assertEqual(private["closed_trade_count"], 29)
+        self.assertNotIn("operator_notes", json.dumps(private))
+        self.assertNotIn("broker_order_id", json.dumps(private))
+
+    def test_private_trade_history_adds_aggregate_evidence_after_thirty_closed_trades(self):
+        settings = _settings(
+            pattern_event_search_enabled=False,
+            pattern_cold_ticker_async_backfill=False,
+            pattern_private_trade_history_enabled=True,
+        )
+        agent = PatternAgent(settings, anthropic_client=None)
+        self._seed_closed_trades(count=30, wins=21, setup_type="product_launch")
+
+        with patch("agents.pattern_agent.get_peer_resolution", return_value={"status": "active", "confidence": 0.9, "peers": []}):
+            out = agent.analyze(
+                "AAPL",
+                catalyst_data={"setup_type": "product_launch", "catalyst_summary": "AI product launch", "direction": "bullish"},
+            )
+
+        private = out.raw_data["private_trade_history"]
+        self.assertEqual(out.raw_data["status"], "active")
+        self.assertEqual(private["status"], "active")
+        self.assertEqual(private["matched_trade_count"], 30)
+        self.assertEqual(private["source"], "private_local_trade_history")
+        self.assertFalse(private["publishable"])
+        self.assertAlmostEqual(private["win_rate"], 0.7)
+        self.assertGreater(out.score, 0.5)
+        self.assertIn("own closed trades", out.reasoning)
+        serialized = json.dumps(private)
+        self.assertNotIn("operator_notes", serialized)
+        self.assertNotIn("broker_order_id", serialized)
+        self.assertNotIn("alpaca_entry_order_id", serialized)
+
+    def _seed_closed_trades(self, count: int, wins: int, setup_type: str) -> None:
+        with get_session() as session:
+            ticker = Ticker(symbol="AAPL", name="Apple")
+            session.add(ticker)
+            session.flush()
+            for i in range(count):
+                pnl_pct = 6.0 if i < wins else -4.0
+                session.add(
+                    Trade(
+                        ticker_id=ticker.id,
+                        direction="long",
+                        entry_price=100.0,
+                        exit_price=100.0 + pnl_pct,
+                        entry_date=datetime(2026, 1, 1),
+                        exit_date=datetime(2026, 1, 10),
+                        shares=1,
+                        stop_loss=95.0,
+                        status="closed",
+                        pnl_pct=pnl_pct,
+                        pnl_absolute=pnl_pct,
+                        setup_type=setup_type,
+                        signal_scores=json.dumps({"pattern": 0.6}),
+                        broker_order_id="private-order-id",
+                        operator_notes="private operator note",
+                    )
+                )
 
     def test_perplexity_search_budget_and_endpoint(self):
         client = PerplexitySearchClient(_settings(perplexity_api_key="pplx-test", perplexity_search_max_requests_per_run=0))
