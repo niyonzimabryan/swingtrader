@@ -1,0 +1,240 @@
+{
+  "claude-3-5-haiku": {
+    "note": "retired 2026-02-19",
+    "provider": "anthropic",
+    "replace": "claude-haiku-4-5",
+    "status": "retired"
+  },
+  "claude-3-5-sonnet": {
+    "note": "retired 2025-10-28",
+    "provider": "anthropic",
+    "replace": "claude-sonnet-4-6",
+    "status": "retired"
+  },
+  "claude-3-7-sonnet": {
+    "note": "retired 2026-02-19",
+    "provider": "anthropic",
+    "replace": "claude-sonnet-4-6",
+    "status": "retired"
+  },
+  "claude-3-haiku": {
+    "note": "retires 2026-04-19",
+    "provider": "anthropic",
+    "replace": "claude-haiku-4-5",
+    "status": "deprecated"
+  },
+  "claude-3-opus": {
+    "note": "retired 2026-01-05",
+    "provider": "anthropic",
+    "replace": "claude-opus-4-8",
+    "status": "retired"
+  },
+  "claude-fable-5": {
+    "note": "flagship, $10/$50",
+    "price": {
+      "in": 10.0,
+      "out": 50.0
+    },
+    "provider": "anthropic",
+    "status": "current"
+  },
+  "claude-haiku-4-5": {
+    "note": "current Haiku, $1/$5",
+    "price": {
+      "in": 1.0,
+      "out": 5.0
+    },
+    "provider": "anthropic",
+    "status": "current"
+  },
+  "claude-mythos-5": {
+    "note": "Project Glasswing only",
+    "provider": "anthropic",
+    "status": "current"
+  },
+  "claude-opus-4-0": {
+    "note": "retires 2026-06-15",
+    "provider": "anthropic",
+    "replace": "claude-opus-4-8",
+    "status": "deprecated"
+  },
+  "claude-opus-4-1": {
+    "note": "retires 2026-08-05",
+    "provider": "anthropic",
+    "replace": "claude-opus-4-8",
+    "status": "deprecated"
+  },
+  "claude-opus-4-5": {
+    "note": "legacy-active",
+    "price": {
+      "in": 5.0,
+      "out": 25.0
+    },
+    "provider": "anthropic",
+    "status": "current",
+    "upgrade": "claude-opus-4-8"
+  },
+  "claude-opus-4-6": {
+    "note": "$5/$25; 4-8 is same price, free win",
+    "price": {
+      "in": 5.0,
+      "out": 25.0
+    },
+    "provider": "anthropic",
+    "status": "current",
+    "upgrade": "claude-opus-4-8"
+  },
+  "claude-opus-4-7": {
+    "note": "$5/$25; 4-8 is same price",
+    "price": {
+      "in": 5.0,
+      "out": 25.0
+    },
+    "provider": "anthropic",
+    "status": "current",
+    "upgrade": "claude-opus-4-8"
+  },
+  "claude-opus-4-8": {
+    "note": "current Opus, $5/$25",
+    "price": {
+      "in": 5.0,
+      "out": 25.0
+    },
+    "provider": "anthropic",
+    "status": "current"
+  },
+  "claude-sonnet-4-0": {
+    "note": "retires 2026-06-15",
+    "provider": "anthropic",
+    "replace": "claude-sonnet-4-6",
+    "status": "deprecated"
+  },
+  "claude-sonnet-4-5": {
+    "note": "legacy; sonnet-5 same price, newer",
+    "price": {
+      "in": 3.0,
+      "out": 15.0
+    },
+    "provider": "anthropic",
+    "status": "current",
+    "upgrade": "claude-sonnet-5"
+  },
+  "claude-sonnet-4-6": {
+    "note": "legacy; sonnet-5 is same $3/$15, newer/more agentic",
+    "price": {
+      "in": 3.0,
+      "out": 15.0
+    },
+    "provider": "anthropic",
+    "status": "current",
+    "upgrade": "claude-sonnet-5"
+  },
+  "claude-sonnet-5": {
+    "note": "current Sonnet, $3/$15 standard (intro $2/$10 to 2026-08-31)",
+    "price": {
+      "in": 3.0,
+      "out": 15.0
+    },
+    "provider": "anthropic",
+    "status": "current"
+  },
+  "gemini-2.0-flash": {
+    "note": "deprecating 2026-06-01",
+    "provider": "google",
+    "replace": "gemini-2.5-flash",
+    "status": "deprecated"
+  },
+  "gemini-2.0-flash-exp": {
+    "note": "experimental, being removed",
+    "provider": "google",
+    "replace": "gemini-2.5-flash",
+    "status": "deprecated"
+  },
+  "gemini-2.5-flash": {
+    "note": "active, $0.30/$2.50",
+    "price": {
+      "in": 0.3,
+      "out": 2.5
+    },
+    "provider": "google",
+    "status": "current"
+  },
+  "gemini-2.5-flash-image": {
+    "note": "image generation",
+    "provider": "google",
+    "status": "current"
+  },
+  "gemini-2.5-flash-lite": {
+    "note": "cheapest, $0.10/$0.40",
+    "price": {
+      "in": 0.1,
+      "out": 0.4
+    },
+    "provider": "google",
+    "status": "current"
+  },
+  "gemini-2.5-pro": {
+    "note": "prev-gen, active, $1.25/$10",
+    "price": {
+      "in": 1.25,
+      "out": 10.0
+    },
+    "provider": "google",
+    "status": "current",
+    "upgrade": "gemini-3.1-pro"
+  },
+  "gemini-3-flash": {
+    "note": "$0.50/$3",
+    "price": {
+      "in": 0.5,
+      "out": 3.0
+    },
+    "provider": "google",
+    "status": "current"
+  },
+  "gemini-3-flash-preview": {
+    "note": "preview alias; pin to GA (gemini-3.5-flash is newer)",
+    "provider": "google",
+    "replace": "gemini-3-flash",
+    "status": "preview"
+  },
+  "gemini-3.1-flash-lite": {
+    "note": "cheap tier, $0.25/$1.50",
+    "price": {
+      "in": 0.25,
+      "out": 1.5
+    },
+    "provider": "google",
+    "status": "current"
+  },
+  "gemini-3.1-flash-lite-preview": {
+    "note": "preview alias \u2014 pin to GA",
+    "provider": "google",
+    "replace": "gemini-3.1-flash-lite",
+    "status": "preview"
+  },
+  "gemini-3.1-pro": {
+    "note": "flagship, $2/$12",
+    "price": {
+      "in": 2.0,
+      "out": 12.0
+    },
+    "provider": "google",
+    "status": "current"
+  },
+  "gemini-3.1-pro-preview": {
+    "note": "preview alias \u2014 pin to GA",
+    "provider": "google",
+    "replace": "gemini-3.1-pro",
+    "status": "preview"
+  },
+  "gemini-3.5-flash": {
+    "note": "newest Flash, $1.50/$9",
+    "price": {
+      "in": 1.5,
+      "out": 9.0
+    },
+    "provider": "google",
+    "status": "current"
+  }
+}
