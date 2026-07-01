@@ -28,7 +28,7 @@ class Ticker(Base):
     signals = relationship("Signal", back_populates="ticker", cascade="all, delete-orphan")
     trades = relationship("Trade", back_populates="ticker", cascade="all, delete-orphan")
     memos = relationship("Memo", back_populates="ticker", cascade="all, delete-orphan")
-    reddit_sentiments = relationship("RedditSentiment", back_populates="ticker", cascade="all, delete-orphan")
+    legacy_reddit_sentiments = relationship("_LegacyRedditSentiment", back_populates="ticker", cascade="all, delete-orphan")
 
 
 class PriceData(Base):
@@ -308,7 +308,13 @@ class HistoricalPattern(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class RedditSentiment(Base):
+class _LegacyRedditSentiment(Base):
+    """Legacy table mapping kept so create_all() tolerates old SQLite files.
+
+    The runtime Reddit agent/data adapter has been retired in favor of web research.
+    Do not add new reads or writes to this table.
+    """
+
     __tablename__ = "reddit_sentiment"
     __table_args__ = (
         UniqueConstraint("ticker_id", "date", name="uq_reddit_ticker_date"),
@@ -325,7 +331,7 @@ class RedditSentiment(Base):
     reasoning = Column(Text, default="")
     raw_data = Column(Text, default="{}")  # JSON
 
-    ticker = relationship("Ticker", back_populates="reddit_sentiments")
+    ticker = relationship("Ticker", back_populates="legacy_reddit_sentiments")
 
 
 # --- V2 Tables ---

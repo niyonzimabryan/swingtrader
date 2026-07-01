@@ -20,9 +20,6 @@ class Settings(BaseSettings):
     fred_api_key: str = ""
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
-    reddit_client_id: str = ""
-    reddit_client_secret: str = ""
-    reddit_user_agent: str = "SwingTrader/1.0"
 
     # --- Trading Parameters ---
     portfolio_value: float = 100_000.0

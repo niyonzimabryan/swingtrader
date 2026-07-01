@@ -395,34 +395,6 @@ ENV_FIELDS = [
         placeholder="sk-...",
         signup_url="https://platform.openai.com/api-keys",
     ),
-    EnvField(
-        name="REDDIT_CLIENT_ID",
-        label="Reddit client ID",
-        group="advanced",
-        description="Optional legacy sentiment adapter. Current research flow does not require it.",
-        required=False,
-        placeholder="client id...",
-        signup_url="https://www.reddit.com/prefs/apps",
-    ),
-    EnvField(
-        name="REDDIT_CLIENT_SECRET",
-        label="Reddit client secret",
-        group="advanced",
-        description="Optional legacy sentiment adapter secret.",
-        required=False,
-        placeholder="client secret...",
-        signup_url="https://www.reddit.com/prefs/apps",
-    ),
-    EnvField(
-        name="REDDIT_USER_AGENT",
-        label="Reddit user agent",
-        group="advanced",
-        description="Optional legacy sentiment adapter setting.",
-        required=False,
-        secret=False,
-        default="SwingTrader/1.0",
-        placeholder="SwingTrader/1.0",
-    ),
 ]
 
 
