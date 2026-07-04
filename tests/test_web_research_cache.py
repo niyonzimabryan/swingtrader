@@ -1,13 +1,18 @@
 """Regression tests for BRY-66 web research cost controls."""
 
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from sqlalchemy.exc import OperationalError
+
 from agents.web_research_agent import WebResearchAgent
 from config.settings import Settings
-from database.db import init_db
+from database import db as db_module
+from database.db import get_session, init_db
+from database.models import WebResearchCache
 
 
 class _CountingWebSearch:
@@ -120,6 +125,56 @@ class WebResearchCostControlTests(unittest.TestCase):
         self.assertEqual(len(web_search.calls), 2)
         self.assertEqual(first.raw_data["cache_status"], "disabled")
         self.assertEqual(second.raw_data["cache_status"], "disabled")
+
+    def test_sqlite_wal_busy_timeout_allows_parallel_cache_writes(self):
+        agent = _agent(_settings(self.db_path), _CountingWebSearch())
+
+        with db_module.engine.connect() as conn:
+            self.assertEqual(conn.exec_driver_sql("PRAGMA journal_mode").scalar().lower(), "wal")
+            self.assertEqual(conn.exec_driver_sql("PRAGMA busy_timeout").scalar(), 5000)
+
+        def write_cache(i: int):
+            agent._save_cached_research(
+                cache_key=f"AAPL:2026-07-04:key-{i}",
+                ticker=f"T{i}",
+                research_date="2026-07-04",
+                catalyst_hash=f"hash-{i}",
+                result={"synthesis": f"result {i}"},
+                scraped_sources=[],
+            )
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            list(executor.map(write_cache, range(3)))
+
+        with get_session() as session:
+            self.assertEqual(session.query(WebResearchCache).count(), 3)
+
+    def test_cache_write_retries_once_after_sqlite_locked_error(self):
+        agent = _agent(_settings(self.db_path), _CountingWebSearch())
+        original = agent._write_cached_research_row
+        calls = {"count": 0}
+
+        def flaky_write(**kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OperationalError("insert", {}, Exception("database is locked"))
+            return original(**kwargs)
+
+        agent._write_cached_research_row = flaky_write
+
+        agent._save_cached_research(
+            cache_key="AAPL:2026-07-04:retry-key",
+            ticker="AAPL",
+            research_date="2026-07-04",
+            catalyst_hash="retry-hash",
+            result={"synthesis": "cached"},
+            scraped_sources=[],
+        )
+
+        self.assertEqual(calls["count"], 2)
+        with get_session() as session:
+            row = session.query(WebResearchCache).filter_by(cache_key="AAPL:2026-07-04:retry-key").first()
+            self.assertIsNotNone(row)
 
 
 if __name__ == "__main__":

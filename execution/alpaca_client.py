@@ -5,6 +5,7 @@ Alpaca paper trading API wrapper.
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     LimitOrderRequest, StopOrderRequest, GetOrdersRequest, StopLossRequest,
+    TakeProfitRequest,
 )
 from alpaca.trading.enums import OrderClass, OrderSide, OrderType, TimeInForce, OrderStatus, QueryOrderStatus
 from utils.logger import get_logger
@@ -208,6 +209,50 @@ class AlpacaClient:
             log.error("limit_cover_failed", ticker=ticker, error=str(e))
             raise
 
+    def submit_oco_exit(self, ticker: str, qty: int, limit_price: float, stop_price: float, direction: str = "long") -> dict:
+        """Submit an OCO exit with a profit target and protective stop.
+
+        Returns {"order_id": <take-profit parent>, "stop_leg_id": <stop leg or "">}.
+        The stop leg id must be tracked by the monitor: when the stop side fills,
+        the parent shows 'canceled', so polling only the parent would miss the
+        stop-out entirely.
+        """
+        side = OrderSide.BUY if direction == "short" else OrderSide.SELL
+        if not self.client:
+            log.info("mock_oco_exit", ticker=ticker, qty=qty, limit_price=limit_price, stop_price=stop_price, direction=direction)
+            return {"order_id": "mock_oco_exit_id", "stop_leg_id": "mock_oco_stop_leg_id"}
+        try:
+            order_data = LimitOrderRequest(
+                symbol=ticker,
+                qty=qty,
+                side=side,
+                type=OrderType.LIMIT,
+                time_in_force=TimeInForce.GTC,
+                order_class=OrderClass.OCO,
+                take_profit=TakeProfitRequest(limit_price=limit_price),
+                stop_loss=StopLossRequest(stop_price=stop_price),
+            )
+            order = self.client.submit_order(order_data)
+            stop_leg_id = ""
+            for leg in getattr(order, "legs", None) or []:
+                if getattr(leg, "stop_price", None) is not None or _enum_value(getattr(leg, "type", "")) == "stop":
+                    stop_leg_id = str(leg.id)
+                    break
+            log.info(
+                "oco_exit_submitted",
+                ticker=ticker,
+                qty=qty,
+                limit_price=limit_price,
+                stop_price=stop_price,
+                side=side.value,
+                order_id=str(order.id),
+                stop_leg_id=stop_leg_id,
+            )
+            return {"order_id": str(order.id), "stop_leg_id": stop_leg_id}
+        except Exception as e:
+            log.error("oco_exit_failed", ticker=ticker, error=str(e))
+            raise
+
     def get_positions_detail(self) -> list[dict]:
         """Get all open positions with detail."""
         if not self.client:
@@ -240,8 +285,18 @@ class AlpacaClient:
             log.info("position_closed", ticker=ticker)
             return {"success": True}
         except Exception as e:
-            log.error("close_position_failed", ticker=ticker, error=str(e))
-            return {"success": False, "error": str(e)}
+            error = str(e)
+            code = getattr(e, "code", None) or getattr(e, "error_code", None)
+            if _is_position_not_found_error(error, code):
+                log.info("close_position_missing_position", ticker=ticker, error=error, code=code)
+                return {
+                    "success": False,
+                    "error": error,
+                    "code": str(code or ""),
+                    "position_not_found": True,
+                }
+            log.error("close_position_failed", ticker=ticker, error=error)
+            return {"success": False, "error": error}
 
     def get_order_status(self, order_id: str) -> dict:
         """Get status of a specific order."""
@@ -281,7 +336,11 @@ class AlpacaClient:
                     "quantity": float(order.qty) if order.qty else 0,
                     "filled_quantity": float(order.filled_qty) if order.filled_qty else 0,
                     "limit_price": float(order.limit_price) if order.limit_price else None,
+                    "stop_price": _float_or_none(getattr(order, "stop_price", None)),
                     "average_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+                    "order_class": _enum_value(getattr(order, "order_class", "")),
+                    "parent_order_id": str(getattr(order, "parent_order_id", "") or ""),
+                    "client_order_id": str(getattr(order, "client_order_id", "") or ""),
                     "created_at": str(order.created_at),
                 }
                 for order in orders
@@ -309,3 +368,21 @@ class AlpacaClient:
             "pnl_today": 0,
             "pnl_today_pct": 0,
         }
+
+
+def _is_position_not_found_error(error: str | None, code=None) -> bool:
+    normalized = (error or "").lower()
+    return str(code or "") in {"404", "40410000"} or "40410000" in normalized or "position not found" in normalized
+
+
+def _enum_value(value) -> str:
+    return value.value if hasattr(value, "value") else str(value or "")
+
+
+def _float_or_none(value) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

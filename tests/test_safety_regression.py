@@ -363,6 +363,8 @@ class _FakeAlpaca:
         self.target_orders: list[tuple[str, int, float]] = []
         self.positions_detail: list[dict] = []
         self.close_position_result = {"success": True}
+        self.open_orders: list[dict] = []
+        self.closed_orders: list[dict] = []
 
     # Status
     def get_order_status(self, order_id: str) -> dict:
@@ -386,6 +388,48 @@ class _FakeAlpaca:
 
     def close_position(self, ticker: str) -> dict:
         return self.close_position_result
+
+    def get_orders(self, status: str | None = None) -> list[dict]:
+        if status == "open":
+            return list(self.open_orders)
+        if status in ("closed", "filled"):
+            return list(self.closed_orders)
+        return list(self.open_orders + self.closed_orders)
+
+
+class _FakeOcoAlpaca(_FakeAlpaca):
+    def __init__(self):
+        super().__init__()
+        self.oco_orders: list[tuple[str, int, float, float, str]] = []
+        self.oco_fail_on_call: set[int] = set()  # 1-based call indexes that raise
+        self.stop_loss_orders: list[tuple[str, int, float, str]] = []
+        self.stop_loss_fails = False
+
+    def submit_oco_exit(self, ticker: str, qty: int, limit_price: float, stop_price: float, direction: str = "long") -> dict:
+        call_index = len(self.oco_orders) + 1
+        if call_index in self.oco_fail_on_call:
+            raise RuntimeError(f"oco submit failed (call {call_index})")
+        self.oco_orders.append((ticker, qty, limit_price, stop_price, direction))
+        base = f"oco-{ticker}-{qty}-{int(limit_price * 100)}"
+        return {"order_id": base, "stop_leg_id": f"{base}-stopleg"}
+
+    def submit_stop_loss(self, ticker: str, qty: int, stop_price: float, direction: str = "long") -> str:
+        if self.stop_loss_fails:
+            raise RuntimeError("stop loss submit failed")
+        self.stop_loss_orders.append((ticker, qty, stop_price, direction))
+        return f"replacement-stop-{ticker}-{qty}"
+
+
+class _FakeNotifications:
+    def __init__(self):
+        self.messages: list[str] = []
+        self.filled: list[dict] = []
+
+    async def order_filled(self, **kwargs):
+        self.filled.append(kwargs)
+
+    async def system_message(self, message: str):
+        self.messages.append(message)
 
 
 class OrderMonitorTransitionTests(unittest.TestCase):
@@ -446,6 +490,181 @@ class OrderMonitorTransitionTests(unittest.TestCase):
             self.assertEqual(trade.status, "open")
             self.assertEqual(trade.entry_price, 101.50)
             self.assertIsNotNone(trade.entry_date)
+
+    def test_entry_fill_cancels_managed_stop_before_replacing_exit_orders(self):
+        self.alpaca = _FakeOcoAlpaca()
+        self.monitor = OrderMonitor(self.alpaca, notification_manager=None, settings=_settings())
+        trade_id = self._make_trade(
+            symbol="BBIO",
+            shares=39,
+            stop_loss=95.0,
+            target_1=110.0,
+            target_2=115.0,
+            alpaca_stop_order_id="stop-held",
+        )
+        self.alpaca.order_status_map["entry-1"] = {
+            "status": "filled",
+            "filled_avg_price": 100.0,
+            "filled_qty": 39,
+        }
+        self.alpaca.order_status_map["stop-held"] = {"status": "canceled"}
+        self.alpaca.open_orders = [{
+            "id": "stop-held",
+            "symbol": "BBIO",
+            "side": "sell",
+            "status": "new",
+            "quantity": 39,
+            "filled_quantity": 0,
+        }]
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            asyncio.run(self.monitor._check_trade(trade, "BBIO", s))
+
+        self.assertEqual(self.alpaca.cancelled_orders, ["stop-held"])
+        self.assertEqual(
+            self.alpaca.oco_orders,
+            [("BBIO", 19, 110.0, 95.0, "long"), ("BBIO", 20, 115.0, 95.0, "long")],
+        )
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            self.assertIn("TARGETS:t1:oco-BBIO-19-11000,t2:oco-BBIO-20-11500", trade.operator_notes)
+            self.assertIn("STOPLEGS:t1:oco-BBIO-19-11000-stopleg,t2:oco-BBIO-20-11500-stopleg", trade.operator_notes)
+            self.assertIsNone(trade.alpaca_stop_order_id)
+            self.assertIsNone(trade.broker_stop_order_id)
+
+    def test_entry_fill_unknown_held_order_alerts_without_cancel_or_replace(self):
+        self.alpaca = _FakeOcoAlpaca()
+        notifications = _FakeNotifications()
+        self.monitor = OrderMonitor(self.alpaca, notification_manager=notifications, settings=_settings())
+        trade_id = self._make_trade(
+            symbol="BBIO",
+            shares=39,
+            stop_loss=95.0,
+            target_1=110.0,
+            target_2=115.0,
+            alpaca_stop_order_id="stop-known",
+        )
+        self.alpaca.order_status_map["entry-1"] = {
+            "status": "filled",
+            "filled_avg_price": 100.0,
+            "filled_qty": 39,
+        }
+        self.alpaca.open_orders = [{
+            "id": "manual-1",
+            "symbol": "BBIO",
+            "side": "sell",
+            "status": "new",
+            "quantity": 39,
+            "filled_quantity": 0,
+        }]
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            asyncio.run(self.monitor._check_trade(trade, "BBIO", s))
+
+        self.assertEqual(self.alpaca.cancelled_orders, [])
+        self.assertEqual(self.alpaca.oco_orders, [])
+        self.assertEqual(len(notifications.messages), 1)
+        self.assertIn("manual-1", notifications.messages[0])
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            self.assertNotIn("TARGETS:", trade.operator_notes or "")
+
+    def _entry_fill_with_held_stop(self, fail_calls=(), stop_loss_fails=False):
+        """Common harness: entry fills while a bot-managed stop holds all 39 shares."""
+        self.alpaca = _FakeOcoAlpaca()
+        self.alpaca.oco_fail_on_call = set(fail_calls)
+        self.alpaca.stop_loss_fails = stop_loss_fails
+        notifications = _FakeNotifications()
+        self.monitor = OrderMonitor(self.alpaca, notification_manager=notifications, settings=_settings())
+        trade_id = self._make_trade(
+            symbol="BBIO",
+            shares=39,
+            stop_loss=95.0,
+            target_1=110.0,
+            target_2=115.0,
+            alpaca_stop_order_id="stop-held",
+        )
+        self.alpaca.order_status_map["entry-1"] = {
+            "status": "filled",
+            "filled_avg_price": 100.0,
+            "filled_qty": 39,
+        }
+        self.alpaca.order_status_map["stop-held"] = {"status": "canceled"}
+        self.alpaca.open_orders = [{
+            "id": "stop-held",
+            "symbol": "BBIO",
+            "side": "sell",
+            "status": "new",
+            "quantity": 39,
+            "filled_quantity": 0,
+        }]
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            asyncio.run(self.monitor._check_trade(trade, "BBIO", s))
+        return trade_id, notifications
+
+    def test_oco_stop_leg_fill_books_stop_out(self):
+        """A stop-side fill on an OCO leg must book the stop-out (parent only shows canceled)."""
+        self.alpaca = _FakeOcoAlpaca()
+        self.monitor = OrderMonitor(self.alpaca, notification_manager=None, settings=_settings())
+        trade_id = self._make_trade(
+            symbol="BBIO",
+            status="open",
+            entry_price=100.0,
+            shares=39,
+            stop_loss=95.0,
+            alpaca_stop_order_id=None,
+            operator_notes="TARGETS:t1:oco-p1,t2:oco-p2|STOPLEGS:t1:leg-1,t2:leg-2",
+        )
+        self.alpaca.order_status_map["entry-1"] = {"status": "filled"}
+        self.alpaca.order_status_map["oco-p1"] = {"status": "canceled"}
+        self.alpaca.order_status_map["oco-p2"] = {"status": "canceled"}
+        self.alpaca.order_status_map["leg-1"] = {"status": "filled", "filled_avg_price": 94.50}
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            asyncio.run(self.monitor._check_trade(trade, "BBIO", s))
+
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            self.assertEqual(trade.status, "closed")
+            self.assertEqual(trade.exit_reason, "stop_loss")
+            self.assertEqual(trade.exit_price, 94.50)
+            self.assertLess(trade.pnl_pct, 0)
+
+    def test_oco_failure_after_stop_cancel_replaces_protection_and_pages(self):
+        """If OCO placement fails after the old stop was cancelled, a plain stop is re-placed."""
+        trade_id, notifications = self._entry_fill_with_held_stop(fail_calls=(1, 2))
+
+        self.assertEqual(self.alpaca.cancelled_orders, ["stop-held"])
+        self.assertEqual(self.alpaca.oco_orders, [])  # both submissions failed
+        self.assertEqual(self.alpaca.stop_loss_orders, [("BBIO", 39, 95.0, "long")])
+        self.assertTrue(any("replacement stop" in m.lower() for m in notifications.messages))
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            self.assertEqual(trade.alpaca_stop_order_id, "replacement-stop-BBIO-39")
+            self.assertNotIn("TARGETS:", trade.operator_notes or "")
+
+    def test_partial_oco_failure_reprotects_failed_qty_only(self):
+        """t1 places, t2 fails: t2's shares get a replacement stop; t1 keeps its OCO leg."""
+        trade_id, notifications = self._entry_fill_with_held_stop(fail_calls=(2,))
+
+        self.assertEqual(len(self.alpaca.oco_orders), 1)  # t1 only
+        self.assertEqual(self.alpaca.stop_loss_orders, [("BBIO", 20, 95.0, "long")])
+        with get_session() as s:
+            trade = s.query(Trade).get(trade_id)
+            self.assertIn("TARGETS:t1:oco-BBIO-19-11000", trade.operator_notes)
+            self.assertIn("STOPLEGS:t1:oco-BBIO-19-11000-stopleg", trade.operator_notes)
+            self.assertNotIn("t2:", trade.operator_notes.split("STOPLEGS:")[1])
+            self.assertEqual(trade.alpaca_stop_order_id, "replacement-stop-BBIO-20")
+        self.assertTrue(any("20 share" in m for m in notifications.messages))
+
+    def test_reprotection_failure_pages_unprotected(self):
+        """If even the replacement stop fails, the operator gets an UNPROTECTED page."""
+        _, notifications = self._entry_fill_with_held_stop(fail_calls=(1, 2), stop_loss_fails=True)
+        self.assertTrue(any("UNPROTECTED" in m for m in notifications.messages))
 
     def test_long_stop_trigger_yields_negative_pnl(self):
         trade_id = self._make_trade(
@@ -605,6 +824,7 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         from datetime import datetime, timedelta
 
         trade_id = self._make_trade(
+            symbol="HNGE",
             status="open",
             entry_price=100.0,
             shares=10,
@@ -614,12 +834,14 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         self.alpaca.order_status_map["entry-1"] = {"status": "filled"}
         self.alpaca.close_position_result = {
             "success": False,
-            "error": "position not found for ticker",
+            "error": '{"code":40410000,"message":"position not found: HNGE"}',
+            "code": "40410000",
+            "position_not_found": True,
         }
 
         with get_session() as s:
             trade = s.query(Trade).get(trade_id)
-            asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
+            asyncio.run(self.monitor._check_trade(trade, "HNGE", s))
 
         with get_session() as s:
             trade = s.query(Trade).get(trade_id)
@@ -629,6 +851,7 @@ class OrderMonitorTransitionTests(unittest.TestCase):
             self.assertIsNone(trade.pnl_pct)
             self.assertIsNone(trade.pnl_absolute)
             self.assertIn("RECONCILED_MISSING_POSITION", trade.operator_notes)
+            self.assertIn("RECONCILED_EXIT_UNKNOWN", trade.operator_notes)
 
 
 # ---------------------------------------------------------------------------
