@@ -44,6 +44,24 @@ Read first: `docs/audits/2026-07-04-system-audit.md` (§P0-1, P1-3, P1-6).
   must not kill the loop — only a genuinely stuck one trips the watchdog).
 - Match existing structlog event-style logging (`event="..."` keywords).
 
+### B1b. Daily self-restart (pre-market)
+- Add an APScheduler job (alongside the existing jobs in
+  `orchestrator/scheduler.py` or wherever `main.py` wires cron jobs) that
+  fires daily at a configurable time (new setting
+  `daily_restart_time_et: str | None = "08:57"`; `None`/empty disables) and
+  performs a clean self-restart: log `event="daily_scheduled_restart"`,
+  flush/close what needs closing (DB sessions, Telegram polling stop if the
+  shutdown path exists), then `sys.exit(1)`. Railway's restart policy is
+  `ON_FAILURE` (see `railway.toml`), so exit(1) yields a fresh container with
+  no external dependency — no local cron, no Railway API token, no second
+  service.
+- Guard: the restart job must SKIP (log `daily_restart_skipped reason=...`)
+  if a scan is currently running (reuse B3's lock/flag) — retry once 15
+  minutes later, then skip until tomorrow.
+- This job must run regardless of `SCHEDULER_ENABLED` (that flag gates scan
+  jobs, not process hygiene) — verify how the flag is enforced and keep the
+  restart job outside it.
+
 ### B2. Holiday-aware market hours
 - Add a US equity-market holiday check to `_is_market_hours()`. Prefer a small
   static table (module-level list of NYSE full-closure dates for 2026–2027 +
@@ -86,6 +104,8 @@ Read first: `docs/audits/2026-07-04-system-audit.md` (§P0-1, P1-3, P1-6).
      exit when market is closed;
    - `_is_market_hours()` returns False on 2026-07-03 and 2026-12-25, True on
      a normal Tuesday 10:00 ET;
+   - daily restart job calls sys.exit(1) at the configured time (mock the
+     clock/exit), skips when a scan is running, disabled when setting is None;
    - second concurrent `_run_scan` is skipped and notifier called;
    - scan exception triggers the Telegram system message (mocked);
    - catalyst agent retries on a mocked 429 then succeeds; gives up after N.
