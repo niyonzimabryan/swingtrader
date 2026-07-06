@@ -25,9 +25,20 @@ PR #20, and `todoscratchpad.md` — NOT application code.
 - **File new issues from the audit** (one per spec A–E, linking the spec file
   path and audit section; set priority to match P0/P1/P2). Skip any that
   already exist — search first.
-- **BRY-243** (scoring parity eval): add a comment that the corpus is 22/150
-  as of 2026-07-04 and is gated on `SCHEDULER_ENABLED=true` (audit §P0-3), so
-  its Hermes card should stay blocked and stop being retried (see F3).
+- **BRY-243** (scoring parity eval): add a comment that (a) the corpus is
+  22 tagged / 29 actual scoring calls as of 2026-07-04 (7 ad-hoc calls
+  untagged — fix specced in `specs/audit-2026-07-04/G-observability.md`, and
+  per Bryan's 2026-07-04 decision ad-hoc scoring counts toward the corpus),
+  and (b) growth is gated on `SCHEDULER_ENABLED=true` (audit §P0-3), so its
+  Hermes card should stay blocked and stop being retried (see F3). BRY-243's
+  scope is the SCORING tier (Opus→Sonnet-5) only.
+- **Model-upgrade decision note (2026-07-04):** the analyst/discovery-tier
+  bump `claude-sonnet-4-6` → `claude-sonnet-5` is a deliberate upgrade Bryan
+  approved, shipping via the concurrent Codex model work — it is NOT gated on
+  BRY-243 (which covers only the scoring tier). Record this on whichever
+  Linear issue tracks the model work (or the new audit issues) so the change
+  doesn't look like accidental drift; Langfuse addendum P2-LF-2 has the
+  history.
 
 ### F3. Hermes hygiene (`~/.hermes`)
 - 5 swingtrader cards (t_04e108a3, t_1bdee59c, t_df750a07, t_cf765615,

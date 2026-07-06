@@ -77,6 +77,12 @@ Read first: `docs/audits/2026-07-04-system-audit.md` (§P0-1, P1-3, P1-6).
   `event="scan_skipped_overlap"`, and send a Telegram system message noting
   the skip. Do NOT queue (a skipped midday scan is fine; a queued backlog is
   not).
+- Alert on provider billing/credit exhaustion: Langfuse shows one Anthropic
+  400 `invalid_request_error` ("credit balance too low", 2026-06-17) that
+  silently killed a catalyst call. Wherever LLM errors are classified for the
+  new retry logic (B4), treat billing/credit errors as non-retryable AND send
+  a Telegram system alert — an exhausted API balance must page the operator,
+  not just log.
 - In the `except Exception` handler at `:121`: in addition to `log.error`,
   send a Telegram system message via the existing notification manager
   (grep `bot/` / `notification` for the system-message API the monitors use).
