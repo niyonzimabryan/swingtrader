@@ -22,16 +22,20 @@ production. Railway logs from the 2026-07-02 scan:
 
 ## Changes
 
-### C1. Structured JSON output instead of parse-and-pray
-- Use the google-genai structured-output path: set
-  `response_mime_type="application/json"` and a `response_schema` matching the
-  screener's expected fields (score, direction, reasoning, escalate — read the
-  current parse code for the exact shape). This eliminates preamble and makes
-  truncation detectable.
-- Raise `max_output_tokens` 512 → 2048 (belt and braces with the schema).
-- If the SDK/model rejects response_schema for this model, fall back to
-  response_mime_type-only + robust extraction; state which path was taken in
-  the PR.
+### C1. Bigger output budget + robust extraction (structured output NOT viable)
+- **Constraint discovered 2026-07-04 (session working Spec A):** the screener
+  uses Google Search grounding, which is **incompatible with
+  `response_mime_type="application/json"` / `response_schema`** — structured
+  output cannot be used here. The fix is budget + extraction instead.
+- A setting already exists but is UNWIRED: `gemini_flash_max_output_tokens:
+  int = 4096` in `config/settings.py` (added with an explanatory comment;
+  nothing consumes it). Wire it into the generate call at
+  `screening/gemini_screener.py:152`, replacing the hardcoded
+  `max_output_tokens=512`.
+- Harden JSON extraction from prose-wrapped responses (the model emits a
+  preamble before the JSON): extract the first balanced `{...}` block rather
+  than parsing the raw text, and treat MAX_TOKENS finishes as truncation (see
+  C2) rather than parse failure.
 
 ### C2. Guard empty responses
 - Before `.strip()`/parse: handle `response.text is None`, empty candidates,
