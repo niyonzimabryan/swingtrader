@@ -21,6 +21,7 @@ from execution.position_monitor import PositionMonitor
 from bot.daily_digest import DailyDigest
 from bot.weekly_report import WeeklyReport
 from tracking.position_reconciliation import reconcile_broker_positions
+from utils.lifecycle import MonitorWatchdog
 from utils.logger import setup_logging, get_logger
 
 
@@ -155,23 +156,50 @@ async def main():
     # Initialize position monitor (60-sec live price checks during market hours)
     position_monitor = PositionMonitor(pipeline.paper_broker, notifications, settings)
 
+    # Reliability watchdog: exits(1) if a monitor loop stalls during market hours
+    # so Railway's ON_FAILURE policy restarts a fresh container (Spec B1).
+    watchdog = MonitorWatchdog([order_monitor, position_monitor], notifications, settings)
+
     # Initialize daily digest (5 PM ET, math only — no AI)
     daily_digest = DailyDigest(pipeline.broker, notifications, settings)
 
     # Initialize weekly report (Sunday 6 PM ET, Sonnet narrative — ~$0.03/week)
     weekly_report = WeeklyReport(pipeline.broker, notifications, settings)
 
-    # Initialize scheduler (skip if SCHEDULER_ENABLED=false to save API credits)
+    # Initialize scheduler (skip scans if SCHEDULER_ENABLED=false to save API
+    # credits — but the daily pre-market self-restart still runs regardless).
     import os
     scheduler_enabled = os.getenv("SCHEDULER_ENABLED", "true").lower() not in ("false", "0", "no")
     scheduler = PipelineScheduler(pipeline, settings)
+
+    async def _graceful_restart_cleanup():
+        """Best-effort cleanup before the daily self-restart releases the container."""
+        log.info("daily_restart_cleanup_start")
+        for name, monitor in (("position_monitor", position_monitor), ("order_monitor", order_monitor)):
+            try:
+                await monitor.stop()
+            except Exception as e:
+                log.warning("daily_restart_cleanup_monitor_failed", monitor=name, error=str(e))
+        try:
+            await watchdog.stop()
+        except Exception as e:
+            log.warning("daily_restart_cleanup_watchdog_failed", error=str(e))
+        try:
+            await bot.stop()
+        except Exception as e:
+            log.warning("daily_restart_cleanup_bot_failed", error=str(e))
+        if langfuse_client:
+            try:
+                langfuse_client.flush()
+            except Exception as e:
+                log.warning("daily_restart_cleanup_langfuse_failed", error=str(e))
+
+    scheduler.set_restart_callback(_graceful_restart_cleanup)
     if scheduler_enabled:
         scheduler.set_daily_digest(daily_digest)
         scheduler.set_weekly_report(weekly_report)
-        scheduler.start()
-        log.info("scheduler_ready")
-    else:
-        log.info("scheduler_disabled", reason="SCHEDULER_ENABLED=false")
+    scheduler.start(enable_scans=scheduler_enabled)
+    log.info("scheduler_ready", scans_enabled=scheduler_enabled)
 
     # Start bot
     log.info("starting_telegram_bot")
@@ -200,6 +228,10 @@ async def main():
         await position_monitor.start()
         log.info("position_monitor_started")
 
+        # Start reliability watchdog (restarts the process on a stuck monitor)
+        await watchdog.start()
+        log.info("watchdog_ready")
+
         # Keep running
         stop_event = asyncio.Event()
 
@@ -216,6 +248,7 @@ async def main():
         log.info("shutting_down")
         if langfuse_client:
             langfuse_client.flush()
+        await watchdog.stop()
         await position_monitor.stop()
         await order_monitor.stop()
         scheduler.stop()

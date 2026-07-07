@@ -77,6 +77,19 @@ class Settings(BaseSettings):
     post_market_hour: int = 17
     scheduler_misfire_grace_time_s: int = 7200
 
+    # --- Monitor reliability (Spec B: hang recovery) ---
+    # Every broker/price call in the position & order monitors runs under this
+    # timeout so a stuck SDK call can never block the async loop forever.
+    monitor_broker_call_timeout_s: int = 30
+    # Watchdog: if a monitor loop hasn't ticked within this many seconds during
+    # market hours, the process exits(1) so Railway's ON_FAILURE policy restarts it.
+    monitor_watchdog_stale_s: int = 900
+    # How often the watchdog checks the monitors' last-tick timestamps.
+    monitor_watchdog_interval_s: int = 300
+    # Daily clean self-restart (pre-market) so no hang survives more than a day.
+    # "HH:MM" 24h ET; None/empty disables. Runs regardless of SCHEDULER_ENABLED.
+    daily_restart_time_et: Optional[str] = "08:57"
+
     # --- Database ---
     database_url: str = "sqlite:///swing_trader.db"
 

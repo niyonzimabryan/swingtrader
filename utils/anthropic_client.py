@@ -1,6 +1,6 @@
 import json
 import anthropic
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception
 from utils.logger import get_logger
 
 log = get_logger("anthropic_client")
@@ -8,6 +8,30 @@ log = get_logger("anthropic_client")
 # Sonnet fallback model for when Opus times out
 SONNET_FALLBACK = "claude-sonnet-4-6"
 RAW_PARSE_ERROR_LIMIT = 20_000
+
+
+def _is_retryable_anthropic_error(exc: BaseException) -> bool:
+    """
+    Retry only transient failures: rate limits (429), server errors (5xx),
+    connection failures, and timeouts. Client 4xx (bad request, auth) fail fast.
+    APITimeoutError subclasses APIConnectionError, so timeouts are covered.
+    """
+    if isinstance(exc, (anthropic.RateLimitError, anthropic.APIConnectionError)):
+        return True
+    if isinstance(exc, anthropic.APIStatusError):
+        return exc.status_code >= 500
+    return False
+
+
+# Shared retry policy for every direct Anthropic completion call. reraise=True so
+# the original exception (not tenacity's RetryError) propagates on final failure —
+# the *_with_fallback methods rely on catching the concrete anthropic error type.
+_llm_retry = retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception(_is_retryable_anthropic_error),
+    reraise=True,
+)
 
 
 class AnthropicClient:
@@ -19,11 +43,7 @@ class AnthropicClient:
         self.api_key = api_key
         self.default_timeout = timeout
 
-    @retry(
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        stop=stop_after_attempt(2),
-        retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APIConnectionError)),
-    )
+    @_llm_retry
     def analyze(
         self,
         model: str,
@@ -133,6 +153,7 @@ class AnthropicClient:
 
     # --- V2: Extended Thinking ---
 
+    @_llm_retry
     def analyze_with_thinking(
         self,
         model: str,
@@ -251,6 +272,7 @@ class AnthropicClient:
             )
             return self.analyze_json(fallback, system_prompt, user_prompt, max_tokens=4096)
 
+    @_llm_retry
     def analyze_with_tools_and_thinking(
         self,
         model: str,
@@ -357,6 +379,7 @@ class AnthropicClient:
 
     # --- V2: Tool Use (web_search) ---
 
+    @_llm_retry
     def analyze_with_tools(
         self,
         model: str,

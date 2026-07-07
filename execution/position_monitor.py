@@ -12,7 +12,7 @@ Handles:
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_
@@ -21,7 +21,9 @@ from database.db import get_session
 from database.models import Trade, Ticker
 from execution.alpaca_client import AlpacaClient
 from tracking.position_reconciliation import reconcile_broker_positions
+from utils.async_call import call_with_timeout
 from utils.logger import get_logger
+from utils.market_hours import is_market_open
 
 log = get_logger("position_monitor")
 
@@ -46,12 +48,15 @@ POSITION_NEAR_STOP_PCT = -5.0  # -5% (approaching default stop)
 
 
 class PositionMonitor:
+    name = "position_monitor"
+
     def __init__(self, alpaca: AlpacaClient, notification_manager, settings):
         self.alpaca = alpaca
         self.nm = notification_manager
         self.settings = settings
         self._running = False
         self._task = None
+        self._last_tick: datetime | None = None  # heartbeat for the watchdog
         # Portfolio alert state (reset daily)
         self._strong_day_sent = False
         self._rough_day_sent = False
@@ -73,17 +78,25 @@ class PositionMonitor:
             self._task.cancel()
         log.info("position_monitor_stopped")
 
+    @property
+    def last_tick(self) -> datetime | None:
+        """UTC timestamp of the last loop iteration (heartbeat for the watchdog)."""
+        return self._last_tick
+
     def _is_market_hours(self) -> bool:
-        """Check if US market is open (9:30 AM - 4:00 PM ET, weekdays)."""
-        now = datetime.now(ET)
-        if now.weekday() >= 5:
-            return False
-        market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-        market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-        return market_open <= now <= market_close
+        """Holiday-aware check: is the US market open (9:30–16:00 ET, trading day)?"""
+        return is_market_open()
+
+    async def _broker_call(self, fn, *args, **kwargs):
+        """Run a sync broker/price call under a timeout so a stall can't freeze the loop."""
+        timeout_s = getattr(self.settings, "monitor_broker_call_timeout_s", 30)
+        return await call_with_timeout(fn, *args, timeout_s=timeout_s, **kwargs)
 
     async def _monitor_loop(self):
         while self._running:
+            # Heartbeat first so the watchdog sees a fresh tick even if a check below
+            # times out or raises; a genuinely stuck call is what should trip it.
+            self._last_tick = datetime.now(timezone.utc)
             try:
                 if self._is_market_hours():
                     self._reset_daily_alerts_if_needed()
@@ -107,7 +120,7 @@ class PositionMonitor:
     async def _check_portfolio_thresholds(self):
         """Check portfolio-level alerts: daily P&L and drawdown from peak."""
         try:
-            account = self.alpaca.get_account_info()
+            account = await self._broker_call(self.alpaca.get_account_info)
         except Exception as e:
             log.error("portfolio_threshold_check_failed", error=str(e))
             return
@@ -155,7 +168,7 @@ class PositionMonitor:
 
     async def _check_positions(self):
         """Check all open positions against their stored parameters."""
-        positions = self.alpaca.get_positions_detail()
+        positions = await self._broker_call(self.alpaca.get_positions_detail)
         if not positions:
             return
         reconcile_broker_positions(

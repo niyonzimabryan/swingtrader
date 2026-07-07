@@ -7,12 +7,40 @@ Fallback/alternate provider: Anthropic Sonnet + web_search_20250305.
 
 import json
 
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception
+
 from utils.anthropic_client import AnthropicClient
 from utils.logger import get_logger
 
 log = get_logger("web_search")
 
 RAW_PARSE_ERROR_LIMIT = 20_000
+
+
+def _is_retryable_gemini_error(exc: BaseException) -> bool:
+    """
+    Transient Gemini failures worth retrying: 5xx server errors, 429 rate limits,
+    and transport errors. Duck-typed (via the error's `code`/class name) so this
+    module doesn't hard-depend on google-genai being importable.
+    """
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    code = getattr(exc, "code", None)
+    if code is None:
+        code = getattr(exc, "status_code", None)
+    if code in (429, 500, 502, 503, 504):
+        return True
+    return type(exc).__name__ == "ServerError"
+
+
+# Same policy as anthropic_client._llm_retry: 3 attempts, exponential backoff,
+# reraise the original error on final failure so callers/degradation paths see it.
+_gemini_retry = retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception(_is_retryable_gemini_error),
+    reraise=True,
+)
 
 
 class WebSearchClient:
@@ -179,7 +207,7 @@ class WebSearchClient:
             max_searches=max_searches,
             max_tokens=max_tokens,
         )
-        response = self._gemini_client.models.generate_content(
+        response = self._gemini_generate(
             model=model,
             contents=grounded_user_prompt,
             config=types.GenerateContentConfig(
@@ -198,6 +226,13 @@ class WebSearchClient:
             sources=len(grounding.get("sources", [])),
         )
         return (response.text or "").strip(), grounding
+
+    @_gemini_retry
+    def _gemini_generate(self, model, contents, config):
+        """Single Gemini generate_content call, retried on transient errors."""
+        return self._gemini_client.models.generate_content(
+            model=model, contents=contents, config=config
+        )
 
     def _gemini_model(self, requested_model: str | None) -> str:
         if requested_model and not requested_model.startswith("claude-"):
