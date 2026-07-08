@@ -21,6 +21,7 @@ NO_OPINION_STATUSES = {
     "no_matches",
     "provider_error",
     "stub",
+    "time_budget_exhausted",
     "unsupported",
 }
 
