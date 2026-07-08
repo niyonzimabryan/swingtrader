@@ -242,6 +242,15 @@ class PipelineScheduler:
                 log.info("scheduled_scan_complete")
             except Exception as e:
                 log.error("scheduled_scan_failed", error=str(e))
+                # Provider credit exhaustion gets an explicit page — every LLM call
+                # fails until the balance is topped up, not just this scan.
+                error_text = str(e).lower()
+                if "credit balance" in error_text or "billing" in error_text:
+                    await self._notify_system(
+                        "🚨 Anthropic API credit balance appears exhausted — the scan "
+                        "failed and ALL LLM calls will fail until the balance is topped "
+                        f"up. Error: {str(e)[:200]}"
+                    )
                 # Surface the dead scan to the operator. Wrap so a Telegram failure
                 # can't mask the original error.
                 nm = getattr(self.pipeline, "notification_manager", None)

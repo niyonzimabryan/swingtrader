@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 import anthropic
 import httpx
 
-from utils.anthropic_client import AnthropicClient, _is_retryable_anthropic_error
+from utils.anthropic_client import AnthropicClient, _is_retryable_anthropic_error, is_billing_error
 from utils.escalation_manager import EscalationManager
 from utils.web_search_client import WebSearchClient, _is_retryable_gemini_error
 
@@ -75,6 +75,28 @@ class AnthropicRetryTest(unittest.TestCase):
             with self.assertRaises(anthropic.BadRequestError):
                 client.analyze("m", "sys", "user")
         self.assertEqual(create.call_count, 1)  # failed fast, no retry
+
+    def test_billing_error_not_retried_and_flagged(self):
+        req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        resp = httpx.Response(400, request=req)
+        billing = anthropic.BadRequestError(
+            "Your credit balance is too low to access the Anthropic API.",
+            response=resp,
+            body=None,
+        )
+        self.assertTrue(is_billing_error(billing))
+        self.assertFalse(is_billing_error(_bad_request_error()))
+        self.assertFalse(_is_retryable_anthropic_error(billing))
+
+        client = AnthropicClient(api_key="test")
+        create = Mock(side_effect=billing)
+        client.client.messages.create = create
+        with patch("time.sleep"), patch("utils.anthropic_client.log") as mock_log:
+            with self.assertRaises(anthropic.BadRequestError):
+                client.analyze("m", "sys", "user")
+        self.assertEqual(create.call_count, 1)  # never retried
+        mock_log.critical.assert_called_once()
+        self.assertEqual(mock_log.critical.call_args.args[0], "anthropic_credit_exhausted")
 
 
 class CatalystEscalationRetryTest(unittest.TestCase):

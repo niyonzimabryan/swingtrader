@@ -10,12 +10,29 @@ SONNET_FALLBACK = "claude-sonnet-4-6"
 RAW_PARSE_ERROR_LIMIT = 20_000
 
 
+def is_billing_error(exc: BaseException) -> bool:
+    """
+    True for Anthropic 4xx errors caused by an exhausted credit balance / billing
+    (e.g. 400 invalid_request_error "credit balance is too low"). These must never
+    be retried, and the operator must be paged — every LLM call will fail until
+    the balance is topped up (seen in prod 2026-06-17, audit addendum P2-LF-4).
+    """
+    if not isinstance(exc, anthropic.APIStatusError) or exc.status_code >= 500:
+        return False
+    message = str(exc).lower()
+    return "credit balance" in message or "billing" in message
+
+
 def _is_retryable_anthropic_error(exc: BaseException) -> bool:
     """
     Retry only transient failures: rate limits (429), server errors (5xx),
     connection failures, and timeouts. Client 4xx (bad request, auth) fail fast.
     APITimeoutError subclasses APIConnectionError, so timeouts are covered.
     """
+    if is_billing_error(exc):
+        # Loud, greppable marker — the scheduler turns this into a Telegram page.
+        log.critical("anthropic_credit_exhausted", error=str(exc))
+        return False
     if isinstance(exc, (anthropic.RateLimitError, anthropic.APIConnectionError)):
         return True
     if isinstance(exc, anthropic.APIStatusError):

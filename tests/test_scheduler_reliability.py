@@ -87,6 +87,19 @@ class ScanFailureAlertTest(unittest.IsolatedAsyncioTestCase):
             await sched._run_scan()
         pipeline.notification_manager.agent_failure.assert_awaited()
 
+    async def test_billing_error_sends_explicit_credit_page(self):
+        def boom():
+            raise RuntimeError("Error code: 400 - Your credit balance is too low to access the Anthropic API.")
+
+        pipeline = _pipeline(boom)
+        sched = PipelineScheduler(pipeline, _settings())
+        with patch("orchestrator.scheduler.datetime") as md:
+            md.now.return_value = TRADING_TUESDAY
+            await sched._run_scan()
+        messages = [c.args[0] for c in pipeline.notification_manager.system_message.await_args_list]
+        self.assertTrue(any("credit balance" in m for m in messages))
+        pipeline.notification_manager.agent_failure.assert_awaited()
+
     async def test_notifier_failure_does_not_mask_scan_error(self):
         def boom():
             raise RuntimeError("scan blew up")
