@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine, text, inspect, event
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 from database.models import Base
@@ -28,10 +28,23 @@ def init_db(database_url: str = "sqlite:///swing_trader.db"):
         echo=False,
         connect_args={"check_same_thread": False} if "sqlite" in database_url else {},
     )
+    if database_url.startswith("sqlite"):
+        _configure_sqlite_pragmas(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False)
     Base.metadata.create_all(engine)
     _run_migrations(engine)
     return engine
+
+
+def _configure_sqlite_pragmas(eng):
+    @event.listens_for(eng, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+        finally:
+            cursor.close()
 
 
 def _run_migrations(eng):

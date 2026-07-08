@@ -25,6 +25,24 @@ log = get_logger("order_monitor")
 
 # Poll interval in seconds
 POLL_INTERVAL = 30
+OPEN_ORDER_STATUSES = {
+    "new",
+    "accepted",
+    "pending_new",
+    "pending_replace",
+    "pending_cancel",
+    "partially_filled",
+    "held",
+    "open",
+}
+CANCELLED_OR_FINAL_STATUSES = {
+    "canceled",
+    "cancelled",
+    "expired",
+    "filled",
+    "rejected",
+    "done_for_day",
+}
 
 
 class OrderMonitor:
@@ -131,6 +149,16 @@ class OrderMonitor:
                     await self._handle_stop_triggered(trade, ticker, stop_status, session)
                     return
 
+            # Check OCO stop legs — a stop-side fill only shows on the leg order;
+            # the tracked parent (take-profit) just flips to 'canceled'.
+            for _, leg_id in self._get_stop_leg_order_ids(trade):
+                if not leg_id:
+                    continue
+                leg_status = await self._broker_call(self.alpaca.get_order_status, leg_id)
+                if leg_status and leg_status.get("status") == "filled":
+                    await self._handle_stop_triggered(trade, ticker, leg_status, session)
+                    return
+
             # Check for target limit sells (stored as comma-separated IDs in operator_notes for now)
             target_order_ids = self._get_target_order_ids(trade)
             for target_num, order_id in target_order_ids:
@@ -186,56 +214,329 @@ class OrderMonitor:
         await self._place_target_orders(trade, ticker, trade.shares, session)
 
     async def _place_target_orders(self, trade: Trade, ticker: str, shares: int, session):
-        """Place target orders after entry fill. Direction-aware."""
+        """Place target orders after entry fill. Direction-aware.
+
+        Safety invariants:
+        - OCO stop-leg order ids are stored (STOPLEGS:) so a stop-side fill is
+          detected and booked — the OCO parent only shows 'canceled' on a stop-out.
+        - If any placement fails after the previous protective stop was cancelled,
+          the uncovered shares get a plain stop re-placed and the operator is paged.
+        """
+        target_plan = self._target_order_plan(trade, shares)
+        if not target_plan:
+            return
+
+        required_qty = sum(qty for _, qty, _ in target_plan)
+        ok, cancelled_prior_protection = await self._ensure_exit_qty_available(
+            trade, ticker, shares, required_qty
+        )
+        if not ok:
+            return
+
         target_ids = []
+        stop_leg_ids = []
+        uncovered_qty = 0
         direction = trade.direction or "long"
 
-        # Target 1: 50% of position
+        for target_num, qty, price in target_plan:
+            try:
+                order_id, stop_leg_id, strategy = await self._submit_target_order(
+                    ticker, qty, price, trade.stop_loss, direction
+                )
+                target_ids.append(f"t{target_num}:{order_id}")
+                if stop_leg_id:
+                    stop_leg_ids.append(f"t{target_num}:{stop_leg_id}")
+                log.info(
+                    f"target_{target_num}_order_placed",
+                    ticker=ticker,
+                    shares=qty,
+                    price=price,
+                    direction=direction,
+                    order_strategy=strategy,
+                )
+            except Exception as e:
+                uncovered_qty += qty
+                log.error(f"target_{target_num}_order_failed", ticker=ticker, shares=qty, error=str(e))
+
+        # Store target/stop-leg order IDs in operator_notes (no schema change)
+        if target_ids:
+            self._replace_note_segment(trade, "TARGETS", target_ids)
+            self._replace_note_segment(trade, "STOPLEGS", stop_leg_ids)
+
+        fully_covered = uncovered_qty == 0 and len(target_ids) == len(target_plan)
+        if fully_covered and stop_leg_ids:
+            # Every share now carries an OCO stop leg; retire the standalone stop ids.
+            trade.alpaca_stop_order_id = None
+            trade.broker_stop_order_id = None
+        elif uncovered_qty > 0:
+            await self._reprotect_uncovered_shares(
+                trade, ticker, uncovered_qty, direction, cancelled_prior_protection
+            )
+        session.commit()
+
+    async def _reprotect_uncovered_shares(
+        self, trade: Trade, ticker: str, uncovered_qty: int, direction: str, stop_was_cancelled: bool
+    ) -> None:
+        """Exit-order placement partially failed. Restore stop protection + page.
+
+        If the prior protective stop is still live (nothing was cancelled), the
+        shares remain protected — alert only. If we cancelled it to free quantity,
+        re-place a plain stop for the uncovered shares before alerting.
+        """
+        if not stop_was_cancelled:
+            await self._send_system_message(
+                f"⚠️ {ticker}: {uncovered_qty} share(s) have no target order (placement failed), "
+                f"but the original stop order is still active. Review and re-place targets."
+            )
+            return
+
+        replacement_id = None
+        if trade.stop_loss > 0 and hasattr(self.alpaca, "submit_stop_loss"):
+            try:
+                replacement_id = await self._broker_call(
+                    self.alpaca.submit_stop_loss, ticker, uncovered_qty, trade.stop_loss, direction=direction
+                )
+                trade.alpaca_stop_order_id = str(replacement_id)
+                log.info(
+                    "exit_reprotection_stop_placed",
+                    ticker=ticker,
+                    trade_id=trade.id,
+                    shares=uncovered_qty,
+                    stop_price=trade.stop_loss,
+                    order_id=str(replacement_id),
+                )
+            except Exception as exc:
+                log.critical("exit_reprotection_failed", ticker=ticker, trade_id=trade.id, error=str(exc))
+
+        if replacement_id:
+            await self._send_system_message(
+                f"⚠️ {ticker}: target placement failed for {uncovered_qty} share(s) after the old stop "
+                f"was cancelled. A replacement stop at {trade.stop_loss} was placed. Review targets."
+            )
+        else:
+            await self._send_system_message(
+                f"🚨 {ticker}: {uncovered_qty} share(s) are UNPROTECTED — target placement failed after "
+                f"the stop was cancelled, and re-placing a stop also failed. Manual action required."
+            )
+
+    def _target_order_plan(self, trade: Trade, shares: int) -> list[tuple[int, int, float]]:
+        plan = []
         t1_shares = shares // 2
         if t1_shares > 0 and trade.target_1 > 0:
-            try:
-                if direction == "short":
-                    t1_id = await self._broker_call(self.alpaca.submit_limit_cover, ticker, t1_shares, trade.target_1)
-                else:
-                    t1_id = await self._broker_call(self.alpaca.submit_limit_sell, ticker, t1_shares, trade.target_1)
-                target_ids.append(f"t1:{t1_id}")
-                log.info("target_1_order_placed", ticker=ticker, shares=t1_shares, price=trade.target_1, direction=direction)
-            except Exception as e:
-                log.error("target_1_order_failed", ticker=ticker, error=str(e))
-
-        # Target 2: remaining shares
+            plan.append((1, t1_shares, trade.target_1))
         t2_shares = shares - t1_shares
         if t2_shares > 0 and trade.target_2 > 0:
-            try:
-                if direction == "short":
-                    t2_id = await self._broker_call(self.alpaca.submit_limit_cover, ticker, t2_shares, trade.target_2)
-                else:
-                    t2_id = await self._broker_call(self.alpaca.submit_limit_sell, ticker, t2_shares, trade.target_2)
-                target_ids.append(f"t2:{t2_id}")
-                log.info("target_2_order_placed", ticker=ticker, shares=t2_shares, price=trade.target_2, direction=direction)
-            except Exception as e:
-                log.error("target_2_order_failed", ticker=ticker, error=str(e))
+            plan.append((2, t2_shares, trade.target_2))
+        return plan
 
-        # Store target order IDs in operator_notes (simple approach, no schema change)
-        if target_ids:
-            existing_notes = trade.operator_notes or ""
-            trade.operator_notes = existing_notes + "|TARGETS:" + ",".join(target_ids)
-            session.commit()
+    async def _submit_target_order(self, ticker: str, qty: int, price: float, stop_loss: float, direction: str) -> tuple[str, str, str]:
+        """Returns (order_id, stop_leg_id_or_empty, strategy)."""
+        if stop_loss > 0 and hasattr(self.alpaca, "submit_oco_exit"):
+            oco = await self._broker_call(
+                self.alpaca.submit_oco_exit, ticker, qty, price, stop_loss, direction=direction
+            )
+            if isinstance(oco, dict):
+                return str(oco.get("order_id", "")), str(oco.get("stop_leg_id", "") or ""), "oco"
+            # Tolerate brokers/mocks still returning a bare order id.
+            return str(oco), "", "oco"
+        if direction == "short":
+            return await self._broker_call(self.alpaca.submit_limit_cover, ticker, qty, price), "", "limit"
+        return await self._broker_call(self.alpaca.submit_limit_sell, ticker, qty, price), "", "limit"
+
+    async def _ensure_exit_qty_available(
+        self,
+        trade: Trade,
+        ticker: str,
+        position_qty: int,
+        required_qty: int,
+    ) -> tuple[bool, bool]:
+        """Returns (ok_to_place, cancelled_prior_protection).
+
+        The second flag tells the caller whether the trade's previous protective
+        orders were cancelled to free quantity — if placement then fails, those
+        shares must be re-protected.
+        """
+        holding_orders = await self._open_exit_holding_orders(trade, ticker)
+        held_qty = sum(self._open_order_qty(order) for order in holding_orders)
+        available_qty = max(0.0, float(position_qty) - held_qty)
+        if available_qty >= required_qty:
+            return True, False
+
+        managed_ids = self._managed_exit_order_ids(trade)
+        unrecognized = [order for order in holding_orders if self._order_id(order) not in managed_ids]
+        if unrecognized:
+            await self._alert_exit_order_conflict(
+                trade=trade,
+                ticker=ticker,
+                blocking_orders=unrecognized,
+                available_qty=available_qty,
+                required_qty=required_qty,
+                held_qty=held_qty,
+            )
+            return False, False
+
+        cancelled_any = False
+        for order in holding_orders:
+            if not await self._cancel_and_confirm_exit_order(trade, ticker, order):
+                return False, cancelled_any
+            cancelled_any = True
+
+        log.info(
+            "exit_order_cancel_replace_ready",
+            ticker=ticker,
+            trade_id=trade.id,
+            cancelled_orders=[self._order_id(order) for order in holding_orders],
+            required_qty=required_qty,
+        )
+        return True, cancelled_any
+
+    async def _open_exit_holding_orders(self, trade: Trade, ticker: str) -> list[dict]:
+        if not hasattr(self.alpaca, "get_orders"):
+            return []
+        try:
+            open_orders = await self._broker_call(self.alpaca.get_orders, status="open") or []
+        except Exception as exc:
+            log.warning("exit_order_open_orders_failed", ticker=ticker, trade_id=trade.id, error=str(exc))
+            return []
+
+        direction = trade.direction or "long"
+        exit_side = "buy" if direction == "short" else "sell"
+        result = []
+        for order in open_orders:
+            if self._order_symbol(order) != ticker.upper():
+                continue
+            if self._order_side(order) != exit_side:
+                continue
+            if self._order_status(order) not in OPEN_ORDER_STATUSES:
+                continue
+            if self._open_order_qty(order) <= 0:
+                continue
+            result.append(order)
+        return result
+
+    async def _cancel_and_confirm_exit_order(self, trade: Trade, ticker: str, order: dict) -> bool:
+        order_id = self._order_id(order)
+        if not order_id:
+            return False
+        log.info("exit_order_cancel_requested", ticker=ticker, trade_id=trade.id, order_id=order_id)
+        try:
+            await self._broker_call(self.alpaca.cancel_order, order_id)
+        except Exception as exc:
+            log.warning("exit_order_cancel_failed", ticker=ticker, trade_id=trade.id, order_id=order_id, error=str(exc))
+            await self._send_system_message(
+                f"Exit orders for {ticker} were not replaced because bot-managed order {order_id} could not be cancelled."
+            )
+            return False
+
+        for _ in range(3):
+            status = {}
+            if hasattr(self.alpaca, "get_order_status"):
+                status = await self._broker_call(self.alpaca.get_order_status, order_id) or {}
+            normalized = self._order_status(status)
+            if not status or normalized in CANCELLED_OR_FINAL_STATUSES:
+                log.info("exit_order_cancel_confirmed", ticker=ticker, trade_id=trade.id, order_id=order_id, status=normalized)
+                return True
+            await asyncio.sleep(0.25)
+
+        log.warning("exit_order_cancel_unconfirmed", ticker=ticker, trade_id=trade.id, order_id=order_id)
+        await self._send_system_message(
+            f"Exit orders for {ticker} were not replaced because cancellation of bot-managed order {order_id} was not confirmed."
+        )
+        return False
+
+    async def _alert_exit_order_conflict(
+        self,
+        *,
+        trade: Trade,
+        ticker: str,
+        blocking_orders: list[dict],
+        available_qty: float,
+        required_qty: int,
+        held_qty: float,
+    ) -> None:
+        blocking_ids = [self._order_id(order) for order in blocking_orders]
+        log.warning(
+            "exit_order_conflict",
+            ticker=ticker,
+            trade_id=trade.id,
+            blocking_order_ids=blocking_ids,
+            available_qty=available_qty,
+            required_qty=required_qty,
+            held_qty=held_qty,
+        )
+        await self._send_system_message(
+            f"Exit orders for {ticker} were not placed because unrecognized open order(s) "
+            f"{', '.join(blocking_ids)} hold {held_qty:g} shares; {required_qty:g} required, {available_qty:g} available."
+        )
+
+    async def _send_system_message(self, message: str) -> None:
+        if self.nm:
+            await self.nm.system_message(message)
+
+    def _managed_exit_order_ids(self, trade: Trade) -> set[str]:
+        ids = {
+            str(value)
+            for value in (trade.broker_stop_order_id, trade.alpaca_stop_order_id)
+            if value
+        }
+        ids.update(order_id for _, order_id in self._get_target_order_ids(trade) if order_id)
+        ids.update(order_id for _, order_id in self._get_stop_leg_order_ids(trade) if order_id)
+        return ids
+
+    def _replace_note_segment(self, trade: Trade, prefix: str, ids: list[str]) -> None:
+        """Replace (or drop, when ids is empty) the '<prefix>:...' segment in operator_notes."""
+        existing_parts = [
+            part for part in (trade.operator_notes or "").split("|")
+            if part and not part.startswith(f"{prefix}:")
+        ]
+        if ids:
+            existing_parts.append(f"{prefix}:" + ",".join(ids))
+        trade.operator_notes = "|".join(existing_parts)
 
     def _get_target_order_ids(self, trade: Trade) -> list:
         """Extract target order IDs from operator_notes."""
-        notes = trade.operator_notes or ""
-        if "|TARGETS:" not in notes:
-            return []
+        return self._get_note_segment_ids(trade, "TARGETS")
 
-        targets_str = notes.split("|TARGETS:")[1].split("|")[0]
+    def _get_stop_leg_order_ids(self, trade: Trade) -> list:
+        """Extract OCO stop-leg order IDs from operator_notes."""
+        return self._get_note_segment_ids(trade, "STOPLEGS")
+
+    def _get_note_segment_ids(self, trade: Trade, prefix: str) -> list:
+        notes = trade.operator_notes or ""
+        marker = f"{prefix}:"
+        if marker not in notes:
+            return []
+        segment = notes.split(marker, 1)[1].split("|", 1)[0]
         result = []
-        for part in targets_str.split(","):
+        for part in segment.split(","):
             if part.startswith("t1:"):
                 result.append((1, part[3:]))
             elif part.startswith("t2:"):
                 result.append((2, part[3:]))
         return result
+
+    def _order_id(self, order: dict) -> str:
+        return str(order.get("id") or order.get("order_id") or "")
+
+    def _order_symbol(self, order: dict) -> str:
+        return str(order.get("symbol") or order.get("ticker") or "").upper()
+
+    def _order_side(self, order: dict) -> str:
+        return str(order.get("side") or "").lower()
+
+    def _order_status(self, order: dict) -> str:
+        return str(order.get("status") or "").lower()
+
+    def _open_order_qty(self, order: dict) -> float:
+        qty = self._float_value(order.get("quantity", order.get("qty", 0)))
+        filled = self._float_value(order.get("filled_quantity", order.get("filled_qty", 0)))
+        return max(0.0, qty - filled)
+
+    def _float_value(self, value) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
 
     async def _handle_stop_triggered(self, trade: Trade, ticker: str, fill_info: dict, session):
         """Handle stop-loss fill — close trade, compute P&L, notify."""
@@ -322,12 +623,15 @@ class OrderMonitor:
             result = await self._broker_call(self.alpaca.close_position, ticker)
             if not result.get("success"):
                 error = result.get("error", "")
-                if self._is_position_not_found(error):
+                if result.get("position_not_found") or self._is_position_not_found(error, result.get("code")):
                     await self._handle_missing_position_reconciliation(trade, ticker, error, session)
                     return
                 log.error("time_exit_close_failed", ticker=ticker, error=result.get("error"))
                 return
         except Exception as e:
+            if self._is_position_not_found(str(e), getattr(e, "code", None)):
+                await self._handle_missing_position_reconciliation(trade, ticker, str(e), session)
+                return
             log.error("time_exit_failed", ticker=ticker, error=str(e))
             return
 
@@ -368,10 +672,10 @@ class OrderMonitor:
                 f"P&L: {pnl_pct:+.2f}% (${pnl_abs:+,.2f})"
             )
 
-    def _is_position_not_found(self, error: str | None) -> bool:
+    def _is_position_not_found(self, error: str | None, code=None) -> bool:
         """Return True when Alpaca says the DB trade no longer has a live position."""
         normalized = (error or "").lower()
-        return "position not found" in normalized
+        return str(code or "") in {"404", "40410000"} or "40410000" in normalized or "position not found" in normalized
 
     async def _handle_missing_position_reconciliation(self, trade: Trade, ticker: str, error: str, session):
         """
@@ -380,11 +684,29 @@ class OrderMonitor:
         This preserves the audit trail without fabricating P&L. The likely causes
         are manual closure, historical DB drift, or an old monitor bug.
         """
+        fill = await self._latest_exit_fill(ticker, trade.direction or "long")
+        if fill and fill.get("average_price"):
+            exit_price = float(fill["average_price"])
+            direction = trade.direction or "long"
+            if direction == "short":
+                pnl_pct = ((trade.entry_price - exit_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
+            else:
+                pnl_pct = ((exit_price - trade.entry_price) / trade.entry_price * 100) if trade.entry_price > 0 else 0
+            trade.exit_price = exit_price
+            trade.pnl_pct = round(pnl_pct, 2)
+            trade.pnl_absolute = round(self._pnl_abs(trade, pnl_pct), 2)
+            fill_note = f"RECONCILED_EXIT_FILL:{fill.get('id', '')}"
+        else:
+            trade.exit_price = None
+            trade.pnl_pct = None
+            trade.pnl_absolute = None
+            fill_note = "RECONCILED_EXIT_UNKNOWN"
+
         trade.status = "closed"
         trade.exit_reason = "reconciled_missing_position"
         trade.exit_date = datetime.utcnow()
         existing_notes = trade.operator_notes or ""
-        note = f"RECONCILED_MISSING_POSITION:{error[:240]}"
+        note = f"RECONCILED_MISSING_POSITION:{error[:180]}|{fill_note}"
         trade.operator_notes = f"{existing_notes}|{note}" if existing_notes else note
         session.commit()
 
@@ -396,17 +718,39 @@ class OrderMonitor:
                 pass
         await self._cancel_target_orders(trade)
 
-        log.warning(
+        log.info(
             "trade_reconciled_missing_position",
             ticker=ticker,
             trade_id=trade.id,
             error=error,
+            exit_price=trade.exit_price,
+            pnl_pct=trade.pnl_pct,
         )
 
         if self.nm:
             await self.nm.system_message(
                 f"Reconciled stale trade: {ticker} is marked closed because Alpaca has no matching position."
             )
+
+    async def _latest_exit_fill(self, ticker: str, direction: str) -> dict | None:
+        if not hasattr(self.alpaca, "get_orders"):
+            return None
+        try:
+            orders = await self._broker_call(self.alpaca.get_orders, status="closed") or []
+        except Exception as exc:
+            log.warning("reconcile_fills_fetch_failed", ticker=ticker, error=str(exc))
+            return None
+        exit_side = "buy" if direction == "short" else "sell"
+        filled = [
+            order for order in orders
+            if self._order_symbol(order) == ticker.upper()
+            and self._order_side(order) == exit_side
+            and self._order_status(order) == "filled"
+            and order.get("average_price")
+        ]
+        if not filled:
+            return None
+        return sorted(filled, key=lambda order: str(order.get("created_at") or ""), reverse=True)[0]
 
     async def _handle_entry_cancelled(self, trade: Trade, ticker: str, session):
         """Handle entry order cancellation/expiry."""
@@ -425,7 +769,7 @@ class OrderMonitor:
             await self.nm.system_message(f"Entry order for {ticker} expired/cancelled. Trade cancelled.")
 
     async def _cancel_target_orders(self, trade: Trade):
-        """Cancel any outstanding target limit sell orders."""
+        """Cancel any outstanding target orders (OCO parents cancel their legs too)."""
         target_ids = self._get_target_order_ids(trade)
         for _, order_id in target_ids:
             if order_id:

@@ -8,7 +8,9 @@ bull/bear debate, and institutional positioning.
 
 import hashlib
 import json
+import time
 from datetime import datetime, timedelta, timezone
+from sqlalchemy.exc import OperationalError
 from agents.base_agent import BaseAgent, AgentOutput
 from utils.web_search_client import WebSearchClient
 from utils.model_selector import get_model
@@ -302,33 +304,66 @@ class WebResearchAgent(BaseAgent):
     ) -> None:
         if not self._cache_enabled():
             return
-        try:
-            payload = dict(result)
-            payload["_scraped_source_urls"] = [s.get("url", "") for s in (scraped_sources or [])]
-            now = datetime.now(timezone.utc).replace(tzinfo=None)
-            ttl_hours = max(1, int(getattr(self.settings, "web_research_cache_ttl_hours", 24)))
-            provider = getattr(self.settings, "web_search_provider", "anthropic")
-            model = (
-                getattr(self.settings, "gemini_web_research_model", "")
-                if provider == "gemini"
-                else get_model("web_research", self.settings)
-            )
-            with get_session() as session:
-                row = session.query(WebResearchCache).filter_by(cache_key=cache_key).first()
-                if not row:
-                    row = WebResearchCache(cache_key=cache_key)
-                    session.add(row)
-                row.ticker = self._normalize_ticker(ticker)
-                row.research_date = research_date
-                row.catalyst_hash = catalyst_hash
-                row.provider = provider
-                row.model_used = model
-                row.result_json = json.dumps(payload, sort_keys=True, default=str)
-                row.updated_at = now
-                row.expires_at = now + timedelta(hours=ttl_hours)
-            log.info("web_research_cache_saved", ticker=ticker, cache_key=cache_key, ttl_hours=ttl_hours)
-        except Exception as exc:
-            log.warning("web_research_cache_write_failed", cache_key=cache_key, error=str(exc))
+        payload = dict(result)
+        payload["_scraped_source_urls"] = [s.get("url", "") for s in (scraped_sources or [])]
+        ttl_hours = max(1, int(getattr(self.settings, "web_research_cache_ttl_hours", 24)))
+        provider = getattr(self.settings, "web_search_provider", "anthropic")
+        model = (
+            getattr(self.settings, "gemini_web_research_model", "")
+            if provider == "gemini"
+            else get_model("web_research", self.settings)
+        )
+        for attempt in (1, 2):
+            try:
+                self._write_cached_research_row(
+                    cache_key=cache_key,
+                    ticker=ticker,
+                    research_date=research_date,
+                    catalyst_hash=catalyst_hash,
+                    payload=payload,
+                    ttl_hours=ttl_hours,
+                    provider=provider,
+                    model=model,
+                )
+                log.info("web_research_cache_saved", ticker=ticker, cache_key=cache_key, ttl_hours=ttl_hours)
+                return
+            except OperationalError as exc:
+                if attempt == 1 and _is_sqlite_locked(exc):
+                    log.warning("web_research_cache_write_retry", cache_key=cache_key, error=str(exc))
+                    time.sleep(0.05)
+                    continue
+                log.warning("web_research_cache_write_failed", cache_key=cache_key, error=str(exc))
+                return
+            except Exception as exc:
+                log.warning("web_research_cache_write_failed", cache_key=cache_key, error=str(exc))
+                return
+
+    def _write_cached_research_row(
+        self,
+        *,
+        cache_key: str,
+        ticker: str,
+        research_date: str,
+        catalyst_hash: str,
+        payload: dict,
+        ttl_hours: int,
+        provider: str,
+        model: str,
+    ) -> None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        with get_session() as session:
+            row = session.query(WebResearchCache).filter_by(cache_key=cache_key).first()
+            if not row:
+                row = WebResearchCache(cache_key=cache_key)
+                session.add(row)
+            row.ticker = self._normalize_ticker(ticker)
+            row.research_date = research_date
+            row.catalyst_hash = catalyst_hash
+            row.provider = provider
+            row.model_used = model
+            row.result_json = json.dumps(payload, sort_keys=True, default=str)
+            row.updated_at = now
+            row.expires_at = now + timedelta(hours=ttl_hours)
 
     def _build_output(
         self,
@@ -404,3 +439,7 @@ class WebResearchAgent(BaseAgent):
             },
             run_id=self.run_id,
         )
+
+
+def _is_sqlite_locked(exc: OperationalError) -> bool:
+    return "database is locked" in str(exc).lower()
