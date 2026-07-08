@@ -259,6 +259,11 @@ class TradingPipeline:
                     screened=gemini_result.total_screened,
                     escalated=len(gemini_result.escalated),
                     duration_s=gemini_result.duration_s,
+                    parsed=gemini_result.parsed,
+                    parse_failed=gemini_result.parse_failed,
+                    truncated=gemini_result.truncated,
+                    parse_fail_rate=gemini_result.parse_fail_rate,
+                    degraded=gemini_result.degraded,
                 )
             except Exception as e:
                 log.error("tier2_screen_failed", error=str(e))

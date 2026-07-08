@@ -5,14 +5,31 @@ grounding to produce a research brief + score for each.
 
 Only tickers scoring above the escalation threshold proceed to Sonnet (Tier 3).
 Cost: ~$0.0005/ticker (effectively free on Gemini free tier).
+
+Output handling: Google Search grounding is mutually exclusive with the
+structured-output path (response_mime_type=application/json / response_schema)
+— the API returns 400 "Tool use with a response mime type ... is unsupported".
+Since grounding IS the point of tier-2, we keep grounding and instead give the
+model a large token budget (grounded replies prepend a prose preamble before
+the JSON) plus robust extraction of the first balanced {...} block, and detect
+truncation via the MAX_TOKENS finish reason rather than a structured schema.
 """
 
 import json
 import time
+import warnings
 from dataclasses import dataclass, field
 from utils.logger import get_logger
 
 log = get_logger("gemini_screener")
+
+# SDK enum drift: newer server-side FinishReason values (e.g. TOO_MANY_TOOL_CALLS)
+# aren't in the installed google-genai enum, which warns once per response during
+# deserialization. Silence that specific noise so it doesn't fire per ticker.
+warnings.filterwarnings("ignore", message=r".*is not a valid FinishReason.*")
+
+# Emit gemini_screen_degraded when parse_failed / attempted exceeds this (spec C3).
+PARSE_FAIL_WARN_RATIO = 0.10
 
 
 @dataclass
@@ -35,6 +52,15 @@ class GeminiBatchResult:
     total_screened: int = 0
     duration_s: float = 0.0
     errors: list = field(default_factory=list)
+    # Per-scan parse-health counters (spec C3).
+    # attempted == parsed + parse_failed + truncated + empty + len(errors)
+    attempted: int = 0
+    parsed: int = 0
+    parse_failed: int = 0
+    truncated: int = 0
+    empty: int = 0
+    parse_fail_rate: float = 0.0   # parse_failed / attempted
+    degraded: bool = False         # parse_fail_rate > PARSE_FAIL_WARN_RATIO
 
 
 SCREENING_PROMPT = """You are a swing trading screener. For the given stock ticker, research it using web search and produce a brief analysis.
@@ -42,7 +68,7 @@ SCREENING_PROMPT = """You are a swing trading screener. For the given stock tick
 TICKER: {ticker}
 KNOWN CATALYSTS: {catalyst_context}
 
-Respond in this exact JSON format (no markdown, no code fences):
+Output ONLY a single JSON object and nothing else — no preamble, no markdown, no code fences, no text before or after it. Use exactly this shape:
 {{
   "score": <float 0.0 to 1.0>,
   "direction": "<bullish|bearish|neutral>",
@@ -68,6 +94,7 @@ class GeminiScreener:
         self._client = None
         self._model = settings.gemini_flash_model
         self._threshold = settings.gemini_flash_escalation_threshold
+        self._max_output_tokens = getattr(settings, "gemini_flash_max_output_tokens", 4096)
 
         if settings.gemini_api_key:
             try:
@@ -100,14 +127,16 @@ class GeminiScreener:
         start = time.time()
         results = []
         errors = []
+        counts = {"parsed": 0, "parse_failed": 0, "truncated": 0, "empty": 0}
 
         for item in flagged_tickers:
             ticker = item["symbol"]
             catalyst_context = item.get("catalyst_context", "None provided")
 
             try:
-                result = self._screen_single(ticker, catalyst_context)
+                result, outcome = self._screen_single(ticker, catalyst_context)
                 results.append(result)
+                counts[outcome] = counts.get(outcome, 0) + 1
             except Exception as e:
                 log.error("gemini_screen_failed", ticker=ticker, error=str(e))
                 errors.append(f"{ticker}: {str(e)[:100]}")
@@ -117,24 +146,65 @@ class GeminiScreener:
         escalated = [r.ticker for r in results if r.escalate]
         duration = time.time() - start
 
+        attempted = len(flagged_tickers)
+        parse_fail_rate = counts["parse_failed"] / attempted if attempted else 0.0
+        degraded = attempted > 0 and parse_fail_rate > PARSE_FAIL_WARN_RATIO
+
         log.info(
             "gemini_batch_complete",
-            total=len(flagged_tickers),
+            total=attempted,
             escalated=len(escalated),
             duration_s=round(duration, 1),
             errors=len(errors),
         )
+        # Single per-scan summary event (spec C3).
+        log.info(
+            "gemini_screen_summary",
+            attempted=attempted,
+            parsed=counts["parsed"],
+            parse_failed=counts["parse_failed"],
+            truncated=counts["truncated"],
+            empty=counts["empty"],
+            call_errors=len(errors),
+            parse_fail_rate=round(parse_fail_rate, 3),
+        )
+        if degraded:
+            # WARNING so it surfaces in ops dashboards. Telegram alerting can ride
+            # Spec B's notifier once merged; log-only until then (spec C3).
+            log.warning(
+                "gemini_screen_degraded",
+                attempted=attempted,
+                parsed=counts["parsed"],
+                parse_failed=counts["parse_failed"],
+                truncated=counts["truncated"],
+                empty=counts["empty"],
+                call_errors=len(errors),
+                parse_fail_rate=round(parse_fail_rate, 3),
+                threshold=PARSE_FAIL_WARN_RATIO,
+            )
 
         return GeminiBatchResult(
             results=results,
             escalated=escalated,
-            total_screened=len(flagged_tickers),
+            total_screened=attempted,
             duration_s=round(duration, 1),
             errors=errors,
+            attempted=attempted,
+            parsed=counts["parsed"],
+            parse_failed=counts["parse_failed"],
+            truncated=counts["truncated"],
+            empty=counts["empty"],
+            parse_fail_rate=round(parse_fail_rate, 3),
+            degraded=degraded,
         )
 
-    def _screen_single(self, ticker: str, catalyst_context: str) -> GeminiScreenResult:
-        """Screen a single ticker with Gemini Flash + Google Search grounding."""
+    def _screen_single(self, ticker: str, catalyst_context: str) -> tuple:
+        """
+        Screen a single ticker with Gemini Flash + Google Search grounding.
+
+        Returns (GeminiScreenResult, outcome) where outcome is one of
+        "parsed" | "parse_failed" | "truncated" | "empty".
+        """
         from google.genai import types
 
         prompt = SCREENING_PROMPT.format(
@@ -142,39 +212,43 @@ class GeminiScreener:
             catalyst_context=catalyst_context,
         )
 
-        # Use Google Search as grounding tool
+        # Use Google Search as grounding tool. Grounding cannot be combined with a
+        # JSON response schema (API 400), so budget generously + extract robustly.
         response = self._client.models.generate_content(
             model=self._model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())],
                 temperature=0.3,
-                max_output_tokens=512,
+                max_output_tokens=self._max_output_tokens,
             ),
         )
 
-        # Parse response
-        text = response.text.strip()
+        finish_reason = self._finish_reason(response)
+        text = self._response_text(response)
 
-        # Strip markdown code fences if present
-        if text.startswith("```"):
-            lines = text.split("\n")
-            # Remove first line (```json or ```) and last line (```)
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            text = "\n".join(lines).strip()
+        # Guard empty / safety-blocked / no-candidate responses (was: NoneType.strip()).
+        if not text:
+            log.warning("gemini_screen_failed", ticker=ticker, reason="empty_response", finish_reason=finish_reason)
+            return (
+                GeminiScreenResult(ticker=ticker, score=0.0, summary=f"Empty response (finish={finish_reason})"),
+                "empty",
+            )
 
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            log.warning("gemini_json_parse_failed", ticker=ticker, raw=text[:200])
-            # Attempt to extract JSON from mixed content
-            data = self._extract_json(text)
-            if not data:
-                return GeminiScreenResult(
-                    ticker=ticker,
-                    score=0.0,
-                    summary=f"Parse failed: {text[:100]}",
+        data = self._extract_json(text)
+        if data is None:
+            # Distinguish truncation (budget too small) from a genuine parse failure.
+            if finish_reason == "MAX_TOKENS":
+                log.warning("gemini_screen_truncated", ticker=ticker, finish_reason=finish_reason, chars=len(text))
+                return (
+                    GeminiScreenResult(ticker=ticker, score=0.0, summary="Response truncated (raise max_output_tokens)"),
+                    "truncated",
                 )
+            log.warning("gemini_json_parse_failed", ticker=ticker, finish_reason=finish_reason, raw=text[:200])
+            return (
+                GeminiScreenResult(ticker=ticker, score=0.0, summary=f"Parse failed: {text[:100]}"),
+                "parse_failed",
+            )
 
         score = float(data.get("score", 0))
         score = max(0.0, min(1.0, score))  # Clamp
@@ -197,16 +271,63 @@ class GeminiScreener:
             escalate=result.escalate,
         )
 
-        return result
+        return result, "parsed"
+
+    def _response_text(self, response) -> str:
+        """Safely pull text from a response that may be None / empty / safety-blocked."""
+        try:
+            text = response.text
+        except Exception:
+            # google-genai raises when there are no text parts (safety block, tool-only turn).
+            text = None
+        return text.strip() if text else ""
+
+    def _finish_reason(self, response) -> str:
+        """Read the finish reason exactly once and coerce it to a plain string.
+
+        Tolerates missing candidates and unknown SDK enum values so a single
+        ticker can't raise or spam warnings.
+        """
+        try:
+            fr = response.candidates[0].finish_reason
+        except (AttributeError, IndexError, TypeError):
+            return "UNKNOWN"
+        if fr is None:
+            return "UNKNOWN"
+        return getattr(fr, "name", None) or str(fr)
 
     def _extract_json(self, text: str) -> dict | None:
-        """Try to extract JSON from text that may contain non-JSON content."""
-        # Find first { and last }
+        """Extract and parse the first balanced {...} block from possibly prose-wrapped text.
+
+        Grounded responses often prepend a prose preamble (and occasionally trailing
+        commentary), so scan for the first complete top-level object rather than
+        json.loads-ing the whole string. Returns None on no/broken/truncated JSON.
+        """
         start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError:
-                pass
+        if start < 0:
+            return None
+        depth = 0
+        in_str = False
+        escape = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        return None
         return None
