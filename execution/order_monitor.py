@@ -11,13 +11,14 @@ Handles:
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_
 
 from database.db import get_session
 from database.models import Trade, Ticker
 from execution.alpaca_client import AlpacaClient
+from utils.async_call import call_with_timeout
 from utils.logger import get_logger
 
 log = get_logger("order_monitor")
@@ -27,12 +28,15 @@ POLL_INTERVAL = 30
 
 
 class OrderMonitor:
+    name = "order_monitor"
+
     def __init__(self, alpaca: AlpacaClient, notification_manager, settings):
         self.alpaca = alpaca
         self.nm = notification_manager
         self.settings = settings
         self._running = False
         self._task = None
+        self._last_tick: datetime | None = None  # heartbeat for the watchdog
 
     async def start(self):
         """Start the background monitoring loop."""
@@ -47,9 +51,22 @@ class OrderMonitor:
             self._task.cancel()
         log.info("order_monitor_stopped")
 
+    @property
+    def last_tick(self) -> datetime | None:
+        """UTC timestamp of the last loop iteration (heartbeat for the watchdog)."""
+        return self._last_tick
+
+    async def _broker_call(self, fn, *args, **kwargs):
+        """Run a sync broker call under a timeout so a stall can't freeze the loop."""
+        timeout_s = getattr(self.settings, "monitor_broker_call_timeout_s", 30)
+        return await call_with_timeout(fn, *args, timeout_s=timeout_s, **kwargs)
+
     async def _monitor_loop(self):
         """Main loop: check open trades every POLL_INTERVAL seconds."""
         while self._running:
+            # Heartbeat first so the watchdog sees a fresh tick unless the loop is
+            # genuinely stuck inside a broker call.
+            self._last_tick = datetime.now(timezone.utc)
             try:
                 await self._check_open_trades()
             except Exception as e:
@@ -87,7 +104,7 @@ class OrderMonitor:
         # 1. Check entry order
         entry_order_id = trade.broker_order_id or trade.alpaca_entry_order_id
         if entry_order_id and trade.status in ("open", "pending_fill"):
-            entry_status = self.alpaca.get_order_status(entry_order_id)
+            entry_status = await self._broker_call(self.alpaca.get_order_status, entry_order_id)
 
             if not entry_status:
                 return
@@ -109,7 +126,7 @@ class OrderMonitor:
             # Check stop-loss order
             stop_order_id = trade.broker_stop_order_id or trade.alpaca_stop_order_id
             if stop_order_id:
-                stop_status = self.alpaca.get_order_status(stop_order_id)
+                stop_status = await self._broker_call(self.alpaca.get_order_status, stop_order_id)
                 if stop_status and stop_status.get("status") == "filled":
                     await self._handle_stop_triggered(trade, ticker, stop_status, session)
                     return
@@ -119,7 +136,7 @@ class OrderMonitor:
             for target_num, order_id in target_order_ids:
                 if not order_id:
                     continue
-                target_status = self.alpaca.get_order_status(order_id)
+                target_status = await self._broker_call(self.alpaca.get_order_status, order_id)
                 if target_status and target_status.get("status") == "filled":
                     await self._handle_target_hit(
                         trade, ticker, target_num, target_status, session
@@ -178,9 +195,9 @@ class OrderMonitor:
         if t1_shares > 0 and trade.target_1 > 0:
             try:
                 if direction == "short":
-                    t1_id = self.alpaca.submit_limit_cover(ticker, t1_shares, trade.target_1)
+                    t1_id = await self._broker_call(self.alpaca.submit_limit_cover, ticker, t1_shares, trade.target_1)
                 else:
-                    t1_id = self.alpaca.submit_limit_sell(ticker, t1_shares, trade.target_1)
+                    t1_id = await self._broker_call(self.alpaca.submit_limit_sell, ticker, t1_shares, trade.target_1)
                 target_ids.append(f"t1:{t1_id}")
                 log.info("target_1_order_placed", ticker=ticker, shares=t1_shares, price=trade.target_1, direction=direction)
             except Exception as e:
@@ -191,9 +208,9 @@ class OrderMonitor:
         if t2_shares > 0 and trade.target_2 > 0:
             try:
                 if direction == "short":
-                    t2_id = self.alpaca.submit_limit_cover(ticker, t2_shares, trade.target_2)
+                    t2_id = await self._broker_call(self.alpaca.submit_limit_cover, ticker, t2_shares, trade.target_2)
                 else:
-                    t2_id = self.alpaca.submit_limit_sell(ticker, t2_shares, trade.target_2)
+                    t2_id = await self._broker_call(self.alpaca.submit_limit_sell, ticker, t2_shares, trade.target_2)
                 target_ids.append(f"t2:{t2_id}")
                 log.info("target_2_order_placed", ticker=ticker, shares=t2_shares, price=trade.target_2, direction=direction)
             except Exception as e:
@@ -243,7 +260,7 @@ class OrderMonitor:
         log.info("stop_triggered", ticker=ticker, exit_price=exit_price, pnl_pct=pnl_pct)
 
         # Cancel any outstanding target orders
-        self._cancel_target_orders(trade)
+        await self._cancel_target_orders(trade)
 
         if self.nm:
             await self.nm.stop_triggered(
@@ -269,7 +286,7 @@ class OrderMonitor:
             pnl_abs = self._pnl_abs(trade, pnl_pct, quantity=filled_qty)
 
         # Check if this is partial (target_1) or full exit (target_2 or all shares sold)
-        remaining_position = self.alpaca.get_positions_detail()
+        remaining_position = await self._broker_call(self.alpaca.get_positions_detail)
         still_holds = any(p["ticker"] == ticker for p in remaining_position)
 
         if still_holds:
@@ -290,7 +307,7 @@ class OrderMonitor:
             # Cancel stop-loss order
             stop_order_id = trade.broker_stop_order_id or trade.alpaca_stop_order_id
             if stop_order_id:
-                self.alpaca.cancel_order(stop_order_id)
+                await self._broker_call(self.alpaca.cancel_order, stop_order_id)
 
             log.info("target_hit_full_exit", ticker=ticker, target=target_num, pnl_pct=pnl_pct)
             if self.nm:
@@ -302,7 +319,7 @@ class OrderMonitor:
         log.info("time_exit_triggered", ticker=ticker, days_held=days_held)
 
         try:
-            result = self.alpaca.close_position(ticker)
+            result = await self._broker_call(self.alpaca.close_position, ticker)
             if not result.get("success"):
                 error = result.get("error", "")
                 if self._is_position_not_found(error):
@@ -315,7 +332,7 @@ class OrderMonitor:
             return
 
         # Get current price for P&L
-        positions = self.alpaca.get_positions_detail()
+        positions = await self._broker_call(self.alpaca.get_positions_detail)
         current_price = trade.entry_price  # fallback
         for p in positions:
             if p["ticker"] == ticker:
@@ -341,8 +358,8 @@ class OrderMonitor:
         # Cancel outstanding orders
         stop_order_id = trade.broker_stop_order_id or trade.alpaca_stop_order_id
         if stop_order_id:
-            self.alpaca.cancel_order(stop_order_id)
-        self._cancel_target_orders(trade)
+            await self._broker_call(self.alpaca.cancel_order, stop_order_id)
+        await self._cancel_target_orders(trade)
 
         if self.nm:
             dir_label = "SHORT" if direction == "short" else "LONG"
@@ -374,10 +391,10 @@ class OrderMonitor:
         stop_order_id = trade.broker_stop_order_id or trade.alpaca_stop_order_id
         if stop_order_id:
             try:
-                self.alpaca.cancel_order(stop_order_id)
+                await self._broker_call(self.alpaca.cancel_order, stop_order_id)
             except Exception:
                 pass
-        self._cancel_target_orders(trade)
+        await self._cancel_target_orders(trade)
 
         log.warning(
             "trade_reconciled_missing_position",
@@ -400,20 +417,20 @@ class OrderMonitor:
         # Cancel any stop-loss order
         stop_order_id = trade.broker_stop_order_id or trade.alpaca_stop_order_id
         if stop_order_id:
-            self.alpaca.cancel_order(stop_order_id)
+            await self._broker_call(self.alpaca.cancel_order, stop_order_id)
 
         log.info("entry_cancelled", ticker=ticker, trade_id=trade.id)
 
         if self.nm:
             await self.nm.system_message(f"Entry order for {ticker} expired/cancelled. Trade cancelled.")
 
-    def _cancel_target_orders(self, trade: Trade):
+    async def _cancel_target_orders(self, trade: Trade):
         """Cancel any outstanding target limit sell orders."""
         target_ids = self._get_target_order_ids(trade)
         for _, order_id in target_ids:
             if order_id:
                 try:
-                    self.alpaca.cancel_order(order_id)
+                    await self._broker_call(self.alpaca.cancel_order, order_id)
                 except Exception:
                     pass
 
