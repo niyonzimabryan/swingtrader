@@ -14,6 +14,7 @@ first — it has evidence, log lines, and root-cause analysis for every item).
 | [E-hygiene-sweep.md](E-hygiene-sweep.md) | P2 | utcnow(), DB indices, reddit table drop, .env.example, test rot | A–D merged (touches same files) |
 | [F-tracker-cleanup.md](F-tracker-cleanup.md) | P2 | Linear/Hermes/scratchpad reconciliation (no code) | — |
 | [G-observability.md](G-observability.md) | P2 | Ad-hoc stage tags (BRY-243 corpus), Gemini call ledger | — |
+| [H-structured-event-backfill.md](H-structured-event-backfill.md) | P1 | Bulk pattern-library warm-up from FMP structured data (earnings, upgrades) | A merged |
 
 A, B, C, D are independent — safe to run in parallel on separate branches.
 E must run **after** A–D merge (it edits `execution/` files B and D touch).
