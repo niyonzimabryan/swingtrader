@@ -104,12 +104,13 @@ def format_memo_telegram(memo_data: dict) -> str:
     pattern = d.get("pattern", {})
     lines.append("*HISTORICAL PRECEDENT*")
     pattern_status = pattern.get("status")
-    if pattern_status in {"unsupported", "no_matches", "insufficient_forward_returns", "provider_error", "low_confidence_peers", "disabled"}:
+    if pattern_status in {"unsupported", "no_matches", "insufficient_forward_returns", "provider_error", "time_budget_exhausted", "low_confidence_peers", "disabled"}:
         status_copy = {
             "unsupported": "Pattern analysis unsupported for vague/general catalyst.",
             "no_matches": "No matured forward-return analogs found yet.",
             "insufficient_forward_returns": "Historical events found, but forward returns are not mature yet.",
             "provider_error": "Pattern provider path failed or was unavailable.",
+            "time_budget_exhausted": "Pattern discovery hit the live time budget; backfill enqueued for next run.",
             "low_confidence_peers": "Peer set was low confidence; pattern evidence is capped.",
             "disabled": "Pattern analog engine disabled.",
         }.get(pattern_status, "Pattern analysis unavailable.")
@@ -434,12 +435,13 @@ def format_memo_plain(memo_data: dict) -> str:
     pattern = d.get("pattern", {})
     lines.append(f"\nHISTORICAL PRECEDENT")
     pattern_status = pattern.get("status")
-    if pattern_status in {"unsupported", "no_matches", "insufficient_forward_returns", "provider_error", "low_confidence_peers", "disabled"}:
+    if pattern_status in {"unsupported", "no_matches", "insufficient_forward_returns", "provider_error", "time_budget_exhausted", "low_confidence_peers", "disabled"}:
         status_copy = {
             "unsupported": "Pattern analysis unsupported for vague/general catalyst.",
             "no_matches": "No matured forward-return analogs found yet.",
             "insufficient_forward_returns": "Historical events found, but forward returns are not mature yet.",
             "provider_error": "Pattern provider path failed or was unavailable.",
+            "time_budget_exhausted": "Pattern discovery hit the live time budget; backfill enqueued for next run.",
             "low_confidence_peers": "Peer set was low confidence; pattern evidence is capped.",
             "disabled": "Pattern analog engine disabled.",
         }.get(pattern_status, "Pattern analysis unavailable.")

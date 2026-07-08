@@ -99,6 +99,19 @@ class PipelineScheduler:
                     name="Weekly report (Sun 6 PM ET)",
                 )
 
+        # Pattern backfill queue drain (daily 3 AM ET, off market hours). Gated on
+        # enable_scans like the other jobs — it spends Gemini quota, so a paused
+        # scheduler must not keep draining. Only scheduled when the analog engine
+        # is enabled; the job also no-ops defensively.
+        pattern_backfill = enable_scans and getattr(self.settings, "pattern_analog_engine_enabled", False)
+        if pattern_backfill:
+            self.scheduler.add_job(
+                self._run_pattern_backfill,
+                CronTrigger(hour=3, minute=0, timezone="America/New_York"),
+                id="pattern_backfill",
+                name="Pattern backfill queue drain (3 AM ET)",
+            )
+
         # Daily pre-market self-restart — runs regardless of SCHEDULER_ENABLED.
         self._add_daily_restart_job()
 
@@ -108,6 +121,7 @@ class PipelineScheduler:
             scan_jobs
             + (1 if enable_scans and self.daily_digest else 0)
             + (1 if enable_scans and self.weekly_report else 0)
+            + (1 if pattern_backfill else 0)
         )
         log.info(
             "scheduler_started",
@@ -118,6 +132,7 @@ class PipelineScheduler:
             post_market=f"{self.settings.post_market_hour}:00 ET" if enable_scans else "disabled",
             daily_digest="17:00 ET (weekdays)" if (enable_scans and self.daily_digest) else "disabled",
             weekly_report="Sun 18:00 ET" if (enable_scans and self.weekly_report) else "disabled",
+            pattern_backfill="03:00 ET" if pattern_backfill else "disabled",
             daily_restart=self._restart_time_str() or "disabled",
         )
 
@@ -204,6 +219,24 @@ class PipelineScheduler:
             await self.weekly_report.send_report()
         except Exception as e:
             log.error("weekly_report_failed", error=str(e))
+
+    async def _run_pattern_backfill(self):
+        """Drain the cold-ticker pattern backfill queue. No-op if the engine is off."""
+        if not getattr(self.settings, "pattern_analog_engine_enabled", False):
+            return
+        try:
+            from scripts.backfill_historical_events import drain_queue
+
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(None, lambda: drain_queue(self.settings))
+            log.info(
+                "pattern_backfill_run",
+                tickers=summary.get("tickers", 0),
+                events_stored=summary.get("events_stored", 0),
+                outcomes_computed=summary.get("outcomes_computed", 0),
+            )
+        except Exception as e:
+            log.error("pattern_backfill_failed", error=str(e))
 
     async def _notify_system(self, message: str):
         """Send an operator Telegram message; never let a notifier failure propagate."""

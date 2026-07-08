@@ -72,7 +72,7 @@ class AnalogRanker:
         warnings = []
         if len(evidence_tiers["broad_base_rate"]) > len(evidence_tiers["same_ticker"]) + len(evidence_tiers["close_peer"]):
             warnings.append("Broad base-rate evidence dominates; direct/close-peer analog support is limited.")
-        partial_count = sum(1 for _, _, _, outcome, _ in top if outcome.status != "complete")
+        partial_count = sum(1 for _, _, _, outcome, _ in top if outcome is None or outcome.status != "complete")
         if partial_count and partial_count == len(top):
             warnings.append("Stored analogs exist, but forward-return horizons are still immature or partial.")
 
@@ -87,9 +87,11 @@ class AnalogRanker:
 
     def _candidate_events(self, session, ticker: str, setup_type: str, peer_set: set[str]) -> list[tuple]:
         tickers = {ticker, *peer_set}
+        # LEFT OUTER JOIN on EventOutcome so outcome-less (immature) events still
+        # surface — they rank in the partial tier instead of being invisible.
         direct = (
             session.query(HistoricalEvent, EventOutcome, EventContext)
-            .join(EventOutcome, EventOutcome.event_id == HistoricalEvent.id)
+            .outerjoin(EventOutcome, EventOutcome.event_id == HistoricalEvent.id)
             .outerjoin(EventContext, EventContext.event_id == HistoricalEvent.id)
             .filter(HistoricalEvent.event_type == setup_type)
             .filter(HistoricalEvent.ticker.in_(tickers))
@@ -101,7 +103,7 @@ class AnalogRanker:
             return direct
         broad = (
             session.query(HistoricalEvent, EventOutcome, EventContext)
-            .join(EventOutcome, EventOutcome.event_id == HistoricalEvent.id)
+            .outerjoin(EventOutcome, EventOutcome.event_id == HistoricalEvent.id)
             .outerjoin(EventContext, EventContext.event_id == HistoricalEvent.id)
             .filter(HistoricalEvent.event_type == setup_type)
             .filter(~HistoricalEvent.ticker.in_(tickers))
@@ -114,7 +116,7 @@ class AnalogRanker:
     def _analog_score(
         self,
         event: HistoricalEvent,
-        outcome: EventOutcome,
+        outcome: EventOutcome | None,
         context: EventContext | None,
         request: dict,
         target_ticker: str,
@@ -196,7 +198,9 @@ class AnalogRanker:
         days = max(0, (date.today() - event_date).days)
         return round(max(0.2, math.exp(-days / (365 * 8))), 4)
 
-    def _outcome_completeness(self, outcome: EventOutcome) -> float:
+    def _outcome_completeness(self, outcome: EventOutcome | None) -> float:
+        if outcome is None:
+            return 0.0
         try:
             matured = json.loads(outcome.matured_horizons_json or "[]")
         except json.JSONDecodeError:
@@ -212,7 +216,7 @@ class AnalogRanker:
             return "sector_peer"
         return "broad_base_rate"
 
-    def _serialize_analog(self, score: float, event: HistoricalEvent, outcome: EventOutcome, tier: str) -> dict:
+    def _serialize_analog(self, score: float, event: HistoricalEvent, outcome: EventOutcome | None, tier: str) -> dict:
         return {
             "ticker": event.ticker,
             "date": event.event_date.isoformat() if event.event_date else "",
@@ -224,14 +228,14 @@ class AnalogRanker:
             "source_type": event.source_type,
             "similarity_score": round(score, 3),
             "evidence_tier": tier,
-            "return_t10": outcome.return_t10,
-            "return_t20": outcome.return_t20,
-            "outcome_status": outcome.status,
+            "return_t10": outcome.return_t10 if outcome else None,
+            "return_t20": outcome.return_t20 if outcome else None,
+            "outcome_status": outcome.status if outcome else "partial",
         }
 
-    def _summary_stats(self, outcomes: list[EventOutcome]) -> dict:
-        vals_t10 = [o.return_t10 for o in outcomes if o.return_t10 is not None]
-        vals_t20 = [o.return_t20 for o in outcomes if o.return_t20 is not None]
+    def _summary_stats(self, outcomes: list[EventOutcome | None]) -> dict:
+        vals_t10 = [o.return_t10 for o in outcomes if o is not None and o.return_t10 is not None]
+        vals_t20 = [o.return_t20 for o in outcomes if o is not None and o.return_t20 is not None]
         return {
             "total_instances": len(outcomes),
             "matured_t10_count": len(vals_t10),

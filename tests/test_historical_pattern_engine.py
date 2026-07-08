@@ -3,21 +3,24 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from agents.base_agent import AgentOutput
 from agents.pattern_agent import PatternAgent
+from config.settings import resolve_backfill_queue_path
 from data.analog_ranker import AnalogRanker
-from data.event_discovery import assert_outcome_neutral
+from data.event_discovery import EventDiscoveryEngine, assert_outcome_neutral
 from data.event_extractor import EventExtractor, EventValidationError, make_dedupe_key
-from data.event_outcomes import EventOutcomeEngine, HistoricalMarketCapUnavailable, PriceBar
+from data.event_outcomes import EventOutcomeEngine, HistoricalMarketCapUnavailable, PriceBar, is_event_mature
 from data.peer_resolver import PeerResolver
 from database.db import get_session, init_db
-from database.models import EventOutcome, HistoricalEvent, PatternProviderCache, PatternSearchRun
+from database.models import EventContext, EventOutcome, HistoricalEvent, PatternProviderCache, PatternSearchRun
+from memo.templates.ic_memo import format_memo_plain
 from scoring.engine import ScoringEngine
+from scripts.backfill_historical_events import drain_queue
 from utils.perplexity_search_client import PERPLEXITY_SEARCH_URL, PerplexitySearchClient
 
 
@@ -291,6 +294,307 @@ class HistoricalPatternEngineTests(unittest.TestCase):
             session.flush()
             blob = run.provider_plan_json + run.queries_json + cache.filters_json + cache.result_json
             self.assertNotIn("pplx-", blob)
+
+    # ── A1: LEFT-JOIN partial ranking ─────────────────────────────
+
+    def _add_event(self, session, ticker, event_date, source_type="company_ir", event_type="product_launch"):
+        event = HistoricalEvent(
+            ticker=ticker,
+            event_type=event_type,
+            event_date=event_date,
+            headline=f"{ticker} {event_type} on {event_date}",
+            summary=f"{ticker} {event_type}.",
+            source_url=f"https://example.com/{ticker}/{event_date}",
+            source_domain="example.com",
+            source_type=source_type,
+            confidence=0.9,
+            dedupe_key=make_dedupe_key(ticker, event_type, event_date),
+        )
+        session.add(event)
+        session.flush()
+        return event
+
+    def test_outcomeless_events_surface_as_partial_not_hidden(self):
+        # Regression for the INNER-JOIN bug: an event with NO EventOutcome row must
+        # still rank (as partial), not vanish → 'no_matches'.
+        with get_session() as session:
+            self._add_event(session, "MSFT", date(2023, 3, 16))
+            ranked = AnalogRanker(_settings()).rank(
+                session,
+                {"target_ticker": "MSFT", "setup_type": "product_launch", "catalyst_summary": "product launch"},
+                {"peers": []},
+            )
+        self.assertEqual(ranked["summary_stats"]["total_instances"], 1)
+        self.assertEqual(ranked["status"], "insufficient_forward_returns")
+        self.assertEqual(ranked["top_analogs"][0]["outcome_status"], "partial")
+        self.assertIsNone(ranked["top_analogs"][0]["return_t10"])
+
+    def test_left_join_counts_mature_and_immature_together(self):
+        with get_session() as session:
+            mature = self._add_event(session, "MSFT", date(2023, 3, 16))
+            self._add_event(session, "MSFT", date(2023, 6, 1))  # outcome-less
+            session.add(
+                EventOutcome(
+                    event_id=mature.id, ticker="MSFT", return_t10=5.0, return_t20=8.0,
+                    status="complete", matured_horizons_json='["t10","t20"]',
+                )
+            )
+            session.flush()
+            ranked = AnalogRanker(_settings()).rank(
+                session,
+                {"target_ticker": "MSFT", "setup_type": "product_launch", "catalyst_summary": "product launch"},
+                {"peers": []},
+            )
+        self.assertEqual(ranked["status"], "active")  # >=1 matured horizon
+        self.assertEqual(ranked["summary_stats"]["total_instances"], 2)  # both counted
+        statuses = {a["outcome_status"] for a in ranked["top_analogs"]}
+        self.assertIn("partial", statuses)
+        self.assertIn("complete", statuses)
+
+    # ── A1: inline outcome computation cap + maturity ─────────────
+
+    def test_inline_outcome_computation_caps_and_skips_immature(self):
+        class _CountingOutcomeEngine:
+            def __init__(self):
+                self.calls = []
+
+            def compute_outcome(self, event, session=None):
+                self.calls.append(event.ticker)
+
+        counter = _CountingOutcomeEngine()
+        engine = EventDiscoveryEngine(
+            _settings(pattern_inline_outcome_max_per_scan=2), outcome_engine=counter
+        )
+        old = date.today() - timedelta(days=400)
+        recent = date.today()
+        events = [SimpleNamespace(ticker="RECENT", event_date=recent)] + [
+            SimpleNamespace(ticker=f"M{i}", event_date=old) for i in range(5)
+        ]
+        computed = engine._compute_inline_outcomes(session=None, events=events)
+        self.assertEqual(computed, 2)  # capped
+        self.assertEqual(len(counter.calls), 2)
+        self.assertNotIn("RECENT", counter.calls)  # immature skipped
+        self.assertTrue(is_event_mature(old))
+        self.assertFalse(is_event_mature(recent))
+
+    def test_inline_outcome_disabled_when_cap_zero(self):
+        class _Boom:
+            def compute_outcome(self, event, session=None):
+                raise AssertionError("should not compute when cap is 0")
+
+        engine = EventDiscoveryEngine(_settings(pattern_inline_outcome_max_per_scan=0), outcome_engine=_Boom())
+        events = [SimpleNamespace(ticker="M", event_date=date.today() - timedelta(days=400))]
+        self.assertEqual(engine._compute_inline_outcomes(session=None, events=events), 0)
+
+    # ── A2: backfill queue path resolution + consumer drain ───────
+
+    def test_backfill_queue_path_resolves_to_db_dir(self):
+        settings = _settings(
+            database_url=f"sqlite:///{self.tmp.name}/sub/swing_trader.db",
+            pattern_backfill_queue_path=".pattern_backfill_queue.jsonl",
+        )
+        resolved = resolve_backfill_queue_path(settings)
+        self.assertEqual(str(resolved), f"{self.tmp.name}/sub/.pattern_backfill_queue.jsonl")
+        # Absolute paths are preserved regardless of the DB dir.
+        abs_path = f"{self.tmp.name}/abs.jsonl"
+        settings_abs = _settings(database_url="sqlite:///whatever.db", pattern_backfill_queue_path=abs_path)
+        self.assertEqual(str(resolve_backfill_queue_path(settings_abs)), abs_path)
+
+    def test_drain_queue_consumes_capped_batch_and_keeps_remainder(self):
+        queue_path = Path(self.tmp.name) / "queue.jsonl"
+        entries = [
+            {"ticker": t, "setup_type": "product_launch", "catalyst_summary": "launch"}
+            for t in ("AAA", "BBB", "CCC")
+        ]
+        queue_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+        # No provider keys → discovery is a no-op; this exercises queue mechanics only.
+        settings = _settings(
+            pattern_backfill_queue_path=str(queue_path),
+            pattern_backfill_max_tickers_per_run=2,
+            gemini_api_key="",
+            perplexity_api_key="",
+        )
+        summary = drain_queue(settings)
+        self.assertEqual(summary["tickers"], 2)
+        remaining = [line for line in queue_path.read_text().splitlines() if line.strip()]
+        self.assertEqual(len(remaining), 1)
+        self.assertIn("CCC", remaining[0])
+
+    def test_drain_queue_dedupes_repeated_enqueues(self):
+        # Cold tickers re-enqueue every scan; duplicates must not eat the cap.
+        queue_path = Path(self.tmp.name) / "queue_dupes.jsonl"
+        entries = [
+            {"ticker": "AAA", "setup_type": "product_launch", "catalyst_summary": "launch"},
+            {"ticker": "AAA", "setup_type": "product_launch", "catalyst_summary": "launch"},
+            {"ticker": "BBB", "setup_type": "m_and_a", "catalyst_summary": "deal"},
+            {"ticker": "AAA", "setup_type": "product_launch", "catalyst_summary": "launch"},
+            {"ticker": "CCC", "setup_type": "m_and_a", "catalyst_summary": "deal"},
+        ]
+        queue_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+        settings = _settings(
+            pattern_backfill_queue_path=str(queue_path),
+            pattern_backfill_max_tickers_per_run=2,
+            gemini_api_key="",
+            perplexity_api_key="",
+        )
+        summary = drain_queue(settings)
+        # Cap of 2 drains the two unique keys AAA+BBB, not AAA twice.
+        self.assertEqual(summary["tickers"], 2)
+        remaining = [line for line in queue_path.read_text().splitlines() if line.strip()]
+        self.assertEqual(len(remaining), 1)
+        self.assertIn("CCC", remaining[0])
+
+    # ── A3: grounding + future-date guards ────────────────────────
+
+    def _discovery_request(self, ticker="MSFT"):
+        return {"target_ticker": ticker, "setup_type": "product_launch", "catalyst_summary": "product launch", "peers": []}
+
+    def _valid_event_candidate(self):
+        return {
+            "ticker": "MSFT",
+            "event_type": "product_launch",
+            "event_date": "2023-03-16",
+            "event_date_source": "content",
+            "event_timing": "unknown",
+            "polarity": "bullish",
+            "magnitude": 0.7,
+            "headline": "Microsoft announces Copilot",
+            "summary": "On March 16, 2023, Microsoft announced Copilot.",
+            "evidence": "On March 16, 2023, Microsoft announced Copilot.",
+            "source_url": "https://news.microsoft.com/copilot",
+            "source_type": "company_ir",
+            "confidence": 0.9,
+        }
+
+    def test_ungrounded_gemini_call_rejects_all_candidates(self):
+        candidate = self._valid_event_candidate()
+
+        class _FakeWeb:
+            def search_and_analyze_json_with_grounding(self, *a, **k):
+                # Even though the model returned an event, an ungrounded search is not evidence.
+                return {"_grounding": {"grounded": False, "queries": [], "sources": []}, "events": [dict(candidate)]}
+
+        engine = EventDiscoveryEngine(
+            _settings(pattern_max_search_queries_per_catalyst=1, pattern_inline_outcome_max_per_scan=0),
+            web_search_client=_FakeWeb(),
+        )
+        with get_session() as session:
+            out = engine.discover_and_store(session, self._discovery_request(), run_id="ung")
+            self.assertEqual(out["status"], "no_matches")
+            self.assertEqual(len(out["events"]), 0)
+            self.assertEqual(session.query(HistoricalEvent).count(), 0)
+
+    def test_grounded_gemini_call_stores_event(self):
+        candidate = self._valid_event_candidate()
+
+        class _FakeWeb:
+            def search_and_analyze_json_with_grounding(self, *a, **k):
+                return {
+                    "_grounding": {"grounded": True, "queries": ["q"], "sources": [{"title": "t", "uri": "https://news.microsoft.com"}]},
+                    "events": [dict(candidate)],
+                }
+
+        engine = EventDiscoveryEngine(
+            _settings(pattern_max_search_queries_per_catalyst=1, pattern_inline_outcome_max_per_scan=0),
+            web_search_client=_FakeWeb(),
+        )
+        with get_session() as session:
+            out = engine.discover_and_store(session, self._discovery_request(), run_id="grd")
+            self.assertEqual(out["status"], "active")
+            self.assertEqual(session.query(HistoricalEvent).count(), 1)
+
+    def test_future_dated_event_is_rejected(self):
+        future = date.today() + timedelta(days=30)
+        candidate = {
+            "ticker": "CPRT",
+            "event_type": "product_launch",
+            "event_date": future.isoformat(),
+            "event_date_source": "content",
+            "headline": f"CPRT event dated {future.isoformat()}",
+            "summary": f"On {future.isoformat()} CPRT will do something.",
+            "evidence": f"On {future.isoformat()} CPRT will do something.",
+            "source_url": "https://example.com/cprt",
+            "source_type": "news",
+            "confidence": 0.9,
+        }
+        with self.assertRaises(EventValidationError) as ctx:
+            EventExtractor().normalize_candidate(candidate, provider="gemini")
+        self.assertEqual(str(ctx.exception), "future_date")
+
+    # ── A5: typed provider_error + time_budget_exhausted ──────────
+
+    def test_gemini_provider_exception_surfaces_provider_error(self):
+        class _RaisingWeb:
+            def search_and_analyze_json_with_grounding(self, *a, **k):
+                raise RuntimeError("boom pplx-abcdefghijklmnopqrstuvwxyz123456")
+
+        engine = EventDiscoveryEngine(
+            _settings(pattern_max_search_queries_per_catalyst=1, pattern_inline_outcome_max_per_scan=0),
+            web_search_client=_RaisingWeb(),
+        )
+        with get_session() as session:
+            out = engine.discover_and_store(session, {"target_ticker": "AAPL", "setup_type": "product_launch", "catalyst_summary": "launch", "peers": []}, run_id="err")
+            self.assertEqual(out["status"], "provider_error")
+            run = session.query(PatternSearchRun).filter_by(run_id="err").one()
+            self.assertEqual(run.status, "provider_error")
+            blob = (run.error or "") + run.result_counts_json + run.provider_plan_json
+            self.assertNotIn("pplx-abcdefghijklmnopqrstuvwxyz123456", blob)
+
+    def test_scoring_drops_provider_error_and_budget_statuses(self):
+        engine = ScoringEngine(_settings(), anthropic_client=None)
+        catalyst = _agent(0.85)
+        fundamental = _agent(0.65)
+        web = _agent(0.75)
+        expected_absent = round((0.85 * 0.35 + 0.65 * 0.25 + 0.75 * 0.20) / (0.35 + 0.25 + 0.20), 4)
+        for status in ("provider_error", "time_budget_exhausted"):
+            with self.subTest(status=status):
+                # score 0.2 would drag the composite down if it were counted.
+                pattern = _agent(0.2, status=status, direction="neutral")
+                result = engine.score_opportunity("AAPL", catalyst, fundamental, pattern, web, regime={})
+                self.assertAlmostEqual(result["raw_score"], expected_absent, places=4)
+                self.assertFalse(result["signal_breakdown"]["pattern"]["counted"])
+
+    def test_time_budget_exhausted_status_renders_in_memo(self):
+        memo_data = {
+            "ticker": "ACME",
+            "direction": "long",
+            "composite_score": 0.7,
+            "classification": "moderate",
+            "generated_at": "2026-07-08T12:00",
+            "thesis": "t",
+            "catalyst": {"catalyst_type": "product", "catalyst_summary": "launch", "materiality": 0.6, "direction_confidence": 0.6},
+            "fundamental": {"quality_score": 0.7, "valuation_score": 0.6, "growth_score": 0.6, "balance_sheet_score": 0.7},
+            "pattern": {"status": "time_budget_exhausted", "reasoning": "budget spent"},
+            "web_research": {"status": "stub"},
+            "opus_evaluation": {"recommendation": "pass", "conviction": "low", "key_risk": "x", "stress_test": "ok", "reasoning": "r"},
+        }
+        out = format_memo_plain(memo_data)
+        self.assertIn("hit the live time budget", out)
+
+    # ── A4: FMP screener endpoint rename ──────────────────────────
+
+    def test_fmp_screener_uses_company_screener_endpoint(self):
+        calls = []
+
+        def fake_fmp(endpoint, params=None):
+            calls.append(endpoint)
+            if endpoint == "/company-screener":
+                return [{"symbol": "PEER1", "sector": "Technology", "industry": "Software", "marketCap": 1e9, "exchangeShortName": "NASDAQ"}]
+            return None  # old /stock-screener path 404s → None
+
+        resolver = PeerResolver(_settings(fmp_api_key="x"), manual_peers={}, session_factory=None)
+        resolver._fmp_request = fake_fmp
+        profile = {"sector": "Technology", "industry": "Software", "exchangeShortName": "NASDAQ", "mktCap": 1e9}
+        peers = resolver._fmp_screener_peers("AAA", profile)
+        self.assertIn("/company-screener", calls)
+        self.assertNotIn("/stock-screener", calls)
+        self.assertTrue(any(p.ticker == "PEER1" for p in peers))
+
+    def test_fmp_screener_404_degrades_gracefully(self):
+        resolver = PeerResolver(_settings(fmp_api_key="x"), manual_peers={}, session_factory=None)
+        resolver._fmp_request = lambda endpoint, params=None: None  # simulate 404 → None
+        profile = {"sector": "Technology", "industry": "Software", "exchangeShortName": "NASDAQ", "mktCap": 1e9}
+        self.assertEqual(resolver._fmp_screener_peers("AAA", profile), [])
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from typing import Any
 from data.event_extractor import EventExtractor
 from database.models import PatternSearchRun
 from utils.logger import get_logger
-from utils.redaction import redact_payload
+from utils.redaction import redact_payload, redact_text
 
 log = get_logger("event_discovery")
 
@@ -167,11 +167,14 @@ class EventDiscoveryEngine:
         web_search_client=None,
         perplexity_client=None,
         extractor: EventExtractor | None = None,
+        outcome_engine=None,
     ):
         self.settings = settings
         self.web_search_client = web_search_client
         self.perplexity_client = perplexity_client
         self.extractor = extractor or EventExtractor()
+        self.outcome_engine = outcome_engine
+        self._outcome_engine_instance = None
 
     def generate_queries(self, request: dict, years: list[int] | None = None, llm_expanded: list[str] | None = None) -> list[str]:
         setup_type = request.get("setup_type") or ""
@@ -216,6 +219,7 @@ class EventDiscoveryEngine:
         queries = self.generate_queries(request)
         stored = []
         rejected = []
+        provider_errors: list[str] = []
         provider_usage = {"gemini": 0, "perplexity": 0}
         min_total = int(getattr(self.settings, "pattern_min_total_matches", 10) if self.settings else 10)
         max_events_per_query = int(getattr(self.settings, "pattern_max_events_per_query", 10) if self.settings else 10)
@@ -224,12 +228,20 @@ class EventDiscoveryEngine:
         for query in queries:
             if not budget.can_request() or len(stored) >= min_total:
                 break
-            candidates = self._gemini_events(query, request, max_events_per_query) if self.web_search_client else []
-            provider_usage["gemini"] += 1 if self.web_search_client else 0
-            budget.mark_request()
+            candidates = []
+            if self.web_search_client:
+                gemini_candidates, gemini_error = self._gemini_events(query, request, max_events_per_query)
+                candidates = gemini_candidates
+                provider_usage["gemini"] += 1
+                if gemini_error:
+                    provider_errors.append(gemini_error)
+                budget.mark_request()
             if len(candidates) < 2 and self.perplexity_client and budget.can_request():
-                candidates.extend(self._perplexity_events(query, request, max_events_per_query))
+                pplx_candidates, pplx_error = self._perplexity_events(query, request, max_events_per_query)
+                candidates.extend(pplx_candidates)
                 provider_usage["perplexity"] += 1
+                if pplx_error:
+                    provider_errors.append(pplx_error)
                 budget.mark_request()
 
             for item in candidates[:max_events_per_query]:
@@ -243,12 +255,24 @@ class EventDiscoveryEngine:
                 else:
                     rejected.append(status)
 
+        outcomes_computed = self._compute_inline_outcomes(session, stored)
+
         if stored:
             status = "active"
-        elif budget.expired() or budget.requests_used >= budget.max_requests:
-            status = "no_matches"
+        elif provider_errors:
+            status = "provider_error"
         else:
             status = "no_matches"
+
+        metadata = {
+            "provider_usage": provider_usage,
+            "rejected": len(rejected),
+            "rejected_reasons": rejected[:10],
+            "inline_outcomes_computed": outcomes_computed,
+        }
+        if provider_errors:
+            metadata["provider_errors"] = provider_errors[:5]
+            metadata["error"] = provider_errors[0]
 
         return self._record_run(
             session,
@@ -258,10 +282,51 @@ class EventDiscoveryEngine:
             queries[: budget.requests_used],
             stored,
             budget,
-            {"provider_usage": provider_usage, "rejected": len(rejected), "rejected_reasons": rejected[:10]},
+            metadata,
         )
 
-    def _gemini_events(self, query: str, request: dict, max_events: int) -> list[dict]:
+    def _compute_inline_outcomes(self, session, events: list[Any]) -> int:
+        """Compute outcomes at store time for events already past the maturity window.
+
+        Immature events stay outcome-less (ranked as partial) until backfill.
+        Capped per scan by ``pattern_inline_outcome_max_per_scan`` so live scans
+        don't balloon into hundreds of price fetches.
+        """
+        cap = int(getattr(self.settings, "pattern_inline_outcome_max_per_scan", 10) if self.settings else 10)
+        if cap <= 0 or not events:
+            return 0
+        engine = self._get_outcome_engine()
+        if engine is None:
+            return 0
+        from data.event_outcomes import is_event_mature
+
+        computed = 0
+        for event in events:
+            if computed >= cap:
+                break
+            if not is_event_mature(getattr(event, "event_date", None)):
+                continue
+            try:
+                engine.compute_outcome(event, session=session)
+                computed += 1
+            except Exception as exc:  # pragma: no cover - defensive; price provider hiccups
+                log.warning("inline_outcome_failed", ticker=getattr(event, "ticker", ""), error=redact_text(str(exc)))
+        if computed:
+            log.info("pattern_inline_outcomes_computed", count=computed)
+        return computed
+
+    def _get_outcome_engine(self):
+        if self._outcome_engine_instance is not None:
+            return self._outcome_engine_instance
+        if self.outcome_engine is not None:
+            self._outcome_engine_instance = self.outcome_engine
+        elif self.settings is not None:
+            from data.event_outcomes import EventOutcomeEngine
+
+            self._outcome_engine_instance = EventOutcomeEngine(self.settings)
+        return self._outcome_engine_instance
+
+    def _gemini_events(self, query: str, request: dict, max_events: int) -> tuple[list[dict], str | None]:
         prompt = self._event_prompt(query, request, max_events)
         try:
             result = self.web_search_client.search_and_analyze_json_with_grounding(
@@ -269,7 +334,7 @@ class EventDiscoveryEngine:
                 prompt,
                 model=getattr(self.settings, "gemini_discovery_model", None),
                 max_searches=2,
-                max_tokens=4096,
+                max_tokens=8192,
             )
         except AttributeError:
             result = self.web_search_client.search_and_analyze_json(
@@ -277,23 +342,37 @@ class EventDiscoveryEngine:
                 prompt,
                 model=getattr(self.settings, "gemini_discovery_model", None),
                 max_searches=2,
-                max_tokens=4096,
+                max_tokens=8192,
             )
         except Exception as exc:
-            log.warning("gemini_event_discovery_failed", query=query, error=str(exc))
-            return []
+            log.warning("gemini_event_discovery_failed", query=query, error=redact_text(str(exc)))
+            return [], f"gemini: {redact_text(str(exc))}"
+        grounding = result.get("_grounding", {}) if isinstance(result, dict) else {}
+        # Grounding guard: a search that returned no queries and no sources is not
+        # evidence — drop every candidate from it rather than store ungrounded events.
+        if not grounding.get("grounded"):
+            log.info(
+                "pattern_event_rejected",
+                reason="ungrounded",
+                query=query,
+                queries=len(grounding.get("queries", [])),
+                sources=len(grounding.get("sources", [])),
+            )
+            return [], None
         events = result.get("events", []) if isinstance(result, dict) else []
+        if not isinstance(events, list):
+            events = []
         for event in events:
             event["_provider"] = "gemini"
-            event["_provider_result"] = result.get("_grounding", {}) if isinstance(result, dict) else {}
-        return events if isinstance(events, list) else []
+            event["_provider_result"] = grounding
+        return events, None
 
-    def _perplexity_events(self, query: str, request: dict, max_events: int) -> list[dict]:
+    def _perplexity_events(self, query: str, request: dict, max_events: int) -> tuple[list[dict], str | None]:
         try:
             result = self.perplexity_client.search(query, max_results=max_events)
         except Exception as exc:
-            log.warning("perplexity_event_search_failed", query=query, error=str(exc))
-            return []
+            log.warning("perplexity_event_search_failed", query=query, error=redact_text(str(exc)))
+            return [], f"perplexity: {redact_text(str(exc))}"
         events = []
         for row in result.get("results", []) if isinstance(result, dict) else []:
             snippet = row.get("snippet") or row.get("title") or ""
@@ -318,7 +397,7 @@ class EventDiscoveryEngine:
                     "_provider_result": row,
                 }
             )
-        return events
+        return events, None
 
     def _event_prompt(self, query: str, request: dict, max_events: int) -> str:
         return json.dumps(

@@ -286,7 +286,9 @@ class PeerResolver:
         if self.fmp_client and hasattr(self.fmp_client, "screen"):
             rows = self.fmp_client.screen(params)
         else:
-            rows = self._fmp_request("/stock-screener", params) or []
+            # FMP renamed /stock-screener → /company-screener on the stable API
+            # (the old path now 404s). Same param names.
+            rows = self._fmp_request("/company-screener", params) or []
 
         peers = []
         for row in rows if isinstance(rows, list) else []:
