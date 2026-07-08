@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     gemini_discovery_model: str = "gemini-3.1-pro-preview"
     gemini_web_research_model: str = "gemini-3.1-pro-preview"
     gemini_flash_escalation_threshold: float = 0.50  # Tickers scoring above this escalate to Sonnet
+    # Grounded tier-2 responses carry a prose preamble before the JSON; 512/2048 truncate
+    # mid-JSON (finish=MAX_TOKENS). 4096 fits reliably. NOTE: Google Search grounding is
+    # incompatible with response_mime_type=application/json, so structured output is not an
+    # option here — the screener relies on a large budget + robust extraction instead.
+    gemini_flash_max_output_tokens: int = 4096
     web_research_max_searches: int = 5
     web_research_cache_enabled: bool = True
     web_research_cache_ttl_hours: int = 24
