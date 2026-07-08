@@ -17,12 +17,28 @@ log = get_logger("web_search")
 RAW_PARSE_ERROR_LIMIT = 20_000
 
 
+def is_gemini_billing_error(exc: BaseException) -> bool:
+    """
+    True for Gemini quota/billing exhaustion — Google reports depleted prepay
+    credits as 429 RESOURCE_EXHAUSTED ("prepayment credits are depleted"), which
+    looks like a transient rate limit but is persistent until a top-up. Retrying
+    it just burns ~60s of backoff per call across every Gemini stage (seen in
+    prod 2026-07-08). Must fail fast and be loud instead.
+    """
+    message = str(exc).lower()
+    return "prepayment credits" in message or "credits are depleted" in message
+
+
 def _is_retryable_gemini_error(exc: BaseException) -> bool:
     """
     Transient Gemini failures worth retrying: 5xx server errors, 429 rate limits,
     and transport errors. Duck-typed (via the error's `code`/class name) so this
     module doesn't hard-depend on google-genai being importable.
     """
+    if is_gemini_billing_error(exc):
+        # Loud, greppable marker — mirrors anthropic_client's anthropic_credit_exhausted.
+        log.critical("gemini_credit_exhausted", error=str(exc)[:300])
+        return False
     if isinstance(exc, (ConnectionError, TimeoutError)):
         return True
     code = getattr(exc, "code", None)

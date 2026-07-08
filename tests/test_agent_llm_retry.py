@@ -9,7 +9,7 @@ import httpx
 
 from utils.anthropic_client import AnthropicClient, _is_retryable_anthropic_error, is_billing_error
 from utils.escalation_manager import EscalationManager
-from utils.web_search_client import WebSearchClient, _is_retryable_gemini_error
+from utils.web_search_client import WebSearchClient, _is_retryable_gemini_error, is_gemini_billing_error
 
 
 def _rate_limit_error():
@@ -123,6 +123,17 @@ class GeminiRetryTest(unittest.TestCase):
         self.assertTrue(_is_retryable_gemini_error(ServerError("boom")))
         self.assertTrue(_is_retryable_gemini_error(SimpleNamespace(code=429)))
         self.assertTrue(_is_retryable_gemini_error(TimeoutError()))
+
+    def test_gemini_billing_429_not_retried_and_flagged(self):
+        billing = ServerError(
+            "429 RESOURCE_EXHAUSTED: Your prepayment credits are depleted."
+        )
+        self.assertTrue(is_gemini_billing_error(billing))
+        self.assertFalse(is_gemini_billing_error(ServerError("503 backend error")))
+        with patch("utils.web_search_client.log") as mock_log:
+            self.assertFalse(_is_retryable_gemini_error(billing))
+        mock_log.critical.assert_called_once()
+        self.assertEqual(mock_log.critical.call_args.args[0], "gemini_credit_exhausted")
         self.assertFalse(_is_retryable_gemini_error(SimpleNamespace(code=400)))
 
     def test_discovery_gemini_search_retries_then_succeeds(self):
