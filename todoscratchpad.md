@@ -48,4 +48,14 @@
 - [ ] **Run logging and cost tracking** — persist per-scan token/cost/duration metrics beyond provider dashboards (see G-observability Gemini call ledger + `BRY-106`).
 - [ ] **Ad-hoc scoring stage tags** — 7 ad-hoc scoring calls are untagged and miss the BRY-243 corpus; fix specced in `specs/audit-2026-07-04/G-observability.md`.
 
+## Process notes
+
+**Release steps — feature-flag flips are releases, not config tweaks.** Any
+Railway feature-flag flip (e.g. `PATTERN_ANALOG_ENGINE_ENABLED`,
+`SCHEDULER_ENABLED`) is a release step: record who flipped it, when, and the
+pre-flip evidence (backfill/bakeoff run, smoke result) in the tracker before and
+after the flip. The pattern-engine went live when its flag was enabled without
+the spec-mandated backfill + bakeoff gate, which is how a green test suite
+coexisted with a structurally broken production feature.
+
 *Last updated: 2026-07-08*
