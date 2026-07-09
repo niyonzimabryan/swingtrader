@@ -26,6 +26,21 @@ Search-backed discovery stays as-is for the genuinely unstructured classes
 
 ## Changes
 
+### H0. FMP plan-access preflight (DO THIS FIRST — hard gate)
+Production evidence (2026-07-08): FMP `/stable/company-screener` returns **402
+Payment Required** on the current FMP plan — some stable endpoints are
+plan-gated. Before building anything:
+1. Probe the earnings-surprises and grades/upgrades-downgrades endpoints with
+   the real key (one ticker each). NOTE: `FMP_API_KEY` is NOT in the local
+   repo `.env` — it lives on Railway. Get it via `railway variables --kv |
+   grep FMP` (read-only) or ask Bryan; never print/commit the value.
+2. If either endpoint 402s: STOP implementation. Report which endpoints are
+   gated, what FMP tier unlocks them, and whether Finnhub's equivalents
+   (earnings surprises, upgrade/downgrade feed — key also on Railway) cover
+   the same data. That report becomes the plan-upgrade-vs-Finnhub decision for
+   Bryan; do not build against endpoints the plan can't call.
+3. If both work: proceed, and record the probe outputs in the PR body.
+
 ### H1. Bulk loader script: `scripts/bulk_load_structured_events.py`
 - CLI: `--tickers AAPL,MSFT` or `--universe` (reuse the ~503-ticker universe
   from `orchestrator/universe.py`), `--years N` (default 3), `--classes
