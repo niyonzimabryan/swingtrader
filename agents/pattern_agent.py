@@ -17,6 +17,7 @@ import json
 import time
 from datetime import datetime as dt
 from pathlib import Path
+from utils.timeutils import utcnow_naive
 from agents.base_agent import BaseAgent, AgentOutput
 from config.peers import get_peer_resolution, get_peers
 from config.settings import resolve_backfill_queue_path
@@ -452,7 +453,7 @@ class PatternAgent(BaseAgent):
             "ticker": ticker,
             "setup_type": request.get("setup_type"),
             "catalyst_summary": request.get("catalyst_summary"),
-            "queued_at": dt.utcnow().isoformat() + "Z",
+            "queued_at": utcnow_naive().isoformat() + "Z",
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

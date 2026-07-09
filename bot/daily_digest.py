@@ -3,7 +3,8 @@ Daily Digest — 5 PM ET automated summary.
 Pure math, no AI. Summarizes portfolio state, today's activity, position health.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
+from utils.timeutils import utcnow_naive
 from zoneinfo import ZoneInfo
 
 from database.db import get_session
@@ -95,7 +96,7 @@ class DailyDigest:
                 else:
                     pnl_pct = 0
 
-                days_held = (datetime.utcnow() - trade.entry_date).days if trade.entry_date else 0
+                days_held = (utcnow_naive() - trade.entry_date).days if trade.entry_date else 0
                 max_days = self.settings.max_holding_days
 
                 if pnl_pct > 0:
@@ -191,7 +192,7 @@ class DailyDigest:
 
             # Time running
             if trade.entry_date:
-                days_held = (datetime.utcnow() - trade.entry_date).days
+                days_held = (utcnow_naive() - trade.entry_date).days
                 remaining = self.settings.max_holding_days - days_held
                 if 0 < remaining <= 3:
                     alerts.append(f"⏰ {ticker_symbol} has {remaining} trading days remaining")

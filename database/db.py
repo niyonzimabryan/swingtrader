@@ -111,6 +111,30 @@ def _run_migrations(eng):
             conn.commit()
         log.info("migration_applied", migration="create_web_research_cache")
 
+    # E3: performance indices on hot digest/status/monitor query predicates.
+    # Idempotent — CREATE INDEX IF NOT EXISTS matches the models.__table_args__.
+    index_ddl = {
+        "ix_memos_created_at": "CREATE INDEX IF NOT EXISTS ix_memos_created_at ON memos (created_at)",
+        "ix_trades_status_created_at": "CREATE INDEX IF NOT EXISTS ix_trades_status_created_at ON trades (status, created_at)",
+        "ix_trades_broker_status": "CREATE INDEX IF NOT EXISTS ix_trades_broker_status ON trades (broker, status)",
+    }
+    table_names = set(inspector.get_table_names())
+    with eng.connect() as conn:
+        for index_name, ddl in index_ddl.items():
+            table = "memos" if "memos" in index_name else "trades"
+            if table in table_names:
+                conn.execute(text(ddl))
+                log.info("migration_applied", migration=f"create_index_{index_name}")
+        conn.commit()
+
+    # E4: drop the orphaned reddit_sentiment table (Reddit retired at 465c835;
+    # model class removed, no runtime reads/writes).
+    if "reddit_sentiment" in table_names:
+        with eng.connect() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS reddit_sentiment"))
+            conn.commit()
+        log.info("migration_applied", migration="drop_reddit_sentiment")
+
 
 @contextmanager
 def get_session() -> Session:

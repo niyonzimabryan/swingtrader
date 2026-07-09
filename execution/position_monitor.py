@@ -13,6 +13,7 @@ Handles:
 
 import asyncio
 from datetime import datetime, timezone
+from utils.timeutils import utcnow_naive
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_
@@ -312,7 +313,7 @@ class PositionMonitor:
         if not trade.entry_date:
             return
 
-        days_held = (datetime.utcnow() - trade.entry_date).days
+        days_held = (utcnow_naive() - trade.entry_date).days
         max_days = self.settings.max_holding_days
 
         # Time expiring warning (2 days before max)

@@ -5,7 +5,7 @@ Handles: approve, reject, modify, watchlist, deep research actions on IC memos.
 
 import asyncio
 import json
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 from telegram import Update
 from telegram.ext import ContextTypes
 from bot.auth import is_authorized
@@ -86,7 +86,7 @@ async def handle_approve(query, context, memo_id: int):
             return
 
         memo.status = "approved"
-        memo.responded_at = datetime.utcnow()
+        memo.responded_at = utcnow_naive()
         ticker = memo.ticker.symbol if memo.ticker else "?"
         trade_params = memo.trade_params_dict
 
@@ -143,7 +143,7 @@ async def handle_reject(query, context, memo_id: int):
         memo = session.query(Memo).filter_by(id=memo_id).first()
         if memo:
             memo.status = "rejected"
-            memo.responded_at = datetime.utcnow()
+            memo.responded_at = utcnow_naive()
 
     await query.edit_message_reply_markup(reply_markup=None)
     await query.message.reply_text("❌ Rejected. Logged for signal calibration.", parse_mode=None)
@@ -166,7 +166,7 @@ async def handle_watchlist(query, context, memo_id: int):
         memo = session.query(Memo).filter_by(id=memo_id).first()
         if memo:
             memo.status = "watchlisted"
-            memo.responded_at = datetime.utcnow()
+            memo.responded_at = utcnow_naive()
             ticker_symbol = memo.ticker.symbol if memo.ticker else None
             sector = memo.ticker.sector if memo.ticker else ""
 
@@ -349,7 +349,7 @@ async def handle_dismiss(query, context, memo_id: int):
         memo = session.query(Memo).filter_by(id=memo_id).first()
         if memo:
             memo.status = "dismissed"
-            memo.responded_at = datetime.utcnow()
+            memo.responded_at = utcnow_naive()
 
     await query.edit_message_reply_markup(reply_markup=None)
     await query.message.reply_text("Dismissed. Logged for signal calibration.", parse_mode=None)
@@ -585,7 +585,7 @@ async def handle_pos_extend(query, context, trade_id: int):
             ticker = trade.ticker.symbol if trade.ticker else "?"
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text(
-                f"✅ {ticker} extended by 5 days. New expiry in ~{(trade.entry_date + timedelta(days=20) - datetime.utcnow()).days} days.",
+                f"✅ {ticker} extended by 5 days. New expiry in ~{(trade.entry_date + timedelta(days=20) - utcnow_naive()).days} days.",
                 parse_mode=None,
             )
         else:

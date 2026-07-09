@@ -6,6 +6,7 @@ sends structured data to Sonnet for narrative analysis.
 
 import json
 from datetime import datetime, timedelta
+from utils.timeutils import utcnow_naive
 from zoneinfo import ZoneInfo
 
 from database.db import get_session
@@ -124,7 +125,7 @@ class WeeklyReport:
                         pnl_pct = (pos["current_price"] - trade.entry_price) / trade.entry_price * 100
                 else:
                     pnl_pct = 0
-                days_held = (datetime.utcnow() - trade.entry_date).days if trade.entry_date else 0
+                days_held = (utcnow_naive() - trade.entry_date).days if trade.entry_date else 0
                 position_data.append({
                     "ticker": ticker_sym,
                     "direction": direction,

@@ -11,7 +11,8 @@ Handles:
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from utils.timeutils import utcnow_naive
 
 from sqlalchemy import or_
 
@@ -173,7 +174,7 @@ class OrderMonitor:
 
             # 3. Check time-based exit
             if trade.entry_date:
-                days_held = (datetime.utcnow() - trade.entry_date).days
+                days_held = (utcnow_naive() - trade.entry_date).days
                 if days_held >= self.settings.max_holding_days:
                     await self._handle_time_exit(trade, ticker, session)
                     return
@@ -191,7 +192,7 @@ class OrderMonitor:
             trade.filled_notional = float(filled_notional)
         elif actual_price and filled_qty:
             trade.filled_notional = float(actual_price) * float(filled_qty)
-        trade.entry_date = datetime.utcnow()
+        trade.entry_date = utcnow_naive()
         trade.status = "open"
         session.commit()
 
@@ -551,7 +552,7 @@ class OrderMonitor:
             pnl_abs = self._pnl_abs(trade, pnl_pct)
 
         trade.exit_price = exit_price
-        trade.exit_date = datetime.utcnow()
+        trade.exit_date = utcnow_naive()
         trade.pnl_pct = round(pnl_pct, 2)
         trade.pnl_absolute = round(pnl_abs, 2)
         trade.exit_reason = "stop_loss"
@@ -598,7 +599,7 @@ class OrderMonitor:
         else:
             # Full exit — all targets hit or position fully closed
             trade.exit_price = exit_price
-            trade.exit_date = datetime.utcnow()
+            trade.exit_date = utcnow_naive()
             trade.pnl_pct = round(pnl_pct, 2)
             trade.pnl_absolute = round(pnl_abs, 2)
             trade.exit_reason = f"target_{target_num}"
@@ -616,7 +617,7 @@ class OrderMonitor:
 
     async def _handle_time_exit(self, trade: Trade, ticker: str, session):
         """Close position that exceeded max holding days."""
-        days_held = (datetime.utcnow() - trade.entry_date).days
+        days_held = (utcnow_naive() - trade.entry_date).days
         log.info("time_exit_triggered", ticker=ticker, days_held=days_held)
 
         try:
@@ -652,7 +653,7 @@ class OrderMonitor:
             pnl_abs = self._pnl_abs(trade, pnl_pct)
 
         trade.exit_price = current_price
-        trade.exit_date = datetime.utcnow()
+        trade.exit_date = utcnow_naive()
         trade.pnl_pct = round(pnl_pct, 2)
         trade.pnl_absolute = round(pnl_abs, 2)
         trade.exit_reason = "time_exit"
@@ -704,7 +705,7 @@ class OrderMonitor:
 
         trade.status = "closed"
         trade.exit_reason = "reconciled_missing_position"
-        trade.exit_date = datetime.utcnow()
+        trade.exit_date = utcnow_naive()
         existing_notes = trade.operator_notes or ""
         note = f"RECONCILED_MISSING_POSITION:{error[:180]}|{fill_note}"
         trade.operator_notes = f"{existing_notes}|{note}" if existing_notes else note

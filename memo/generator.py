@@ -5,7 +5,7 @@ Calls Sonnet for thesis + bear case, computes trade parameters.
 """
 
 import json
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 from agents.base_agent import AgentOutput
 from data.market_data import MarketDataAdapter
 from database.db import get_session
@@ -73,7 +73,7 @@ class MemoGenerator:
             "direction_raw": direction_raw,
             "composite_score": scoring_result.get("final_score", 0),
             "classification": scoring_result.get("classification", "unknown"),
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": utcnow_naive().isoformat() + "Z",
             "thesis": thesis,
             "bear_case": bear_case,
             "catalyst": {**catalyst.raw_data, "confidence": catalyst.confidence, "direction": catalyst.direction},

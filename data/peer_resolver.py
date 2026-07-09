@@ -7,6 +7,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from utils.timeutils import utcnow_naive
 from typing import Any, Callable
 
 import httpx
@@ -69,7 +70,7 @@ class PeerResolver:
 
     def resolve(self, ticker: str, session=None, allow_network: bool = True) -> dict:
         ticker = (ticker or "").upper().strip()
-        started = datetime.utcnow()
+        started = utcnow_naive()
         if not ticker:
             return self._result("", [], "low_confidence_peers", 0.0, started, ["missing ticker"])
 
@@ -132,15 +133,15 @@ class PeerResolver:
             "peers": [p.as_dict() for p in peers],
             "status": status,
             "confidence": round(float(confidence), 3),
-            "generated_at": datetime.utcnow().isoformat() + "Z",
-            "duration_s": round((datetime.utcnow() - started).total_seconds(), 3),
+            "generated_at": utcnow_naive().isoformat() + "Z",
+            "duration_s": round((utcnow_naive() - started).total_seconds(), 3),
             "warnings": warnings,
         }
 
     def _cached_edges(self, ticker: str, session=None) -> list[PeerCandidate]:
         if session is None and not self.session_factory:
             return []
-        now = datetime.utcnow()
+        now = utcnow_naive()
         try:
             if session is not None:
                 rows = (
@@ -173,7 +174,7 @@ class PeerResolver:
     def _persist_edges(self, ticker: str, peers: list[PeerCandidate], session=None) -> None:
         if not peers or (session is None and not self.session_factory):
             return
-        expires = datetime.utcnow() + timedelta(days=self.cache_ttl_days)
+        expires = utcnow_naive() + timedelta(days=self.cache_ttl_days)
         as_of = date.today()
         try:
             if session is not None:
@@ -215,7 +216,7 @@ class PeerResolver:
     def _persist_profile(self, ticker: str, profile: dict, session=None) -> None:
         if session is None and not self.session_factory:
             return
-        expires = datetime.utcnow() + timedelta(days=self.cache_ttl_days)
+        expires = utcnow_naive() + timedelta(days=self.cache_ttl_days)
         try:
             if session is not None:
                 existing = session.query(CompanyProfile).filter_by(ticker=ticker).first()

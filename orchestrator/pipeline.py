@@ -13,6 +13,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import datetime
+from utils.timeutils import utcnow_naive
 
 from agents.base_agent import AgentOutput
 from config.tickers import UNIVERSE
@@ -209,7 +210,7 @@ class TradingPipeline:
             return
 
         log.info("full_scan_start")
-        run_start = datetime.utcnow()
+        run_start = utcnow_naive()
         scan_session_id = f"scan-{run_start.strftime('%Y%m%d-%H%M%S')}"
         self._start_pipeline_run(scan_session_id, "scheduled_scan")
 
@@ -327,7 +328,7 @@ class TradingPipeline:
                 log.error("ticker_scan_failed", ticker=item.ticker, error=str(e))
                 continue
 
-        duration = (datetime.utcnow() - run_start).total_seconds()
+        duration = (utcnow_naive() - run_start).total_seconds()
         log.info("full_scan_complete", duration_s=duration, memos=memos_generated)
         self._finish_pipeline_run(
             scan_session_id,
@@ -353,7 +354,7 @@ class TradingPipeline:
             from zoneinfo import ZoneInfo
             et_hour = datetime.now(ZoneInfo("America/New_York")).hour
         except Exception:
-            et_hour = datetime.utcnow().hour - 5  # rough fallback
+            et_hour = utcnow_naive().hour - 5  # rough fallback
 
         if et_hour < 10:
             scan_type = "Pre-Market"
@@ -902,7 +903,7 @@ class TradingPipeline:
         _progress = progress_cb or (lambda s: None)
 
         # Wrap in Langfuse session for observability
-        session_id = f"adhoc-{ticker}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        session_id = f"adhoc-{ticker}-{utcnow_naive().strftime('%Y%m%d-%H%M%S')}"
         self._start_pipeline_run(session_id, "ad_hoc", metadata={"ticker": ticker})
         try:
             with _langfuse_context(session_id=session_id, tags=["ad_hoc", ticker]):
@@ -1021,7 +1022,7 @@ class TradingPipeline:
                 if not row:
                     return
                 row.status = status
-                row.ended_at = datetime.utcnow()
+                row.ended_at = utcnow_naive()
                 row.scanned_count = scanned_count
                 row.screened_count = screened_count
                 row.researched_count = researched_count

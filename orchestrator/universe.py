@@ -4,7 +4,7 @@ Phase 1: loads from static config.
 V2: adds watchlist management (operator/Opus-driven lower-threshold re-scanning).
 """
 
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 
 from config.tickers import UNIVERSE
 from database.db import get_session
@@ -66,7 +66,7 @@ def add_to_watchlist(
             )
             if oldest:
                 oldest.active = False
-                oldest.deactivated_at = datetime.utcnow()
+                oldest.deactivated_at = utcnow_naive()
                 log.info("watchlist_evicted", ticker=oldest.ticker)
 
         # If no sector provided, look up from UNIVERSE
@@ -103,7 +103,7 @@ def remove_from_watchlist(ticker: str) -> bool:
         ).first()
         if item:
             item.active = False
-            item.deactivated_at = datetime.utcnow()
+            item.deactivated_at = utcnow_naive()
             log.info("watchlist_removed", ticker=ticker)
             return True
         return False

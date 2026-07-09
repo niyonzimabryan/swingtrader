@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, date, timezone
+from utils.timeutils import utcnow_naive
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, Text, DateTime, Date,
     ForeignKey, Enum, UniqueConstraint, Index, create_engine
@@ -18,8 +19,8 @@ class Ticker(Base):
     sector = Column(String(100), default="")
     market_cap = Column(Float, default=0)
     in_universe = Column(Boolean, default=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    added_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     # Relationships
     price_data = relationship("PriceData", back_populates="ticker", cascade="all, delete-orphan")
@@ -28,7 +29,6 @@ class Ticker(Base):
     signals = relationship("Signal", back_populates="ticker", cascade="all, delete-orphan")
     trades = relationship("Trade", back_populates="ticker", cascade="all, delete-orphan")
     memos = relationship("Memo", back_populates="ticker", cascade="all, delete-orphan")
-    legacy_reddit_sentiments = relationship("_LegacyRedditSentiment", back_populates="ticker", cascade="all, delete-orphan")
 
 
 class PriceData(Base):
@@ -69,7 +69,7 @@ class Catalyst(Base):
     reasoning = Column(Text, default="")
     haiku_score = Column(Integer, default=0)  # 1-5 pre-screen score
     escalated = Column(Boolean, default=False)
-    detected_at = Column(DateTime, default=datetime.utcnow)
+    detected_at = Column(DateTime, default=utcnow_naive)
     run_id = Column(String(50), default="")
 
     ticker = relationship("Ticker", back_populates="catalysts")
@@ -93,7 +93,7 @@ class FundamentalData(Base):
     peer_comparison = Column(Text, default="")
     flags = Column(Text, default="[]")  # JSON array
     reasoning = Column(Text, default="")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     ticker = relationship("Ticker", back_populates="fundamentals")
 
@@ -127,13 +127,17 @@ class Signal(Base):
     direction = Column(String(20), default="neutral")
     reasoning = Column(Text, default="")
     raw_output = Column(Text, default="{}")  # JSON
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
     ticker = relationship("Ticker", back_populates="signals")
 
 
 class Trade(Base):
     __tablename__ = "trades"
+    __table_args__ = (
+        Index("ix_trades_status_created_at", "status", "created_at"),
+        Index("ix_trades_broker_status", "broker", "status"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     ticker_id = Column(Integer, ForeignKey("tickers.id"), nullable=False)
@@ -174,8 +178,8 @@ class Trade(Base):
     t1_approaching_sent = Column(Boolean, default=False)
     time_warning_sent = Column(Boolean, default=False)
     drawdown_alert_sent = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     ticker = relationship("Ticker", back_populates="trades")
     memo = relationship("Memo", back_populates="trade")
@@ -187,7 +191,7 @@ class PipelineRun(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String(80), unique=True, nullable=False, index=True)
     trigger_source = Column(String(40), default="")
-    started_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=utcnow_naive)
     ended_at = Column(DateTime, nullable=True)
     status = Column(String(30), default="running")
     scanned_count = Column(Integer, default=0)
@@ -200,8 +204,8 @@ class PipelineRun(Base):
     degraded_stages = Column(Text, default="[]")
     errors_json = Column(Text, default="[]")
     metadata_json = Column(Text, default="{}")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
 
 class OrderEvent(Base):
@@ -221,11 +225,16 @@ class OrderEvent(Base):
     status = Column(String(40), default="")
     notional = Column(Float, nullable=True)
     raw_payload = Column(Text, default="{}")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
 
 class Memo(Base):
     __tablename__ = "memos"
+    __table_args__ = (
+        # Digest/weekly/automation queries filter and order memos by created_at
+        # only (status is filtered in Python, never in SQL), so created_at leads.
+        Index("ix_memos_created_at", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     ticker_id = Column(Integer, ForeignKey("tickers.id"), nullable=False)
@@ -242,7 +251,7 @@ class Memo(Base):
     status = Column(String(20), default="pending")  # pending, approved, rejected, watchlisted, expired
     operator_notes = Column(Text, default="")
     telegram_message_id = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
     responded_at = Column(DateTime, nullable=True)
 
     ticker = relationship("Ticker", back_populates="memos")
@@ -281,7 +290,7 @@ class MacroRegime(Base):
     max_positions = Column(Integer, default=6)
     reasoning = Column(Text, default="")
     raw_inputs = Column(Text, default="{}")  # JSON
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
 
 class HistoricalPattern(Base):
@@ -305,33 +314,7 @@ class HistoricalPattern(Base):
     max_drawdown = Column(Float, nullable=True)
     max_drawdown_day = Column(Integer, nullable=True)
     raw_data = Column(Text, default="{}")
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class _LegacyRedditSentiment(Base):
-    """Legacy table mapping kept so create_all() tolerates old SQLite files.
-
-    The runtime Reddit agent/data adapter has been retired in favor of web research.
-    Do not add new reads or writes to this table.
-    """
-
-    __tablename__ = "reddit_sentiment"
-    __table_args__ = (
-        UniqueConstraint("ticker_id", "date", name="uq_reddit_ticker_date"),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    ticker_id = Column(Integer, ForeignKey("tickers.id"), nullable=False)
-    date = Column(Date, nullable=False)
-    mention_volume = Column(String(20), default="normal")  # high, normal, low
-    mention_volume_zscore = Column(Float, default=0)
-    sentiment = Column(String(20), default="neutral")  # bullish, bearish, mixed, neutral
-    sentiment_shift = Column(String(30), default="stable")  # newly_bullish, increasingly_bearish, stable, reversing
-    contrarian_flag = Column(Boolean, default=False)
-    reasoning = Column(Text, default="")
-    raw_data = Column(Text, default="{}")  # JSON
-
-    ticker = relationship("Ticker", back_populates="legacy_reddit_sentiments")
+    created_at = Column(DateTime, default=utcnow_naive)
 
 
 # --- V2 Tables ---
@@ -351,7 +334,7 @@ class DiscoveredTicker(Base):
     run_id = Column(String(50), default="")
     progressed_to_pipeline = Column(Boolean, default=False)
     pipeline_score = Column(Float, nullable=True)
-    discovered_at = Column(DateTime, default=datetime.utcnow)
+    discovered_at = Column(DateTime, default=utcnow_naive)
 
 
 class WebResearch(Base):
@@ -373,7 +356,7 @@ class WebResearch(Base):
     sources_summary = Column(Text, default="")
     model_used = Column(String(50), default="")
     run_id = Column(String(50), default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
     ticker = relationship("Ticker")
 
@@ -412,7 +395,7 @@ class WatchlistTicker(Base):
     reason = Column(Text, default="")
     source = Column(String(30), default="")  # "opus_recommendation", "operator", "discovery"
     active = Column(Boolean, default=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
+    added_at = Column(DateTime, default=utcnow_naive)
     deactivated_at = Column(DateTime, nullable=True)
 
 
@@ -430,7 +413,7 @@ class HistoricalContext(Base):
     fwd_pe_ratio = Column(Float, nullable=True)
     momentum_20d = Column(Float, nullable=True)  # 20-day price return (%)
     sp500_distance_200ma = Column(Float, nullable=True)  # S&P 500 distance from 200-day MA (%)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
     pattern = relationship("HistoricalPattern")
 
@@ -452,7 +435,7 @@ class CompanyProfile(Base):
     currency = Column(String(20), default="")
     raw_json = Column(Text, default="{}")
     profile_source = Column(String(40), default="")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
     expires_at = Column(DateTime, nullable=True)
 
 
@@ -496,7 +479,7 @@ class PatternSearchRun(Base):
     cost_estimate = Column(Float, nullable=True)
     duration_s = Column(Float, nullable=True)
     error = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
 
 
 class PatternProviderCache(Base):
@@ -513,8 +496,8 @@ class PatternProviderCache(Base):
     query = Column(Text, default="")
     filters_json = Column(Text, default="{}")
     result_json = Column(Text, default="{}")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
     expires_at = Column(DateTime, nullable=True)
 
 
@@ -550,8 +533,8 @@ class HistoricalEvent(Base):
     dedupe_key = Column(String(64), nullable=False, unique=True, index=True)
     embedding_json = Column(Text, nullable=True)
     raw_json = Column(Text, default="{}")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow_naive)
+    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     outcome = relationship("EventOutcome", back_populates="event", uselist=False, cascade="all, delete-orphan")
     context = relationship("EventContext", back_populates="event", uselist=False, cascade="all, delete-orphan")
@@ -586,7 +569,7 @@ class EventOutcome(Base):
     gap_pct = Column(Float, nullable=True)
     matured_horizons_json = Column(Text, default="[]")
     status = Column(String(40), default="")
-    computed_at = Column(DateTime, default=datetime.utcnow)
+    computed_at = Column(DateTime, default=utcnow_naive)
 
     event = relationship("HistoricalEvent", back_populates="outcome")
 
@@ -612,7 +595,7 @@ class EventContext(Base):
     valuation_source_filing_date = Column(Date, nullable=True)
     pit_quality = Column(String(20), default="unavailable")
     raw_json = Column(Text, default="{}")
-    computed_at = Column(DateTime, default=datetime.utcnow)
+    computed_at = Column(DateTime, default=utcnow_naive)
 
     event = relationship("HistoricalEvent", back_populates="context")
 
@@ -634,6 +617,6 @@ class DeepResearchRequest(Base):
     updated_recommendation = Column(String(30), nullable=True)
     duration_s = Column(Float, nullable=True)
     pdf_path = Column(String(500), nullable=True)
-    submitted_at = Column(DateTime, default=datetime.utcnow)
+    submitted_at = Column(DateTime, default=utcnow_naive)
     completed_at = Column(DateTime, nullable=True)
     error = Column(Text, default="")

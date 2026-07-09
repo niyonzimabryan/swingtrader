@@ -28,6 +28,7 @@ from unittest.mock import patch
 from agents.base_agent import AgentOutput
 from database.db import get_session, init_db
 from database.models import Ticker, Trade
+from utils.timeutils import utcnow_naive
 from execution.order_monitor import OrderMonitor
 from execution.position_manager import PositionManager
 from execution.risk_manager import RiskManager
@@ -482,11 +483,11 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         }
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertEqual(trade.status, "open")
             self.assertEqual(trade.entry_price, 101.50)
             self.assertIsNotNone(trade.entry_date)
@@ -518,7 +519,7 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         }]
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "BBIO", s))
 
         self.assertEqual(self.alpaca.cancelled_orders, ["stop-held"])
@@ -527,7 +528,7 @@ class OrderMonitorTransitionTests(unittest.TestCase):
             [("BBIO", 19, 110.0, 95.0, "long"), ("BBIO", 20, 115.0, 95.0, "long")],
         )
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertIn("TARGETS:t1:oco-BBIO-19-11000,t2:oco-BBIO-20-11500", trade.operator_notes)
             self.assertIn("STOPLEGS:t1:oco-BBIO-19-11000-stopleg,t2:oco-BBIO-20-11500-stopleg", trade.operator_notes)
             self.assertIsNone(trade.alpaca_stop_order_id)
@@ -560,7 +561,7 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         }]
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "BBIO", s))
 
         self.assertEqual(self.alpaca.cancelled_orders, [])
@@ -568,7 +569,7 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         self.assertEqual(len(notifications.messages), 1)
         self.assertIn("manual-1", notifications.messages[0])
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertNotIn("TARGETS:", trade.operator_notes or "")
 
     def _entry_fill_with_held_stop(self, fail_calls=(), stop_loss_fails=False):
@@ -601,7 +602,7 @@ class OrderMonitorTransitionTests(unittest.TestCase):
             "filled_quantity": 0,
         }]
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "BBIO", s))
         return trade_id, notifications
 
@@ -624,11 +625,11 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         self.alpaca.order_status_map["leg-1"] = {"status": "filled", "filled_avg_price": 94.50}
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "BBIO", s))
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertEqual(trade.status, "closed")
             self.assertEqual(trade.exit_reason, "stop_loss")
             self.assertEqual(trade.exit_price, 94.50)
@@ -643,7 +644,7 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         self.assertEqual(self.alpaca.stop_loss_orders, [("BBIO", 39, 95.0, "long")])
         self.assertTrue(any("replacement stop" in m.lower() for m in notifications.messages))
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertEqual(trade.alpaca_stop_order_id, "replacement-stop-BBIO-39")
             self.assertNotIn("TARGETS:", trade.operator_notes or "")
 
@@ -654,7 +655,7 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         self.assertEqual(len(self.alpaca.oco_orders), 1)  # t1 only
         self.assertEqual(self.alpaca.stop_loss_orders, [("BBIO", 20, 95.0, "long")])
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertIn("TARGETS:t1:oco-BBIO-19-11000", trade.operator_notes)
             self.assertIn("STOPLEGS:t1:oco-BBIO-19-11000-stopleg", trade.operator_notes)
             self.assertNotIn("t2:", trade.operator_notes.split("STOPLEGS:")[1])
@@ -682,11 +683,11 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         }
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertEqual(trade.status, "closed")
             self.assertEqual(trade.exit_reason, "stop_loss")
             # Long stop: (95-100)/100*100 = -5%.
@@ -711,11 +712,11 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         }
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertEqual(trade.status, "closed")
             # Short P&L: (entry - exit)/entry*100 = (100-105)/100*100 = -5%.
             self.assertEqual(trade.pnl_pct, -5.0)
@@ -738,11 +739,11 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         self.alpaca.positions_detail = []
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertEqual(trade.status, "closed")
             self.assertEqual(trade.exit_reason, "target_2")
             self.assertEqual(trade.pnl_pct, 15.0)
@@ -764,7 +765,7 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         }
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
 
         self.assertEqual(
@@ -772,18 +773,18 @@ class OrderMonitorTransitionTests(unittest.TestCase):
             [("cover", 4, 90.0), ("cover", 5, 85.0)],
         )
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertIn("TARGETS:t1:cover-AAPL-4,t2:cover-AAPL-5", trade.operator_notes)
 
     def test_time_exit_success_closes_with_direction_aware_pnl_and_cleans_orders(self):
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
         trade_id = self._make_trade(
             direction="short",
             status="open",
             entry_price=100.0,
             shares=10,
-            entry_date=datetime.utcnow() - timedelta(days=30),
+            entry_date=utcnow_naive() - timedelta(days=30),
             alpaca_stop_order_id="stop-4",
             operator_notes="ORDER_STRATEGY:oto|TARGETS:t1:target-3,t2:target-4",
         )
@@ -791,11 +792,11 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         self.alpaca.positions_detail = [{"ticker": "AAPL", "current_price": 90.0}]
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertEqual(trade.status, "closed")
             self.assertEqual(trade.exit_reason, "time_exit")
             self.assertEqual(trade.exit_price, 90.0)
@@ -810,25 +811,25 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         self.alpaca.order_status_map["entry-1"] = {"status": "canceled"}
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "AAPL", s))
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertEqual(trade.status, "cancelled")
             self.assertEqual(trade.exit_reason, "order_expired")
         self.assertIn("stop-5", self.alpaca.cancelled_orders)
 
     def test_missing_alpaca_position_reconciles_without_fabricating_pnl(self):
         # Time-exit attempt but Alpaca says position not found → reconciliation path.
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
         trade_id = self._make_trade(
             symbol="HNGE",
             status="open",
             entry_price=100.0,
             shares=10,
-            entry_date=datetime.utcnow() - timedelta(days=30),  # past max_holding_days
+            entry_date=utcnow_naive() - timedelta(days=30),  # past max_holding_days
             alpaca_stop_order_id="stop-2",
         )
         self.alpaca.order_status_map["entry-1"] = {"status": "filled"}
@@ -840,11 +841,11 @@ class OrderMonitorTransitionTests(unittest.TestCase):
         }
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             asyncio.run(self.monitor._check_trade(trade, "HNGE", s))
 
         with get_session() as s:
-            trade = s.query(Trade).get(trade_id)
+            trade = s.get(Trade, trade_id)
             self.assertEqual(trade.status, "closed")
             self.assertEqual(trade.exit_reason, "reconciled_missing_position")
             # Critical: no P&L fabricated. exit_price stays at default (0).

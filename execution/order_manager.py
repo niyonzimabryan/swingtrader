@@ -4,7 +4,7 @@ Order Manager - orchestrates the approval -> review -> execution flow.
 
 import asyncio
 import json
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 from execution.alpaca_client import AlpacaClient
 from execution.brokers.alpaca import AlpacaBroker
 from execution.brokers.base import BrokerOrderRequest, BrokerOrderReview
@@ -398,7 +398,7 @@ class OrderManager:
         return float(request.requested_notional or 0.0)
 
     def _daily_notional_used(self, broker: str) -> float:
-        today = datetime.utcnow().date()
+        today = utcnow_naive().date()
         with get_session() as session:
             rows = (
                 session.query(OrderEvent)
@@ -502,7 +502,7 @@ class OrderManager:
         return getattr(broker, "account_number", "") or ""
 
     def _robinhood_ref_id(self, memo_id: int, ticker: str) -> str:
-        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        timestamp = utcnow_naive().strftime("%Y%m%d%H%M%S")
         return f"swingtrader-{memo_id}-{ticker.upper()}-{timestamp}"
 
     async def _handle_robinhood_placement_exception(
