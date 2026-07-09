@@ -21,6 +21,23 @@ from utils.redaction import redact_payload, redact_text
 
 log = get_logger("event_outcomes")
 
+
+def pending_first(session, model, predicate):
+    """First PENDING (unflushed) instance of `model` in the session matching predicate.
+
+    App sessions run autoflush=False, so plain queries cannot see rows added
+    earlier in the same transaction. Every existence check that guards a
+    UNIQUE constraint must look at session.new first, or double-computation
+    paths insert duplicates and die at flush (prod 2026-07-09: event_outcomes,
+    then pattern_provider_cache).
+    """
+    if session is None:
+        return None
+    for obj in session.new:
+        if isinstance(obj, model) and predicate(obj):
+            return obj
+    return None
+
 FMP_BASE = "https://financialmodelingprep.com/stable"
 HORIZONS = (1, 3, 5, 10, 20, 60)
 # Calendar-day window after which an event's T+20 forward returns are considered
@@ -155,6 +172,12 @@ class PriceHistoryCache:
     def _read_cache(self, cache_key: str, session=None) -> Any | None:
         if session is None:
             return None
+        pending = pending_first(session, PatternProviderCache, lambda r: r.cache_key == cache_key)
+        if pending is not None:
+            try:
+                return json.loads(pending.result_json or "[]")
+            except json.JSONDecodeError:
+                return None
         row = (
             session.query(PatternProviderCache)
             .filter_by(cache_key=cache_key)
@@ -173,7 +196,8 @@ class PriceHistoryCache:
             return
         expires = utcnow_naive() + timedelta(days=30)
         clean = json.dumps(redact_payload(payload))
-        row = session.query(PatternProviderCache).filter_by(cache_key=cache_key).first()
+        row = pending_first(session, PatternProviderCache, lambda r: r.cache_key == cache_key) \
+            or session.query(PatternProviderCache).filter_by(cache_key=cache_key).first()
         if row:
             row.result_json = clean
             row.updated_at = utcnow_naive()
@@ -279,7 +303,8 @@ class EventOutcomeEngine:
 
     def compute_context(self, event: HistoricalEvent, session=None, sector: str = "") -> EventContext:
         event_date = _coerce_date(event.event_date)
-        existing = session.query(EventContext).filter_by(event_id=event.id).first() if session else None
+        existing = pending_first(session, EventContext, lambda c: c.event_id == event.id) \
+            or (session.query(EventContext).filter_by(event_id=event.id).first() if session else None)
         context = existing or EventContext(event_id=event.id)
         raw: dict[str, Any] = {}
 
