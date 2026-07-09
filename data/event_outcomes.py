@@ -214,13 +214,28 @@ class EventOutcomeEngine:
         self.fmp_key = getattr(settings, "fmp_api_key", "") if settings else ""
         self.price_cache = price_cache or PriceHistoryCache(settings)
 
+    def _existing_outcome(self, session, event_id) -> "EventOutcome | None":
+        """Find an outcome for this event, including PENDING (unflushed) ones.
+
+        App sessions run autoflush=False, so a plain query misses an outcome
+        added earlier in the same transaction — the inline store-time path and
+        an explicit backfill loop can both compute the same event, and the
+        second insert dies on the event_id UNIQUE constraint (prod 2026-07-09).
+        """
+        if session is None:
+            return None
+        for obj in session.new:
+            if isinstance(obj, EventOutcome) and obj.event_id == event_id:
+                return obj
+        return session.query(EventOutcome).filter_by(event_id=event_id).first()
+
     def compute_outcome(self, event: HistoricalEvent, session=None) -> EventOutcome:
         event_date = _coerce_date(event.event_date)
         start = event_date - timedelta(days=10)
         end = event_date + timedelta(days=95)
         bars = self.price_cache.get_bars(event.ticker, start, end, session=session)
         anchor_idx = _first_bar_idx_on_or_after(bars, event_date)
-        existing = session.query(EventOutcome).filter_by(event_id=event.id).first() if session else None
+        existing = self._existing_outcome(session, event.id)
 
         if anchor_idx is None:
             outcome = existing or EventOutcome(event_id=event.id, ticker=event.ticker)

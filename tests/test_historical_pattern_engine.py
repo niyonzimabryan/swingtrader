@@ -190,6 +190,38 @@ class HistoricalPatternEngineTests(unittest.TestCase):
             self.assertFalse(hasattr(ctx, "fwd_pe_ratio"))
             self.assertFalse(hasattr(ctx, "short_interest_pct_float"))
 
+    def test_compute_outcome_idempotent_with_pending_unflushed_outcome(self):
+        """Double-compute (inline + backfill loop) must not violate the event_id
+        UNIQUE constraint. App sessions run autoflush=False, so the second call
+        must see the first call's PENDING outcome (prod crash 2026-07-09)."""
+        class FakePriceCache:
+            def get_bars(self, ticker, start, end, session=None):
+                return [
+                    PriceBar(date(2023, 1, day), 100 + day, 101 + day, 99 + day, 100 + day, 1000)
+                    for day in range(1, 28)
+                ]
+
+        engine = EventOutcomeEngine(_settings(fmp_api_key=""), price_cache=FakePriceCache())
+        event = HistoricalEvent(
+            ticker="DUPE",
+            event_type="product_launch",
+            event_date=date(2023, 1, 5),
+            headline="Dupe launch",
+            source_url="https://example.com",
+            confidence=0.9,
+            dedupe_key=make_dedupe_key("DUPE", "product_launch", date(2023, 1, 5)),
+        )
+        with get_session() as session:
+            session.add(event)
+            session.flush()
+            first = engine.compute_outcome(event, session=session)
+            # No flush in between — second compute must find the pending row.
+            second = engine.compute_outcome(event, session=session)
+            self.assertIs(first, second)
+            session.flush()  # would raise IntegrityError before the fix
+            count = session.query(EventOutcome).filter_by(event_id=event.id).count()
+            self.assertEqual(count, 1)
+
     def test_missing_historical_market_cap_stops_pit_context(self):
         engine = EventOutcomeEngine(_settings(fmp_api_key="x"))
         engine._fmp_request = lambda endpoint, params: []
