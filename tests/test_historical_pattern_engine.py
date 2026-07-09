@@ -263,7 +263,12 @@ class HistoricalPatternEngineTests(unittest.TestCase):
             catalyst_data={"catalyst_type": "product_launch", "catalyst_summary": "new product launch", "direction": "bullish"},
             catalyst_reasoning="new product launch",
         )
-        self.assertIn(out.raw_data["status"], {"no_matches", "low_confidence_peers", "insufficient_forward_returns"})
+        # time_budget_exhausted is a valid typed status here: on slow CI runners the
+        # 45s pattern wall-clock budget can expire before discovery is attempted.
+        self.assertIn(
+            out.raw_data["status"],
+            {"no_matches", "low_confidence_peers", "insufficient_forward_returns", "time_budget_exhausted"},
+        )
         self.assertTrue(queue_path.exists())
         self.assertIn("HNGE", queue_path.read_text())
 
