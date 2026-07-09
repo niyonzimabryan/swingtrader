@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
+from utils.timeutils import utcnow_naive
 from typing import Any
 
 import httpx
@@ -98,7 +99,7 @@ class PerplexitySearchClient:
         row = (
             self.session.query(PatternProviderCache)
             .filter_by(cache_key=cache_key)
-            .filter((PatternProviderCache.expires_at.is_(None)) | (PatternProviderCache.expires_at > datetime.utcnow()))
+            .filter((PatternProviderCache.expires_at.is_(None)) | (PatternProviderCache.expires_at > utcnow_naive()))
             .first()
         )
         if not row:
@@ -111,14 +112,14 @@ class PerplexitySearchClient:
     def _write_cache(self, cache_key: str, query: str, payload: dict, data: dict) -> None:
         if self.session is None:
             return
-        expires = datetime.utcnow() + timedelta(days=self.ttl_days)
+        expires = utcnow_naive() + timedelta(days=self.ttl_days)
         row = self.session.query(PatternProviderCache).filter_by(cache_key=cache_key).first()
         clean_data = json.dumps(redact_payload(data))
         clean_payload = json.dumps(redact_payload(payload))
         if row:
             row.result_json = clean_data
             row.filters_json = clean_payload
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utcnow_naive()
             row.expires_at = expires
         else:
             self.session.add(

@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from utils.timeutils import utcnow_naive
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -185,7 +186,7 @@ class ReportingSchemaTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_daily_digest_uses_current_memo_timestamp_field(self):
-        current_now = datetime.utcnow()
+        current_now = utcnow_naive()
         with get_session() as session:
             for memo in session.query(Memo).all():
                 memo.created_at = current_now
@@ -230,7 +231,7 @@ class ReportingSchemaTests(unittest.TestCase):
                     ticker_id=ticker.id,
                     direction="long",
                     entry_price=250.0,
-                    entry_date=datetime.utcnow(),
+                    entry_date=utcnow_naive(),
                     shares=3,
                     stop_loss=240.0,
                     status="pending_fill",
@@ -400,7 +401,7 @@ class OrderExecutionFlowTests(unittest.TestCase):
                     ),
                     signal_breakdown=json.dumps({"catalyst": 0.8}),
                     status="approved",
-                    created_at=datetime.utcnow(),
+                    created_at=utcnow_naive(),
                 )
             )
 
@@ -504,7 +505,7 @@ class RobinhoodOrderExecutionTests(unittest.TestCase):
                     ),
                     signal_breakdown=json.dumps({"catalyst": 0.9}),
                     status="approved",
-                    created_at=datetime.utcnow(),
+                    created_at=utcnow_naive(),
                 )
             )
 
@@ -599,7 +600,7 @@ class OrderMonitorReconciliationTests(unittest.TestCase):
                     ticker_id=ticker.id,
                     direction="long",
                     entry_price=100.0,
-                    entry_date=datetime.utcnow() - timedelta(days=45),
+                    entry_date=utcnow_naive() - timedelta(days=45),
                     shares=5,
                     stop_loss=92.0,
                     target_1=108.0,
@@ -643,7 +644,7 @@ class _RacingRobinhoodBroker(_FakeRobinhoodBroker):
             session.add(
                 OrderEvent(
                     broker="robinhood", event_type="placed", status="pending_fill",
-                    notional=8.0, raw_payload="{}", created_at=datetime.utcnow(),
+                    notional=8.0, raw_payload="{}", created_at=utcnow_naive(),
                 )
             )
         return super().review_order(order)
@@ -737,7 +738,7 @@ class RobinhoodLiveSafetyRegressionTests(unittest.TestCase):
                     ),
                     signal_breakdown=json.dumps({"catalyst": 0.9}),
                     status="approved",
-                    created_at=datetime.utcnow(),
+                    created_at=utcnow_naive(),
                 )
             )
 
@@ -803,7 +804,7 @@ class RobinhoodLiveSafetyRegressionTests(unittest.TestCase):
             session.add(
                 OrderEvent(
                     broker="robinhood", event_type="placed", status="pending_fill",
-                    notional=8.0, raw_payload="{}", created_at=datetime.utcnow(),
+                    notional=8.0, raw_payload="{}", created_at=utcnow_naive(),
                 )
             )
         manager = self._manager()

@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 
 from config.settings import Settings
 from database.db import get_session, init_db
@@ -57,7 +57,7 @@ def main() -> int:
 
         pipeline = TradingPipeline(settings)
         pipeline.run_full_scan()
-        payload = {"status": "scan_complete", "timestamp": datetime.utcnow().isoformat()}
+        payload = {"status": "scan_complete", "timestamp": utcnow_naive().isoformat()}
     else:
         raise SystemExit(f"Unknown command: {args.command}")
 

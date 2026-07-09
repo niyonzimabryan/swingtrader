@@ -7,7 +7,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 from typing import Any
 
 from data.event_extractor import EventExtractor
@@ -178,7 +178,7 @@ class EventDiscoveryEngine:
 
     def generate_queries(self, request: dict, years: list[int] | None = None, llm_expanded: list[str] | None = None) -> list[str]:
         setup_type = request.get("setup_type") or ""
-        years = years or list(range(datetime.utcnow().year - 1, datetime.utcnow().year - 7, -1))
+        years = years or list(range(utcnow_naive().year - 1, utcnow_naive().year - 7, -1))
         peers = [request.get("target_ticker")] + [p.get("ticker") if isinstance(p, dict) else p for p in request.get("peers", [])]
         peers = [p for p in peers if p]
         context = {

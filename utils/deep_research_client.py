@@ -9,7 +9,7 @@ Alternative: OpenAI o4-mini-deep-research (not implemented yet)
 
 import asyncio
 import time
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 from utils.logger import get_logger
 
 log = get_logger("deep_research_client")
@@ -137,7 +137,7 @@ class DeepResearchClient:
             return {
                 "task_id": task_id,
                 "status": "submitted",
-                "submitted_at": datetime.utcnow().isoformat(),
+                "submitted_at": utcnow_naive().isoformat(),
                 "provider": "gemini",
             }
 

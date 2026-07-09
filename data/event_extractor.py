@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from datetime import date, datetime, timedelta
+from utils.timeutils import utcnow_naive
 from urllib.parse import urlparse
 from typing import Any
 
@@ -228,7 +229,7 @@ class EventExtractor:
         existing.confidence = max(existing.confidence or 0, normalized["confidence"])
         existing.provider = "+".join(sorted(set((existing.provider or "").split("+")) | {normalized["provider"]}))
         existing.raw_json = json.dumps(redact_payload(raw))
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = utcnow_naive()
 
 
 def make_dedupe_key(ticker: str, event_type: str, event_date: date) -> str:

@@ -8,7 +8,7 @@ Runs on scheduled scans only (NOT on /test).
 import json
 from dataclasses import dataclass, field
 from typing import List
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 
 from agents.base_agent import BaseAgent, AgentOutput
 from utils.web_search_client import WebSearchClient
@@ -213,7 +213,7 @@ class DiscoveryAgent(BaseAgent):
         """Build the user prompt for discovery."""
         max_tickers = self.settings.discovery_max_tickers
         return (
-            f"Today is {datetime.utcnow().strftime('%B %d, %Y')}.\n"
+            f"Today is {utcnow_naive().strftime('%B %d, %Y')}.\n"
             f"{regime_context}\n\n"
             "Search for the most actionable swing trade catalysts happening right now. "
             "Look at financial news, earnings reports, analyst actions, SEC filings, "

@@ -5,7 +5,7 @@ Uses fpdf2 for lightweight PDF generation (no heavy dependencies).
 
 import os
 import re
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 from utils.logger import get_logger
 
 log = get_logger("pdf_generator")
@@ -31,7 +31,7 @@ def generate_deep_research_pdf(
 
     try:
         os.makedirs(output_dir, exist_ok=True)
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = utcnow_naive().strftime("%Y%m%d_%H%M%S")
         filename = f"{ticker}_deep_research_{timestamp}.pdf"
         filepath = os.path.join(output_dir, filename)
 
@@ -43,7 +43,7 @@ def generate_deep_research_pdf(
         pdf.set_font("Helvetica", "B", 18)
         pdf.cell(0, 12, f"Deep Research Report: {ticker}", ln=True, align="C")
         pdf.set_font("Helvetica", "", 10)
-        pdf.cell(0, 6, f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align="C")
+        pdf.cell(0, 6, f"Generated: {utcnow_naive().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align="C")
         pdf.ln(8)
 
         # Scoring summary

@@ -104,6 +104,17 @@ async def main():
     # Load settings
     settings = Settings()
 
+    # E6: log which Gemini model each stage resolved to, so per-stage skew
+    # (e.g. a stale preview pin on one stage) is visible in Railway logs.
+    log.info(
+        "gemini_models_resolved",
+        web_search_provider=settings.web_search_provider,
+        search=settings.gemini_search_model,
+        discovery=settings.gemini_discovery_model,
+        web_research=settings.gemini_web_research_model,
+        flash_screen=settings.gemini_flash_model,
+    )
+
     # Initialize Langfuse observability (no-op if keys not set)
     langfuse_client = _init_langfuse(settings)
     if langfuse_client:

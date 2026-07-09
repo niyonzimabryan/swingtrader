@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 
 from sqlalchemy import or_
 
@@ -53,7 +53,7 @@ def reconcile_broker_positions(
                     ticker_id=ticker.id,
                     direction=position["direction"],
                     entry_price=position["entry_price"],
-                    entry_date=datetime.utcnow(),
+                    entry_date=utcnow_naive(),
                     shares=position["shares"],
                     stop_loss=0,
                     target_1=0,
@@ -157,7 +157,7 @@ def _update_trade_from_position(
             changed = True
 
     if not trade.entry_date:
-        trade.entry_date = datetime.utcnow()
+        trade.entry_date = utcnow_naive()
         changed = True
 
     note = _reconciliation_note(source)

@@ -15,7 +15,7 @@ Does NOT run on /test (avoids wait time). Operator can trigger manually via Tele
 """
 
 import json
-from datetime import datetime
+from utils.timeutils import utcnow_naive
 from database.db import get_session
 from database.models import DeepResearchRequest
 from utils.deep_research_client import DeepResearchClient
@@ -245,6 +245,6 @@ class DeepResearchAgent:
                         if hasattr(req, k):
                             setattr(req, k, v)
                     if kwargs.get("status") in ("completed", "failed", "timeout"):
-                        req.completed_at = datetime.utcnow()
+                        req.completed_at = utcnow_naive()
         except Exception as e:
             log.error("update_dr_request_failed", error=str(e))

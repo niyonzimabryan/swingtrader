@@ -6,6 +6,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from utils.timeutils import utcnow_naive
 from typing import Any
 
 import httpx
@@ -157,7 +158,7 @@ class PriceHistoryCache:
         row = (
             session.query(PatternProviderCache)
             .filter_by(cache_key=cache_key)
-            .filter((PatternProviderCache.expires_at.is_(None)) | (PatternProviderCache.expires_at > datetime.utcnow()))
+            .filter((PatternProviderCache.expires_at.is_(None)) | (PatternProviderCache.expires_at > utcnow_naive()))
             .first()
         )
         if not row:
@@ -170,12 +171,12 @@ class PriceHistoryCache:
     def _write_cache(self, cache_key: str, provider: str, query: str, filters: dict, payload: Any, session=None) -> None:
         if session is None:
             return
-        expires = datetime.utcnow() + timedelta(days=30)
+        expires = utcnow_naive() + timedelta(days=30)
         clean = json.dumps(redact_payload(payload))
         row = session.query(PatternProviderCache).filter_by(cache_key=cache_key).first()
         if row:
             row.result_json = clean
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utcnow_naive()
             row.expires_at = expires
         else:
             session.add(
@@ -224,7 +225,7 @@ class EventOutcomeEngine:
         if anchor_idx is None:
             outcome = existing or EventOutcome(event_id=event.id, ticker=event.ticker)
             outcome.status = "price_error"
-            outcome.computed_at = datetime.utcnow()
+            outcome.computed_at = utcnow_naive()
             if session and not existing:
                 session.add(outcome)
             return outcome
@@ -256,7 +257,7 @@ class EventOutcomeEngine:
             if matured
             else "insufficient_forward_returns"
         )
-        outcome.computed_at = datetime.utcnow()
+        outcome.computed_at = utcnow_naive()
         if session and not existing:
             session.add(outcome)
         return outcome
@@ -304,7 +305,7 @@ class EventOutcomeEngine:
             context.pit_quality = "unavailable"
 
         context.raw_json = json.dumps(redact_payload(raw))
-        context.computed_at = datetime.utcnow()
+        context.computed_at = utcnow_naive()
         if session and not existing:
             session.add(context)
         return context
