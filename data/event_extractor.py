@@ -189,6 +189,19 @@ class EventExtractor:
     def _find_existing(self, session, ticker: str, event_type: str, event_date: date) -> HistoricalEvent | None:
         lo = event_date - timedelta(days=1)
         hi = event_date + timedelta(days=1)
+        # Pending (unflushed) events first — sessions run autoflush=False, so a
+        # duplicate candidate stored earlier in this run is invisible to the query
+        # below and would violate the dedupe_key UNIQUE constraint at flush.
+        from data.event_outcomes import pending_first
+
+        pending = pending_first(
+            session,
+            HistoricalEvent,
+            lambda e: e.ticker == ticker and e.event_type == event_type
+            and e.event_date is not None and lo <= e.event_date <= hi,
+        )
+        if pending is not None:
+            return pending
         return (
             session.query(HistoricalEvent)
             .filter(

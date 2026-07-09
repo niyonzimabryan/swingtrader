@@ -222,6 +222,53 @@ class HistoricalPatternEngineTests(unittest.TestCase):
             count = session.query(EventOutcome).filter_by(event_id=event.id).count()
             self.assertEqual(count, 1)
 
+    def test_price_cache_write_idempotent_with_pending_unflushed_row(self):
+        """Two outcome computations sharing a price window must not double-insert
+        the provider-cache row (prod crash 2026-07-09: UNIQUE pattern_provider_cache.cache_key)."""
+        from data.event_outcomes import PriceHistoryCache
+
+        cache = PriceHistoryCache(_settings(fmp_api_key=""))
+        payload = [{"date": "2023-01-05", "close": 100.0}]
+        cache._fetch_yfinance = lambda ticker, start, end: payload
+        with get_session() as session:
+            bars1 = cache.get_bars("DUPE", date(2023, 1, 1), date(2023, 1, 31), session=session)
+            # No flush in between — second read must hit the PENDING cache row.
+            bars2 = cache.get_bars("DUPE", date(2023, 1, 1), date(2023, 1, 31), session=session)
+            self.assertEqual(len(bars1), 1)
+            self.assertEqual(len(bars2), 1)
+            session.flush()  # would raise IntegrityError before the fix
+            count = session.query(PatternProviderCache).filter(
+                PatternProviderCache.cache_key.like("price:%DUPE%")
+            ).count()
+            self.assertEqual(count, 1)
+
+    def test_extractor_dedupes_pending_unflushed_event_in_same_batch(self):
+        """The same candidate stored twice in one run (before any flush) must merge
+        into one pending event, not violate the dedupe_key UNIQUE constraint."""
+        extractor = EventExtractor()
+        candidate = {
+            "ticker": "MSFT",
+            "event_type": "product_launch",
+            "event_date": "2023-03-16",
+            "event_date_source": "content",
+            "event_timing": "unknown",
+            "polarity": "bullish",
+            "magnitude": 0.7,
+            "headline": "Microsoft announces Copilot",
+            "summary": "On March 16, 2023, Microsoft announced Copilot.",
+            "evidence": "On March 16, 2023, Microsoft announced Copilot.",
+            "source_url": "https://news.microsoft.com/copilot",
+            "confidence": 0.9,
+            "_provider": "gemini",
+            "_provider_result": {"grounded": True, "queries": ["q"], "sources": ["s"]},
+        }
+        with get_session() as session:
+            e1, s1 = extractor.upsert_candidate(session, dict(candidate), "gemini", "q", {})
+            e2, s2 = extractor.upsert_candidate(session, dict(candidate), "gemini", "q", {})
+            session.flush()  # would raise IntegrityError on dedupe_key if dedupe missed
+            count = session.query(HistoricalEvent).filter_by(ticker="MSFT").count()
+            self.assertEqual(count, 1)
+
     def test_missing_historical_market_cap_stops_pit_context(self):
         engine = EventOutcomeEngine(_settings(fmp_api_key="x"))
         engine._fmp_request = lambda endpoint, params: []
