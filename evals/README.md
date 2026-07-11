@@ -31,6 +31,16 @@ convictions parse, inputs are replayable. swingtrader is **not** offline-backfil
 so the eval correctly reports **UNDERPOWERED** (n < N_min=150). It becomes powered as
 the bot runs and the trace corpus grows — nothing to accumulate manually.
 
+### Ad-hoc scoring in the corpus (audit G1 / P2-LF-1)
+`from_traces` keys on the `scoring` tag. As of 2026-07-11 the ad-hoc path
+(`/test` command → `run_ad_hoc`) tags its scoring call `scoring` too, so ad-hoc
+scoring generations are now **included** in the pulled corpus (Bryan's
+2026-07-04 decision). `ad_hoc` is excluded from ticker derivation alongside
+`scheduled_scan`/`test_analyze`. **Pre-2026-07 ad-hoc scoring calls are not in
+the corpus** — they predate the tag and cannot be pulled by `traces_by_tag("scoring")`;
+retro-tagging old traces is out of scope (the 7 affected generations are listed
+in `docs/audits/2026-07-04-langfuse-addendum.md`, P2-LF-1).
+
 `shadow_log.py` (explicit Langfuse *dataset* writes) stays available if you later want
 a curated store instead of raw traces, but it's optional and unused in v1. `pnl_monitor`
 watches realized P&L as a rollback signal only (P&L never gates; §2).

@@ -933,8 +933,14 @@ class TradingPipeline:
         regime = self.macro_agent.get_latest_regime()
 
         # 2. Run all agents
+        # Per-stage Langfuse tags mirror the scheduled path (_process_scan_item) so
+        # ad-hoc scoring calls carry the `scoring` tag and land in the BRY-243 corpus
+        # (audit spec G1 / P2-LF-1). Nested contexts merge tags onto the outer
+        # `ad_hoc` session. fundamental/pattern/web_research are tagged inside the
+        # shared _run_post_catalyst_agents.
         _progress("Running catalyst analysis (Haiku + Sonnet)...")
-        catalyst = self.catalyst_agent.analyze(ticker=ticker, sector=sector, thesis=thesis)
+        with _langfuse_context(tags=["catalyst", ticker]):
+            catalyst = self.catalyst_agent.analyze(ticker=ticker, sector=sector, thesis=thesis)
 
         fundamental, pattern, web_research, _, workers = self._run_post_catalyst_agents(
             ticker=ticker,
@@ -949,16 +955,18 @@ class TradingPipeline:
         # 3. Score
         _progress("Scoring with Opus evaluation...")
         portfolio_context = self._get_portfolio_context()
-        result = self.scoring_engine.score_opportunity(
-            ticker, catalyst, fundamental, pattern, web_research,
-            regime, portfolio_context,
-        )
+        with _langfuse_context(tags=["scoring", ticker]):
+            result = self.scoring_engine.score_opportunity(
+                ticker, catalyst, fundamental, pattern, web_research,
+                regime, portfolio_context,
+            )
 
         # 4. Generate memo (always for ad-hoc, regardless of threshold)
         _progress("Generating IC memo...")
-        memo_data = self.memo_generator.generate(
-            ticker, result, catalyst, fundamental, pattern, web_research, regime,
-        )
+        with _langfuse_context(tags=["memo", ticker]):
+            memo_data = self.memo_generator.generate(
+                ticker, result, catalyst, fundamental, pattern, web_research, regime,
+            )
 
         return memo_data
 

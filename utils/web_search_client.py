@@ -9,6 +9,7 @@ import json
 
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception
 
+from utils import gemini_ledger
 from utils.anthropic_client import AnthropicClient
 from utils.logger import get_logger
 
@@ -246,8 +247,12 @@ class WebSearchClient:
     @_gemini_retry
     def _gemini_generate(self, model, contents, config):
         """Single Gemini generate_content call, retried on transient errors."""
-        return self._gemini_client.models.generate_content(
-            model=model, contents=contents, config=config
+        return gemini_ledger.generate_content(
+            self._gemini_client,
+            model=model,
+            stage="web_search",
+            contents=contents,
+            config=config,
         )
 
     def _gemini_model(self, requested_model: str | None) -> str:
