@@ -95,6 +95,10 @@ def run_backfill(requests: list[dict], settings: Settings | None = None, max_tic
                     outcomes.compute_context(event, session=session, sector=sector)
                 except HistoricalMarketCapUnavailable as exc:
                     log.warning("backfill_context_skipped", ticker=event.ticker, reason=str(exc))
+            # Commit per request: an interrupted run (ssh drop / lock / crash)
+            # keeps completed tickers instead of rolling everything back, and the
+            # write lock never spans multi-minute provider calls (BRY-300).
+            session.commit()
     return summary
 
 
