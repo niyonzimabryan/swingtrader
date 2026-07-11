@@ -73,7 +73,7 @@ def from_traces(from_ts: str, incumbent_default: str = "claude-opus-4-6") -> lis
     recs = []
     for t in langfuse_api.traces_by_tag("scoring", from_ts):
         tags = t.get("tags") or []
-        ticker = next((x for x in tags if x not in ("scoring", "scheduled_scan", "test_analyze")), "?")
+        ticker = next((x for x in tags if x not in ("scoring", "scheduled_scan", "test_analyze", "ad_hoc")), "?")
         try:
             full = langfuse_api.trace(t["id"])
         except Exception:

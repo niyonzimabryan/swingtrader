@@ -19,6 +19,7 @@ import json
 import time
 import warnings
 from dataclasses import dataclass, field
+from utils import gemini_ledger
 from utils.logger import get_logger
 
 log = get_logger("gemini_screener")
@@ -214,8 +215,11 @@ class GeminiScreener:
 
         # Use Google Search as grounding tool. Grounding cannot be combined with a
         # JSON response schema (API 400), so budget generously + extract robustly.
-        response = self._client.models.generate_content(
+        response = gemini_ledger.generate_content(
+            self._client,
             model=self._model,
+            stage="screening",
+            ticker=ticker,
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())],
