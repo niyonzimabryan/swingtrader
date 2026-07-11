@@ -19,6 +19,8 @@ log = get_logger("event_extractor")
 SOURCE_PRIORITY = {
     "company_ir": 90,
     "sec_filing": 85,
+    # Exchange-sourced structured API data (FMP): exact dates, no hallucination.
+    "fmp_structured": 82,
     "earnings_transcript": 80,
     "press_release": 75,
     "regulator": 70,

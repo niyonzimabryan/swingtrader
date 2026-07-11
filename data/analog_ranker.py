@@ -17,6 +17,7 @@ ANALOG_ACTIVE_STATUSES = {"complete", "partial", "insufficient_forward_returns"}
 SOURCE_QUALITY = {
     "company_ir": 1.0,
     "sec_filing": 0.95,
+    "fmp_structured": 0.9,
     "earnings_transcript": 0.9,
     "press_release": 0.85,
     "regulator": 0.8,
@@ -25,6 +26,28 @@ SOURCE_QUALITY = {
     "recap": 0.35,
     "other": 0.3,
 }
+
+# Spec H2: FMP structured earnings events are guidance-agnostic. A live catalyst
+# is classified into a guidance-specific earnings class, so we let those requests
+# ALSO match the guidance-agnostic structured class as a lower-priority fallback
+# tier — the bulk-loaded structured library warms live analog requests while true
+# guidance-specific (search-sourced) events still rank first. Non-earnings classes
+# have no fallback and behave exactly as before.
+STRUCTURED_EARNINGS_FALLBACK = {
+    "earnings_beat_guide_up": "earnings_beat_structured",
+    "earnings_beat_guide_flat": "earnings_beat_structured",
+    "earnings_beat_guide_down": "earnings_beat_structured",
+    "earnings_miss": "earnings_miss_structured",
+}
+# Discount applied to the type-match component when a guidance-specific request is
+# served by a guidance-agnostic structured event (vs 1.0 for an exact-class match).
+STRUCTURED_FALLBACK_TYPE_MATCH = 0.85
+
+
+def compatible_event_types(setup_type: str) -> list[str]:
+    """Event types a request may match: the exact type plus any structured fallback."""
+    fallback = STRUCTURED_EARNINGS_FALLBACK.get(setup_type)
+    return [setup_type, fallback] if fallback else [setup_type]
 
 
 class AnalogRanker:
@@ -87,13 +110,17 @@ class AnalogRanker:
 
     def _candidate_events(self, session, ticker: str, setup_type: str, peer_set: set[str]) -> list[tuple]:
         tickers = {ticker, *peer_set}
+        # Guidance-specific earnings requests also match the guidance-agnostic
+        # structured class as a fallback tier (Spec H2). Non-earnings classes
+        # resolve to just [setup_type], i.e. unchanged behavior.
+        types = compatible_event_types(setup_type)
         # LEFT OUTER JOIN on EventOutcome so outcome-less (immature) events still
         # surface — they rank in the partial tier instead of being invisible.
         direct = (
             session.query(HistoricalEvent, EventOutcome, EventContext)
             .outerjoin(EventOutcome, EventOutcome.event_id == HistoricalEvent.id)
             .outerjoin(EventContext, EventContext.event_id == HistoricalEvent.id)
-            .filter(HistoricalEvent.event_type == setup_type)
+            .filter(HistoricalEvent.event_type.in_(types))
             .filter(HistoricalEvent.ticker.in_(tickers))
             .order_by(HistoricalEvent.event_date.desc())
             .limit(self.max_candidates)
@@ -105,7 +132,7 @@ class AnalogRanker:
             session.query(HistoricalEvent, EventOutcome, EventContext)
             .outerjoin(EventOutcome, EventOutcome.event_id == HistoricalEvent.id)
             .outerjoin(EventContext, EventContext.event_id == HistoricalEvent.id)
-            .filter(HistoricalEvent.event_type == setup_type)
+            .filter(HistoricalEvent.event_type.in_(types))
             .filter(~HistoricalEvent.ticker.in_(tickers))
             .order_by(HistoricalEvent.event_date.desc())
             .limit(max(0, self.max_candidates - len(direct)))
@@ -156,7 +183,7 @@ class AnalogRanker:
         event_text = " ".join([event.event_type or "", event.event_subtype or "", event.headline or "", event.summary or ""])
         token_overlap = _token_overlap(summary, event_text)
         subtype_match = 1.0 if request.get("event_subtype") and request.get("event_subtype") == event.event_subtype else 0.5
-        type_match = 1.0 if request.get("setup_type") == event.event_type else 0.0
+        type_match = _type_match(request.get("setup_type") or "", event.event_type or "")
         return round(0.5 * type_match + 0.35 * token_overlap + 0.15 * subtype_match, 4)
 
     def _peer_similarity(self, ticker: str, target_ticker: str, peer_scores: dict[str, float]) -> float:
@@ -246,6 +273,15 @@ class AnalogRanker:
             "avg_winner_t10": round(float(np.mean([v for v in vals_t10 if v > 0])), 2) if any(v > 0 for v in vals_t10) else 0.0,
             "avg_loser_t10": round(float(np.mean([v for v in vals_t10 if v <= 0])), 2) if any(v <= 0 for v in vals_t10) else 0.0,
         }
+
+
+def _type_match(setup_type: str, event_type: str) -> float:
+    """Type-similarity component: exact class = 1.0, structured fallback = discounted."""
+    if setup_type == event_type:
+        return 1.0
+    if STRUCTURED_EARNINGS_FALLBACK.get(setup_type) == event_type:
+        return STRUCTURED_FALLBACK_TYPE_MATCH
+    return 0.0
 
 
 def _weighted_renormalized(parts: dict[str, float | None], weights: dict[str, float]) -> float:
