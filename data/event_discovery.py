@@ -81,7 +81,15 @@ TIER_C_TYPES = {
     "momentum_without_identified_catalyst",
     "rumor_unconfirmed",
 }
-EVENT_SUPPORTED_TYPES = TIER_A_TYPES | TIER_B_TYPES
+# Guidance-agnostic earnings classes sourced from FMP structured surprise data
+# (Spec H). FMP surprise history has no forward-guidance signal, so structured
+# earnings events are stored under these generic types rather than the
+# guidance-specific `earnings_beat_guide_*` classes. The analog ranker matches
+# them as a discounted fallback tier (see data/analog_ranker.py).
+EARNINGS_BEAT_STRUCTURED = "earnings_beat_structured"
+EARNINGS_MISS_STRUCTURED = "earnings_miss_structured"
+STRUCTURED_EARNINGS_TYPES = {EARNINGS_BEAT_STRUCTURED, EARNINGS_MISS_STRUCTURED}
+EVENT_SUPPORTED_TYPES = TIER_A_TYPES | TIER_B_TYPES | STRUCTURED_EARNINGS_TYPES
 
 QUERY_TEMPLATES = {
     "product_launch": [

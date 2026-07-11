@@ -22,7 +22,12 @@ from agents.base_agent import BaseAgent, AgentOutput
 from config.peers import get_peer_resolution, get_peers
 from config.settings import resolve_backfill_queue_path
 from data.analog_ranker import AnalogRanker
-from data.event_discovery import EVENT_SUPPORTED_TYPES, TIER_C_TYPES, EventDiscoveryEngine
+from data.event_discovery import (
+    EVENT_SUPPORTED_TYPES,
+    STRUCTURED_EARNINGS_TYPES,
+    TIER_C_TYPES,
+    EventDiscoveryEngine,
+)
 from data.pattern_data import PatternDataAdapter
 from database.db import get_session
 from utils.perplexity_search_client import PerplexitySearchClient
@@ -247,7 +252,10 @@ class PatternAgent(BaseAgent):
 
         use_analog_taxonomy = getattr(self.settings, "pattern_analog_engine_enabled", False)
         allowed_types = ANALOG_SETUP_TYPES if use_analog_taxonomy else ALL_SETUP_TYPES
-        setup_types_str = "\n".join(f"- {st}" for st in sorted(allowed_types))
+        # Structured FMP earnings classes (Spec H2) are a stored/fallback-only
+        # taxonomy: never offer them to the live classifier — live catalysts must
+        # stay guidance-specific (the ranker maps guidance requests to them).
+        setup_types_str = "\n".join(f"- {st}" for st in sorted(allowed_types - STRUCTURED_EARNINGS_TYPES))
 
         prompt = (
             f"Classify this trade catalyst for {ticker} into one of the standardized setup types.\n\n"
@@ -410,7 +418,7 @@ class PatternAgent(BaseAgent):
             f"Decompose this vague catalyst for {ticker} into one specific historical event type if possible.\n"
             f"Current type: {setup_type}\n"
             f"Summary: {catalyst_data.get('catalyst_summary', catalyst_reasoning[:500])}\n"
-            f"Allowed types: {', '.join(sorted(EVENT_SUPPORTED_TYPES))}\n"
+            f"Allowed types: {', '.join(sorted(EVENT_SUPPORTED_TYPES - STRUCTURED_EARNINGS_TYPES))}\n"
             'Return JSON: {"setup_type": "...", "confidence": 0.0, "reason": "..."}'
         )
         try:
