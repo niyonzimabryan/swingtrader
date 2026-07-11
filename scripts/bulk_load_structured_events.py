@@ -316,6 +316,14 @@ class StructuredEventLoader:
                     if self._compute_outcome_and_context(outcome_engine, event, session, summary):
                         per_ticker["outcomes_computed"] += 1
 
+            # Commit per ticker: a --universe run spans hours of HTTP calls, and a
+            # single transaction would (a) lose everything on an interrupted run
+            # (railway-ssh drops killed three search-backfill attempts this way) and
+            # (b) hold a long write lock against the live bot's SQLite. Committed
+            # tickers are then skipped as dupes on re-run (idempotent resume).
+            if not dry_run:
+                session.commit()
+
             if idx % max(1, progress_every) == 0:
                 log.info(
                     "bulk_load_progress",
