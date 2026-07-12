@@ -6,7 +6,7 @@ from utils.logger import get_logger
 log = get_logger("anthropic_client")
 
 # Sonnet fallback model for when Opus times out
-SONNET_FALLBACK = "claude-sonnet-4-6"
+SONNET_FALLBACK = "claude-sonnet-5"
 RAW_PARSE_ERROR_LIMIT = 20_000
 
 

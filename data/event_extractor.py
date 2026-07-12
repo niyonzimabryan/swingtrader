@@ -110,6 +110,8 @@ class EventExtractor:
             raise EventValidationError("missing source_url")
 
         event_date = self._validated_event_date(candidate, provider_result)
+        if event_date > date.today():
+            raise EventValidationError("future_date")
         confidence = _float(candidate.get("confidence"), 0)
         if confidence < self.min_confidence:
             raise EventValidationError("low_confidence")

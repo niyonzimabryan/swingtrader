@@ -19,6 +19,7 @@ from datetime import datetime as dt
 from pathlib import Path
 from agents.base_agent import BaseAgent, AgentOutput
 from config.peers import get_peer_resolution, get_peers
+from config.settings import resolve_backfill_queue_path
 from data.analog_ranker import AnalogRanker
 from data.event_discovery import EVENT_SUPPORTED_TYPES, TIER_C_TYPES, EventDiscoveryEngine
 from data.pattern_data import PatternDataAdapter
@@ -339,8 +340,15 @@ class PatternAgent(BaseAgent):
                 }
                 ranked = self.analog_ranker.rank(session, request, peer_resolution)
                 min_total = int(getattr(self.settings, "pattern_min_total_matches", 10))
+                initial_total = ranked.get("summary_stats", {}).get("total_instances", 0)
 
-                if ranked.get("summary_stats", {}).get("total_instances", 0) < min_total and self._live_budget_remaining(started):
+                if initial_total >= min_total:
+                    discovery_result = {"status": "cache_hit", "provider_usage": {}, "search_run_id": None}
+                elif not self._live_budget_remaining(started):
+                    # Wanted more analogs but the live wall-clock budget is spent — surface a
+                    # typed status so this cold ticker is not misreported as 'no_matches'.
+                    discovery_result = {"status": "time_budget_exhausted", "provider_usage": {}, "search_run_id": None}
+                else:
                     discovery = self._build_discovery_engine(session)
                     if discovery and getattr(self.settings, "pattern_event_search_enabled", True):
                         discovery_result = discovery.discover_and_store(session, request, self.run_id)
@@ -352,8 +360,6 @@ class PatternAgent(BaseAgent):
                             "search_run_id": None,
                             "reason": "event discovery provider unavailable; queued async backfill if enabled",
                         }
-                else:
-                    discovery_result = {"status": "cache_hit", "provider_usage": {}, "search_run_id": None}
 
                 total = ranked.get("summary_stats", {}).get("total_instances", 0)
                 if total < min_total and getattr(self.settings, "pattern_cold_ticker_async_backfill", True):
@@ -366,8 +372,11 @@ class PatternAgent(BaseAgent):
                 else:
                     status = ranked.get("status") or discovery_result.get("status") or "no_matches"
 
-                if status not in {"active", "decomposed"} and total == 0 and discovery_result.get("status") == "provider_error":
-                    status = "provider_error"
+                if status not in {"active", "decomposed"} and total == 0:
+                    if discovery_result.get("status") == "provider_error":
+                        status = "provider_error"
+                    elif discovery_result.get("status") == "time_budget_exhausted":
+                        status = "time_budget_exhausted"
 
                 return self._analog_output(
                     ticker=ticker,
@@ -438,9 +447,7 @@ class PatternAgent(BaseAgent):
         return (time.monotonic() - started) < max(1.0, budget - 2.0)
 
     def _enqueue_pattern_backfill(self, ticker: str, request: dict) -> None:
-        path = Path(getattr(self.settings, "pattern_backfill_queue_path", ".pattern_backfill_queue.jsonl"))
-        if not path.is_absolute():
-            path = Path.cwd() / path
+        path = resolve_backfill_queue_path(self.settings)
         payload = {
             "ticker": ticker,
             "setup_type": request.get("setup_type"),
@@ -498,6 +505,9 @@ class PatternAgent(BaseAgent):
         elif status == "provider_error":
             score, confidence, direction = 0.5, 0.10, "neutral"
             reasoning = "Pattern provider path failed or was unavailable; no directional pattern view."
+        elif status == "time_budget_exhausted":
+            score, confidence, direction = 0.5, 0.10, "neutral"
+            reasoning = "Pattern discovery hit the live wall-clock budget before matching; async backfill enqueued for the next run."
         else:
             score, confidence, direction = 0.5, 0.15, "neutral"
             reasoning = "No matured historical analog matches found for this catalyst type."

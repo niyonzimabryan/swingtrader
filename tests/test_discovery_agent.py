@@ -24,7 +24,7 @@ class _FakeWebSearchClient:
 
 def _build_agent(result):
     settings = SimpleNamespace(
-        discovery_model="claude-sonnet-4-6",
+        discovery_model="claude-sonnet-5",
         web_search_provider="gemini",
         gemini_discovery_model="gemini-3.1-pro-preview",
         discovery_max_tickers=12,
@@ -64,7 +64,7 @@ def test_recover_partial_results_salvages_complete_tickers_from_truncated_output
       "catalyst_summary": "Adobe reports after the bell",
 """
 
-    recovered = agent._recover_partial_results(raw_text, "claude-sonnet-4-6")
+    recovered = agent._recover_partial_results(raw_text, "claude-sonnet-5")
 
     assert [ticker.ticker for ticker in recovered.tickers] == ["ORCL", "MDB"]
     assert recovered.tickers[0].direction_hint == "bullish"

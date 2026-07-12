@@ -47,7 +47,7 @@ def _build_agent(firecrawl=None):
         web_research_max_searches=4,
         web_research_cache_enabled=False,
         web_research_cache_ttl_hours=24,
-        analyst_model="claude-sonnet-4-6",
+        analyst_model="claude-sonnet-5",
         scoring_model="claude-opus-4-6",
         filter_model="claude-haiku-4-5-20251001",
     )

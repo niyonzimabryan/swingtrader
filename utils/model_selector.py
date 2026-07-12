@@ -6,7 +6,7 @@ Three-tier escalation: Haiku (filter) → Sonnet (analyst) → Opus (judge).
 
 # Default model IDs — overridable via Settings
 HAIKU = "claude-haiku-4-5-20251001"
-SONNET = "claude-sonnet-4-6"
+SONNET = "claude-sonnet-5"
 OPUS = "claude-opus-4-6"
 
 TASK_MODEL_MAP = {

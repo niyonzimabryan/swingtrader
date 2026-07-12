@@ -15,7 +15,7 @@ from utils.logger import get_logger
 
 log = get_logger("weekly_report")
 ET = ZoneInfo("America/New_York")
-SONNET_MODEL = "claude-sonnet-4-6"
+SONNET_MODEL = "claude-sonnet-5"
 
 
 class WeeklyReport:

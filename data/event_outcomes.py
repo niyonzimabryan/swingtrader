@@ -22,6 +22,21 @@ log = get_logger("event_outcomes")
 
 FMP_BASE = "https://financialmodelingprep.com/stable"
 HORIZONS = (1, 3, 5, 10, 20, 60)
+# Calendar-day window after which an event's T+20 forward returns are considered
+# matured enough to compute at store time (≈20 trading days + weekends/holidays).
+OUTCOME_MATURITY_WINDOW_DAYS = 30
+
+
+def is_event_mature(event_date: Any, today: date | None = None, window_days: int = OUTCOME_MATURITY_WINDOW_DAYS) -> bool:
+    """True when ``event_date`` is old enough for forward-return horizons to exist."""
+    parsed = _parse_date(event_date)
+    if parsed is None:
+        return False
+    reference = today or date.today()
+    return parsed <= reference - timedelta(days=window_days)
+
+
+
 SECTOR_ETFS = {
     "Technology": "XLK",
     "Financial Services": "XLF",

@@ -16,6 +16,7 @@ Public surface:
     decide.decide            — PROMOTE / HOLD / REJECT / UNDERPOWERED
     report.render            — cost/quality markdown table (self-dating)
     run.evaluate             — the harness: records + candidate → Result
+    calibration              — judge-label CSV packs + human/judge calibration report
 """
 
 __version__ = "0.1.0"

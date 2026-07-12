@@ -83,13 +83,13 @@ class Settings(BaseSettings):
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
     scoring_model: str = "claude-opus-4-6"
-    analyst_model: str = "claude-sonnet-4-6"
+    analyst_model: str = "claude-sonnet-5"
     filter_model: str = "claude-haiku-4-5-20251001"
 
     # --- V2: Web Search & Discovery ---
     web_search_provider: str = "gemini"  # "gemini" (default) or "anthropic"
     discovery_max_tickers: int = 12
-    discovery_model: str = "claude-sonnet-4-6"  # Discovery uses Sonnet, NOT Haiku
+    discovery_model: str = "claude-sonnet-5"  # Discovery uses Sonnet, NOT Haiku
     discovery_output_max_tokens: int = 8192
     discovery_max_searches: int = 8
 
@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     gemini_discovery_model: str = "gemini-3.1-pro-preview"
     gemini_web_research_model: str = "gemini-3.1-pro-preview"
     gemini_flash_escalation_threshold: float = 0.50  # Tickers scoring above this escalate to Sonnet
+    # Grounded tier-2 responses carry a prose preamble before the JSON; 512/2048 truncate
+    # mid-JSON (finish=MAX_TOKENS). 4096 fits reliably. NOTE: Google Search grounding is
+    # incompatible with response_mime_type=application/json, so structured output is not an
+    # option here — the screener relies on a large budget + robust extraction instead.
+    gemini_flash_max_output_tokens: int = 4096
     web_research_max_searches: int = 5
     web_research_cache_enabled: bool = True
     web_research_cache_ttl_hours: int = 24
@@ -127,6 +132,8 @@ class Settings(BaseSettings):
     pattern_cold_ticker_async_backfill: bool = True
     pattern_price_source: str = "fmp"  # fmp | yfinance
     pattern_backfill_queue_path: str = ".pattern_backfill_queue.jsonl"
+    pattern_inline_outcome_max_per_scan: int = 10  # cap on store-time outcome computation per scan
+    pattern_backfill_max_tickers_per_run: int = 20  # cap on queue-drain work per scheduled run
 
     # --- V2: Deep Research (Phase C) ---
     openai_api_key: str = ""
@@ -173,3 +180,31 @@ class Settings(BaseSettings):
         if normalized not in {"market", "limit"}:
             raise ValueError("ROBINHOOD_ORDER_TYPE must be 'market' or 'limit'")
         return normalized
+
+
+def data_dir(settings) -> "Path":
+    """Directory that holds the SQLite DB file (prod: /data/), else cwd.
+
+    Used to anchor sidecar files (the pattern backfill queue) on the persistent
+    volume rather than the ephemeral container FS. Accepts any object exposing a
+    ``database_url`` attribute so test doubles work without a real Settings.
+    """
+    from pathlib import Path
+
+    url = getattr(settings, "database_url", "") or ""
+    if url.startswith("sqlite:///"):
+        parent = Path(url[len("sqlite:///"):]).parent
+        if str(parent) not in ("", "."):
+            return parent
+    return Path.cwd()
+
+
+def resolve_backfill_queue_path(settings) -> "Path":
+    """Resolve the pattern backfill queue path, anchoring relative paths to the DB dir."""
+    from pathlib import Path
+
+    raw = getattr(settings, "pattern_backfill_queue_path", "") or ".pattern_backfill_queue.jsonl"
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    return data_dir(settings) / path

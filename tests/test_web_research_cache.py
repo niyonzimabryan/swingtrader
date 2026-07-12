@@ -43,7 +43,7 @@ def _settings(db_path, **overrides):
         "web_research_cache_enabled": True,
         "web_research_cache_ttl_hours": 24,
         "database_url": f"sqlite:///{db_path}",
-        "analyst_model": "claude-sonnet-4-6",
+        "analyst_model": "claude-sonnet-5",
         "scoring_model": "claude-opus-4-6",
         "filter_model": "claude-haiku-4-5-20251001",
     }
