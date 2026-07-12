@@ -95,6 +95,62 @@ class MemoGenerator:
         log.info("memo_generated", ticker=ticker, memo_id=memo_id, score=scoring_result.get("final_score"))
         return memo_data
 
+    def create_exploration_memo(
+        self,
+        ticker: str,
+        scoring_result: dict,
+        regime: dict,
+        position_pct_factor: float = 1.0,
+    ) -> dict:
+        """Persist a lightweight memo for an exploration-cohort auto-trade (Spec I2).
+
+        Reuses the exact sizing math (`_compute_trade_params`) so the order is
+        identical to the human path, but skips the Sonnet narrative (no operator
+        signal) and marks the row `auto_exploration` so it never surfaces as an
+        operator-facing memo. Returns {memo_id, trade_params, direction} or {}.
+        """
+        price_data = self.market_data.get_current_price(ticker)
+        current_price = price_data.get("price", 0)
+        atr = self.market_data.get_atr(ticker)
+        if current_price <= 0:
+            log.warning("no_price_for_exploration_memo", ticker=ticker)
+            return {}
+
+        direction_raw = scoring_result.get("direction", "bullish")
+        direction = "short" if direction_raw == "bearish" else "long"
+
+        trade_params = self._compute_trade_params(
+            current_price, atr, regime,
+            scoring_result.get("final_score", 0),
+            scoring_result.get("classification", "moderate"),
+            direction=direction,
+        )
+
+        factor = float(position_pct_factor or 1.0)
+        if factor != 1.0:
+            trade_params["position_pct"] = round(trade_params["position_pct"] * factor, 1)
+            trade_params["dollar_amount"] = round(trade_params["dollar_amount"] * factor, 2)
+            entry = trade_params["entry_price"]
+            trade_params["shares"] = int(trade_params["dollar_amount"] / entry) if entry > 0 else 0
+            trade_params["exploration_position_factor"] = factor
+
+        memo_data = {
+            "ticker": ticker,
+            "direction": direction,
+            "direction_raw": direction_raw,
+            "composite_score": scoring_result.get("final_score", 0),
+            "classification": scoring_result.get("classification", "unknown"),
+            "generated_at": utcnow_naive().isoformat() + "Z",
+            "trade_params": trade_params,
+            "signal_breakdown": scoring_result.get("signal_breakdown", {}),
+            "opus_evaluation": scoring_result.get("opus_evaluation", {}),
+        }
+
+        memo_id = self._save_memo(memo_data, status="auto_exploration", full_text="")
+        if not memo_id:
+            return {}
+        return {"memo_id": memo_id, "trade_params": trade_params, "direction": direction}
+
     def _compute_trade_params(self, price: float, atr: float, regime: dict,
                                score: float, classification: str,
                                direction: str = "long") -> dict:
@@ -208,7 +264,7 @@ class MemoGenerator:
             log.error("narrative_generation_failed", ticker=ticker, error=str(e))
             return "Thesis generation failed.", "Bear case generation failed."
 
-    def _save_memo(self, memo_data: dict) -> int:
+    def _save_memo(self, memo_data: dict, status: str = "pending", full_text: str | None = None) -> int:
         """Persist memo to database. Returns memo ID."""
         try:
             with get_session() as session:
@@ -220,14 +276,14 @@ class MemoGenerator:
                     composite_score=memo_data.get("composite_score", 0),
                     classification=memo_data.get("classification", ""),
                     direction=memo_data.get("direction", "long"),
-                    full_text=format_memo_plain(memo_data),
+                    full_text=format_memo_plain(memo_data) if full_text is None else full_text,
                     trade_params=json.dumps(memo_data.get("trade_params", {})),
                     signal_breakdown=json.dumps(memo_data.get("signal_breakdown", {})),
                     opus_critique=json.dumps(memo_data.get("opus_evaluation", {})),
                     memo_data_json=json.dumps(memo_data),
                     thesis=memo_data.get("thesis", ""),
                     bear_case=memo_data.get("bear_case", ""),
-                    status="pending",
+                    status=status,
                 )
                 session.add(memo)
                 session.flush()

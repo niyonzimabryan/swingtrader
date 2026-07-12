@@ -32,6 +32,8 @@ from execution.brokers import create_brokers, rebuild_primary_broker
 from execution.risk_manager import RiskManager
 from execution.position_manager import PositionManager
 from execution.order_manager import OrderManager
+from execution.auto_approver import AutoApprover
+from tracking.shadow_ledger import record_scored_candidate, classify_cohort
 from orchestrator.universe import seed_universe, get_active_universe, get_watchlist, add_to_watchlist
 from utils.anthropic_client import AnthropicClient
 from utils.web_search_client import WebSearchClient
@@ -67,6 +69,26 @@ class ScanTickerItem:
     haiku_threshold: int     # 0 = skip Haiku, 2 = low, 3 = normal
     discovery_context: str = ""  # Pre-validated catalyst context (discovery only)
     direction_hint: str = ""     # From discovery
+
+
+@dataclass
+class ScanItemOutcome:
+    """Per-ticker scan result used for funnel telemetry (I0), the shadow ledger
+    (I1), and the post-scan paper auto-approve pass (I2)."""
+    ticker: str
+    source: str
+    sector: str
+    catalyst_gate_passed: bool = False
+    scored: bool = False
+    final_score: float = 0.0
+    direction: str = "neutral"
+    cohort: str = "below"
+    memo_id: int | None = None
+    ledger_id: int | None = None
+    scoring_result: dict | None = None
+    regime: dict | None = None
+    memo_data: dict | None = None
+    auto_executed: bool = False
 
 
 class TradingPipeline:
@@ -158,6 +180,16 @@ class TradingPipeline:
         self.risk_manager = RiskManager(settings)
         self.position_manager = PositionManager(settings)
         self.order_manager = OrderManager(settings, self.alpaca, self.risk_manager, self.position_manager, broker=self.broker)
+
+        # Spec I1: shared price cache for shadow-ledger entry prices.
+        from data.event_outcomes import PriceHistoryCache
+        self._price_cache = PriceHistoryCache(settings)
+
+        # Spec I2: paper autonomy sandbox (structurally paper-only; see AutoApprover).
+        self.auto_approver = AutoApprover(
+            settings, self.order_manager, self.memo_generator, self.broker,
+            notifier=self._auto_approve_notify,
+        )
 
         # Telegram notification manager (set after bot starts)
         self.notification_manager = None
@@ -269,6 +301,18 @@ class TradingPipeline:
             except Exception as e:
                 log.error("tier2_screen_failed", error=str(e))
 
+        # I0: cap tier-2 escalations to the top-N by Gemini score before catalyst.
+        tier2_escalated_precap = len(getattr(gemini_result, "escalated", []) or [])
+        tier2_kept = tier2_escalated_precap
+        if tier2_escalated_precap:
+            kept, dropped = self._cap_tier2_escalations(
+                gemini_result, int(getattr(self.settings, "tier2_max_escalations", 25))
+            )
+            if dropped:
+                gemini_result.escalated = kept
+                tier2_kept = len(kept)
+                log.info("tier2_escalation_capped", kept=tier2_kept, dropped=dropped)
+
         # 3. Update macro regime
         regime_output = self.macro_agent.analyze()
         regime = regime_output.raw_data
@@ -299,37 +343,66 @@ class TradingPipeline:
         memos_generated = 0
         escalated_count = 0
         memo_details = []
+        outcomes = []
         for item in scan_list:
             try:
-                memo_data = self._process_scan_item(item, regime)
-                if memo_data:
-                    memos_generated += 1
-                    opus_eval = memo_data.get("opus_evaluation", {})
-                    opus_rec = opus_eval.get("recommendation", "")
-                    memo_details.append({
-                        "ticker": item.ticker,
-                        "score": memo_data.get("composite_score", 0),
-                        "classification": memo_data.get("classification", ""),
-                        "memo_id": memo_data.get("memo_id", 0),
-                        "opus_recommendation": opus_rec,
-                    })
-
-                    # If Opus recommends watchlist, add it
-                    if opus_rec == "watchlist" and item.source != "watchlist":
-                        final_score = memo_data.get("composite_score", 0)
-                        add_to_watchlist(
-                            item.ticker,
-                            reason=f"Opus watchlist rec (score: {final_score:.2f})",
-                            source="opus_recommendation",
-                            sector=item.sector,
-                        )
-
+                outcome = self._process_scan_item(item, regime, scan_session_id)
             except Exception as e:
                 log.error("ticker_scan_failed", ticker=item.ticker, error=str(e))
                 continue
 
+            outcomes.append(outcome)
+            memo_data = outcome.memo_data
+            if memo_data:
+                memos_generated += 1
+                opus_eval = memo_data.get("opus_evaluation", {})
+                opus_rec = opus_eval.get("recommendation", "")
+                memo_details.append({
+                    "ticker": item.ticker,
+                    "score": memo_data.get("composite_score", 0),
+                    "classification": memo_data.get("classification", ""),
+                    "memo_id": memo_data.get("memo_id", 0),
+                    "opus_recommendation": opus_rec,
+                    "auto_executed": False,
+                })
+
+                # If Opus recommends watchlist, add it
+                if opus_rec == "watchlist" and item.source != "watchlist":
+                    final_score = memo_data.get("composite_score", 0)
+                    add_to_watchlist(
+                        item.ticker,
+                        reason=f"Opus watchlist rec (score: {final_score:.2f})",
+                        source="opus_recommendation",
+                        sector=item.sector,
+                    )
+
+        # I2: paper autonomy sandbox — auto-place orders for eligible cohorts.
+        auto_summary = self._run_auto_approve(outcomes)
+        # Mark auto-taken memos so the scan summary appends "🤖 auto-executed (paper)".
+        auto_memo_ids = {o.memo_id for o in outcomes if o.auto_executed and o.cohort == "memo"}
+        for md in memo_details:
+            md["auto_executed"] = md.get("memo_id") in auto_memo_ids
+
         duration = (utcnow_naive() - run_start).total_seconds()
         log.info("full_scan_complete", duration_s=duration, memos=memos_generated)
+
+        # I0: one funnel-summary line per scan — the single line Bryan reads.
+        log.info(
+            "scan_funnel_summary",
+            universe=len(UNIVERSE),
+            tier1_flagged=len(getattr(structured_result, "flagged", []) or []),
+            tier2_screened=getattr(gemini_result, "total_screened", 0),
+            tier2_escalated=tier2_escalated_precap,
+            tier2_capped=tier2_kept,
+            catalyst_analyzed=len(outcomes),
+            catalyst_gate_passed=sum(1 for o in outcomes if o.catalyst_gate_passed),
+            scored=sum(1 for o in outcomes if o.scored),
+            memo_threshold_passed=memos_generated,
+            memos_sent=memos_generated,
+            shadow_recorded=sum(1 for o in outcomes if o.ledger_id),
+            paper_orders=auto_summary.get("placed", 0),
+        )
+
         self._finish_pipeline_run(
             scan_session_id,
             status="success",
@@ -489,10 +562,65 @@ class TradingPipeline:
                         haiku_threshold=self.settings.catalyst_escalation_threshold,
                     ))
 
+        # I0: hard cap on the merged list entering catalyst. The list is already
+        # in priority order (tier2 > tier1 > discovery > watchlist > universe), so
+        # a head-slice never evicts a higher-priority source for a lower one.
+        cap = int(getattr(self.settings, "scan_max_catalyst_tickers", 40) or 0)
+        if cap > 0 and len(scan_list) > cap:
+            dropped = [s.ticker for s in scan_list[cap:]]
+            scan_list = scan_list[:cap]
+            log.info("scan_catalyst_capped", kept=cap, dropped=len(dropped), dropped_tickers=dropped[:20])
+
         return scan_list
 
-    def _process_scan_item(self, item: ScanTickerItem, regime: dict) -> dict:
-        """Process a single ticker through the full pipeline with source-aware routing."""
+    @staticmethod
+    def _cap_tier2_escalations(gemini_result, cap: int):
+        """Keep the top-N tier-2 escalations by Gemini score (stable: score desc,
+        ties by symbol). Returns (kept_tickers, dropped_count)."""
+        escalated = list(getattr(gemini_result, "escalated", []) or [])
+        if cap <= 0 or len(escalated) <= cap:
+            return escalated, 0
+        scores = {
+            getattr(r, "ticker", ""): getattr(r, "score", 0.0)
+            for r in getattr(gemini_result, "results", []) or []
+        }
+        ranked = sorted(escalated, key=lambda t: (-float(scores.get(t, 0.0)), t))
+        kept = ranked[:cap]
+        return kept, len(escalated) - len(kept)
+
+    def _run_auto_approve(self, outcomes: list) -> dict:
+        """Run the paper auto-approve pass (I2) on the bot loop. Sync wrapper for
+        the scan thread; returns the AutoApprover summary."""
+        candidates = [o for o in outcomes if o.scored and o.scoring_result]
+        if not candidates:
+            return {"placed": 0}
+        if not bool(getattr(self.settings, "auto_approve_paper", False)):
+            return {"placed": 0, "enabled": False}
+        if not self.bot_loop or self.bot_loop.is_closed():
+            log.warning("auto_approve_skipped_no_bot_loop")
+            return {"placed": 0}
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self.auto_approver.run(candidates), self.bot_loop
+            )
+            return future.result(timeout=180)
+        except Exception as e:
+            log.error("auto_approve_run_failed", error=str(e))
+            return {"placed": 0}
+
+    async def _auto_approve_notify(self, message: str) -> None:
+        """One-time operator alert used by the AutoApprover safety guard."""
+        if self.notification_manager:
+            await self.notification_manager.system_message(message)
+
+    def _process_scan_item(self, item: ScanTickerItem, regime: dict, run_id: str = "") -> ScanItemOutcome:
+        """Process a single ticker through the full pipeline with source-aware routing.
+
+        Returns a ScanItemOutcome carrying funnel telemetry (I0), the shadow
+        ledger row id (I1), and everything the paper auto-approve pass needs (I2).
+        """
+        outcome = ScanItemOutcome(ticker=item.ticker, source=item.source, sector=item.sector)
+
         # Ensure ticker is in DB
         self._ensure_ticker(item.ticker)
 
@@ -513,7 +641,8 @@ class TradingPipeline:
 
         # Only proceed if catalyst is meaningful
         if catalyst.score < 0.3:
-            return None
+            return outcome
+        outcome.catalyst_gate_passed = True
 
         # Run remaining agents (parallelized with stability controller)
         fundamental, pattern, web_research, _, _ = self._run_post_catalyst_agents(
@@ -530,8 +659,15 @@ class TradingPipeline:
                 item.ticker, catalyst, fundamental, pattern, web_research,
                 regime, portfolio_context,
             )
+        outcome.scored = True
+        outcome.scoring_result = result
+        outcome.regime = regime
+        outcome.final_score = float(result.get("final_score", 0) or 0)
+        outcome.direction = str(result.get("direction", "neutral") or "neutral")
+        outcome.cohort = classify_cohort(outcome.final_score, self.settings)
 
         # Generate memo if above threshold
+        memo_data = None
         if result.get("meets_memo_threshold"):
             with _langfuse_context(tags=["memo", item.ticker]):
                 memo_data = self.memo_generator.generate(
@@ -539,6 +675,8 @@ class TradingPipeline:
                 )
             if memo_data:
                 memo_data["source"] = item.source
+                outcome.memo_data = memo_data
+                outcome.memo_id = memo_data.get("memo_id") or None
                 log.info(
                     "memo_created",
                     ticker=item.ticker,
@@ -555,9 +693,25 @@ class TradingPipeline:
                     web_research_reasoning=web_research.reasoning,
                 )
 
-                return memo_data
+        # I1: shadow ledger — record EVERY scored candidate, never affecting the
+        # pipeline on failure (record_scored_candidate swallows its own errors).
+        trade_params = (memo_data or {}).get("trade_params", {})
+        outcome.ledger_id = record_scored_candidate(
+            self.settings,
+            run_id=run_id,
+            ticker=item.ticker,
+            source=item.source,
+            scoring_result=result,
+            regime=regime,
+            memo_generated=bool(memo_data),
+            cohort=outcome.cohort,
+            entry_price=trade_params.get("entry_price"),
+            suggested_stop=trade_params.get("stop_loss"),
+            target_1=trade_params.get("target_1"),
+            price_cache=getattr(self, "_price_cache", None),
+        )
 
-        return None
+        return outcome
 
     def _run_post_catalyst_agents(
         self,
@@ -907,7 +1061,7 @@ class TradingPipeline:
         self._start_pipeline_run(session_id, "ad_hoc", metadata={"ticker": ticker})
         try:
             with _langfuse_context(session_id=session_id, tags=["ad_hoc", ticker]):
-                memo_data = self._run_ad_hoc_inner(ticker, thesis, _progress)
+                memo_data = self._run_ad_hoc_inner(ticker, thesis, _progress, session_id)
             self._finish_pipeline_run(
                 session_id,
                 status="success",
@@ -921,7 +1075,7 @@ class TradingPipeline:
             self._finish_pipeline_run(session_id, status="failed", errors=[str(e)])
             raise
 
-    def _run_ad_hoc_inner(self, ticker: str, thesis: str, _progress) -> dict:
+    def _run_ad_hoc_inner(self, ticker: str, thesis: str, _progress, run_id: str = "") -> dict:
         """Inner ad-hoc logic wrapped by Langfuse session context."""
         # Ensure ticker is in DB
         self._ensure_ticker(ticker)
@@ -967,6 +1121,23 @@ class TradingPipeline:
             memo_data = self.memo_generator.generate(
                 ticker, result, catalyst, fundamental, pattern, web_research, regime,
             )
+
+        # I1: shadow ledger — ad-hoc scored candidates are recorded too. Failure
+        # isolated; never affects the returned memo.
+        trade_params = (memo_data or {}).get("trade_params", {})
+        record_scored_candidate(
+            self.settings,
+            run_id=run_id,
+            ticker=ticker,
+            source="ad_hoc",
+            scoring_result=result,
+            regime=regime,
+            memo_generated=bool(memo_data),
+            entry_price=trade_params.get("entry_price"),
+            suggested_stop=trade_params.get("stop_loss"),
+            target_1=trade_params.get("target_1"),
+            price_cache=getattr(self, "_price_cache", None),
+        )
 
         return memo_data
 

@@ -126,7 +126,8 @@ class NotificationManager:
                 memo_id = md.get("memo_id", 0)
                 opus_rec = md.get("opus_recommendation", "")
                 rec_emoji = {"proceed": "✅", "reduce_size": "⚠️", "watchlist": "👀", "pass": "❌"}.get(opus_rec, "")
-                text += f"  {rec_emoji} `{escape_md(ticker)}` \\(`{score:.2f}`\\) — {escape_md(classification)}\n"
+                auto_note = " 🤖 auto\\-executed \\(paper\\)" if md.get("auto_executed") else ""
+                text += f"  {rec_emoji} `{escape_md(ticker)}` \\(`{score:.2f}`\\) — {escape_md(classification)}{auto_note}\n"
                 if memo_id:
                     rows.append([
                         InlineKeyboardButton(

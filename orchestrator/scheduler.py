@@ -99,6 +99,17 @@ class PipelineScheduler:
                     name="Weekly report (Sun 6 PM ET)",
                 )
 
+        # Shadow calibration ledger: nightly forward-returns fill (3:30 AM ET, off
+        # market hours). Gated on enable_scans like the other jobs. Trading-day
+        # aware and idempotent — it only fills matured horizons.
+        if enable_scans:
+            self.scheduler.add_job(
+                self._run_shadow_returns,
+                CronTrigger(hour=3, minute=30, timezone="America/New_York"),
+                id="shadow_returns",
+                name="Shadow calibration returns fill (3:30 AM ET)",
+            )
+
         # Pattern backfill queue drain (daily 3 AM ET, off market hours). Gated on
         # enable_scans like the other jobs — it spends Gemini quota, so a paused
         # scheduler must not keep draining. Only scheduled when the analog engine
@@ -121,6 +132,7 @@ class PipelineScheduler:
             scan_jobs
             + (1 if enable_scans and self.daily_digest else 0)
             + (1 if enable_scans and self.weekly_report else 0)
+            + (1 if enable_scans else 0)  # shadow_returns
             + (1 if pattern_backfill else 0)
         )
         log.info(
@@ -132,6 +144,7 @@ class PipelineScheduler:
             post_market=f"{self.settings.post_market_hour}:00 ET" if enable_scans else "disabled",
             daily_digest="17:00 ET (weekdays)" if (enable_scans and self.daily_digest) else "disabled",
             weekly_report="Sun 18:00 ET" if (enable_scans and self.weekly_report) else "disabled",
+            shadow_returns="03:30 ET" if enable_scans else "disabled",
             pattern_backfill="03:00 ET" if pattern_backfill else "disabled",
             daily_restart=self._restart_time_str() or "disabled",
         )
@@ -219,6 +232,24 @@ class PipelineScheduler:
             await self.weekly_report.send_report()
         except Exception as e:
             log.error("weekly_report_failed", error=str(e))
+
+    async def _run_shadow_returns(self):
+        """Fill matured forward returns on the shadow calibration ledger (I1)."""
+        try:
+            from tracking.shadow_ledger import compute_matured_returns
+
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(
+                None, lambda: compute_matured_returns(self.settings)
+            )
+            log.info(
+                "shadow_returns_job",
+                processed=summary.get("processed", 0),
+                rows_updated=summary.get("rows_updated", 0),
+                horizons_filled=summary.get("horizons_filled", 0),
+            )
+        except Exception as e:
+            log.error("shadow_returns_failed", error=str(e))
 
     async def _run_pattern_backfill(self):
         """Drain the cold-ticker pattern backfill queue. No-op if the engine is off."""

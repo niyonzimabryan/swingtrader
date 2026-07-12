@@ -71,6 +71,34 @@ class Settings(BaseSettings):
     high_conviction_threshold: float = 0.75
     catalyst_escalation_threshold: int = 3  # Haiku score 1-5 to trigger Sonnet
 
+    # --- Spec I0: Funnel guardrails (protect the first healthy scan) ---
+    # After tier-2 screening, keep only the top-N escalated tickers by Gemini
+    # score (stable sort, ties by score then symbol). The fixed screener can
+    # escalate 8/10 tickers; without this cap a healthy scan pushes 100+ tickers
+    # into catalyst (cost + duration bomb).
+    tier2_max_escalations: int = 25
+    # Hard cap on the merged scan list entering catalyst, applied AFTER the
+    # existing priority ordering (tier2 > tier1 > discovery > watchlist >
+    # universe) so it never evicts a higher-priority source for a lower one.
+    scan_max_catalyst_tickers: int = 40
+
+    # --- Spec I1: Shadow calibration ledger ---
+    # Per nightly run, cap how many matured rows get forward returns computed
+    # (yfinance/FMP price fetches) so the job stays bounded.
+    shadow_returns_max_per_run: int = 300
+
+    # --- Spec I2: Paper autonomy sandbox ---
+    # Master switch. Auto-approval is structurally impossible outside the Alpaca
+    # PAPER adapter regardless of this flag (hard safety guard).
+    auto_approve_paper: bool = False
+    auto_approve_min_score: float = 0.55       # memo cohort floor
+    exploration_band_enabled: bool = True
+    exploration_min_score: float = 0.45        # band = [exploration_min, auto_approve_min)
+    auto_max_concurrent_positions: int = 8
+    auto_max_new_positions_per_scan: int = 4   # memo cohort
+    exploration_max_new_per_scan: int = 2      # exploration cohort
+    exploration_position_pct_factor: float = 0.5  # smaller default size for exploration
+
     # --- Scheduling (ET hours) ---
     pre_market_hour: int = 7
     midday_hour: int = 12
