@@ -1,5 +1,5 @@
 # GENERATED — do not edit here. Source: model-registry/check_models.py
-# Re-sync with: model-registry/sync.sh /private/tmp/claude-501/-Users-bryanniyonzima/c7bde0be-63a5-4b6d-b480-02d5e40b7ec3/scratchpad/swingtrader-sync
+# Re-sync with: model-registry/sync.sh /Users/bryanniyonzima/AppsinTesting/swingtrader
 #!/usr/bin/env python3
 """
 check_models.py — LLM model-ID linter.
@@ -23,7 +23,7 @@ Exit codes:
     0  clean (or only warnings, without --strict)
     1  found retired/deprecated models (or any finding with --strict)
 
-Registry last reviewed: 2026-07-01. Sources: platform.claude.com models doc
+Registry last reviewed: 2026-07-04. Sources: platform.claude.com models doc
 (Anthropic, authoritative) + web research (Google Gemini, June/July 2026).
 """
 from __future__ import annotations
@@ -43,39 +43,43 @@ import sys
 #         "retired"    — 404s now; MUST migrate
 # replace:  recommended target id (migration / pin target)
 # upgrade:  same-price newer model — free quality win (not urgent)
+# price:    {"in": $/1M input tok, "out": $/1M output tok} — structured, consumed
+#           by the eval suite (Problem B) for $/run cost math. Standard (not intro/
+#           batch/cache) rates. Omitted for retired/deprecated (never eval candidates)
+#           and internal-only models. Keep in sync with the `note`.
 # note:     short human context (price, retire date, etc.)
 # ─────────────────────────────────────────────────────────────────────────────
 REGISTRY: dict[str, dict] = {
     # ── Anthropic ───────────────────────────────────────────────────────────
-    "claude-fable-5":            {"provider": "anthropic", "status": "current", "note": "flagship, $10/$50"},
+    "claude-fable-5":            {"provider": "anthropic", "status": "current", "price": {"in": 10.0, "out": 50.0}, "note": "flagship, $10/$50"},
     "claude-mythos-5":           {"provider": "anthropic", "status": "current", "note": "Project Glasswing only"},
-    "claude-opus-4-8":           {"provider": "anthropic", "status": "current", "note": "current Opus, $5/$25"},
-    "claude-opus-4-7":           {"provider": "anthropic", "status": "current", "upgrade": "claude-opus-4-8", "note": "$5/$25; 4-8 is same price"},
-    "claude-opus-4-6":           {"provider": "anthropic", "status": "current", "upgrade": "claude-opus-4-8", "note": "$5/$25; 4-8 is same price, free win"},
-    "claude-opus-4-5":           {"provider": "anthropic", "status": "current", "upgrade": "claude-opus-4-8", "note": "legacy-active"},
+    "claude-opus-4-8":           {"provider": "anthropic", "status": "current", "price": {"in": 5.0, "out": 25.0}, "note": "current Opus, $5/$25"},
+    "claude-opus-4-7":           {"provider": "anthropic", "status": "current", "upgrade": "claude-opus-4-8", "price": {"in": 5.0, "out": 25.0}, "note": "$5/$25; 4-8 is same price"},
+    "claude-opus-4-6":           {"provider": "anthropic", "status": "current", "upgrade": "claude-opus-4-8", "price": {"in": 5.0, "out": 25.0}, "note": "$5/$25; 4-8 is same price, free win"},
+    "claude-opus-4-5":           {"provider": "anthropic", "status": "current", "upgrade": "claude-opus-4-8", "price": {"in": 5.0, "out": 25.0}, "note": "legacy-active"},
     "claude-opus-4-1":           {"provider": "anthropic", "status": "deprecated", "replace": "claude-opus-4-8", "note": "retires 2026-08-05"},
     "claude-opus-4-0":           {"provider": "anthropic", "status": "deprecated", "replace": "claude-opus-4-8", "note": "retires 2026-06-15"},
-    "claude-sonnet-5":           {"provider": "anthropic", "status": "current", "note": "current Sonnet, $3/$15 (intro $2/$10 to 2026-08-31)"},
-    "claude-sonnet-4-6":         {"provider": "anthropic", "status": "current", "upgrade": "claude-sonnet-5", "note": "legacy; sonnet-5 is same $3/$15, newer/more agentic"},
-    "claude-sonnet-4-5":         {"provider": "anthropic", "status": "current", "upgrade": "claude-sonnet-5", "note": "legacy; sonnet-5 same price, newer"},
-    "claude-sonnet-4-0":         {"provider": "anthropic", "status": "deprecated", "replace": "claude-sonnet-4-6", "note": "retires 2026-06-15"},
-    "claude-haiku-4-5":          {"provider": "anthropic", "status": "current", "note": "current Haiku, $1/$5"},
-    "claude-3-7-sonnet":         {"provider": "anthropic", "status": "retired", "replace": "claude-sonnet-4-6", "note": "retired 2026-02-19"},
-    "claude-3-5-sonnet":         {"provider": "anthropic", "status": "retired", "replace": "claude-sonnet-4-6", "note": "retired 2025-10-28"},
+    "claude-sonnet-5":           {"provider": "anthropic", "status": "current", "price": {"in": 3.0, "out": 15.0}, "note": "current Sonnet, $3/$15 standard (intro $2/$10 to 2026-08-31)"},
+    "claude-sonnet-4-6":         {"provider": "anthropic", "status": "current", "upgrade": "claude-sonnet-5", "price": {"in": 3.0, "out": 15.0}, "note": "legacy; sonnet-5 is same $3/$15, newer/more agentic"},
+    "claude-sonnet-4-5":         {"provider": "anthropic", "status": "current", "upgrade": "claude-sonnet-5", "price": {"in": 3.0, "out": 15.0}, "note": "legacy; sonnet-5 same price, newer"},
+    "claude-sonnet-4-0":         {"provider": "anthropic", "status": "deprecated", "replace": "claude-sonnet-5", "note": "retires 2026-06-15"},
+    "claude-haiku-4-5":          {"provider": "anthropic", "status": "current", "price": {"in": 1.0, "out": 5.0}, "note": "current Haiku, $1/$5"},
+    "claude-3-7-sonnet":         {"provider": "anthropic", "status": "retired", "replace": "claude-sonnet-5", "note": "retired 2026-02-19"},
+    "claude-3-5-sonnet":         {"provider": "anthropic", "status": "retired", "replace": "claude-sonnet-5", "note": "retired 2025-10-28"},
     "claude-3-5-haiku":          {"provider": "anthropic", "status": "retired", "replace": "claude-haiku-4-5", "note": "retired 2026-02-19"},
     "claude-3-opus":             {"provider": "anthropic", "status": "retired", "replace": "claude-opus-4-8", "note": "retired 2026-01-05"},
     "claude-3-haiku":            {"provider": "anthropic", "status": "deprecated", "replace": "claude-haiku-4-5", "note": "retires 2026-04-19"},
     # ── Google Gemini ─────────────────────────────────────────────────────────
-    "gemini-3.5-flash":          {"provider": "google", "status": "current", "note": "newest Flash, $1.50/$9"},
-    "gemini-3.1-pro":            {"provider": "google", "status": "current", "note": "flagship, $2/$12"},
+    "gemini-3.5-flash":          {"provider": "google", "status": "current", "price": {"in": 1.5, "out": 9.0}, "note": "newest Flash, $1.50/$9"},
+    "gemini-3.1-pro":            {"provider": "google", "status": "current", "price": {"in": 2.0, "out": 12.0}, "note": "flagship, $2/$12"},
     "gemini-3.1-pro-preview":    {"provider": "google", "status": "preview", "replace": "gemini-3.1-pro", "note": "preview alias — pin to GA"},
-    "gemini-3-flash":            {"provider": "google", "status": "current", "note": "$0.50/$3"},
+    "gemini-3-flash":            {"provider": "google", "status": "current", "price": {"in": 0.5, "out": 3.0}, "note": "$0.50/$3"},
     "gemini-3-flash-preview":    {"provider": "google", "status": "preview", "replace": "gemini-3-flash", "note": "preview alias; pin to GA (gemini-3.5-flash is newer)"},
-    "gemini-3.1-flash-lite":     {"provider": "google", "status": "current", "note": "cheap tier, $0.25/$1.50"},
+    "gemini-3.1-flash-lite":     {"provider": "google", "status": "current", "price": {"in": 0.25, "out": 1.5}, "note": "cheap tier, $0.25/$1.50"},
     "gemini-3.1-flash-lite-preview": {"provider": "google", "status": "preview", "replace": "gemini-3.1-flash-lite", "note": "preview alias — pin to GA"},
-    "gemini-2.5-pro":            {"provider": "google", "status": "current", "upgrade": "gemini-3.1-pro", "note": "prev-gen, active"},
-    "gemini-2.5-flash":          {"provider": "google", "status": "current", "note": "active, $0.30/$2.50"},
-    "gemini-2.5-flash-lite":     {"provider": "google", "status": "current", "note": "cheapest, $0.10 in"},
+    "gemini-2.5-pro":            {"provider": "google", "status": "current", "upgrade": "gemini-3.1-pro", "price": {"in": 1.25, "out": 10.0}, "note": "prev-gen, active, $1.25/$10"},
+    "gemini-2.5-flash":          {"provider": "google", "status": "current", "price": {"in": 0.3, "out": 2.5}, "note": "active, $0.30/$2.50"},
+    "gemini-2.5-flash-lite":     {"provider": "google", "status": "current", "price": {"in": 0.1, "out": 0.4}, "note": "cheapest, $0.10/$0.40"},
     "gemini-2.5-flash-image":    {"provider": "google", "status": "current", "note": "image generation"},
     "gemini-2.0-flash-exp":      {"provider": "google", "status": "deprecated", "replace": "gemini-2.5-flash", "note": "experimental, being removed"},
     "gemini-2.0-flash":          {"provider": "google", "status": "deprecated", "replace": "gemini-2.5-flash", "note": "deprecating 2026-06-01"},
@@ -107,6 +111,10 @@ SKIP_DIRS = {
     ".worktrees", ".hermes-worktrees", "worktrees", "logs",
 }
 SKIP_FILE_SUBSTR = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "check_models.py", "models.json")
+# Test files legitimately embed retired/unknown IDs as fixtures (e.g. asserting the
+# eval suite refuses a swap onto a rotten model). The linter guards *prod call sites*,
+# not test fixtures, so skip them — otherwise Problem-B's own tests would fail the lint.
+_TEST_FILE = re.compile(r"(?:^test_.*\.py$|.*_test\.py$|^conftest\.py$)")
 
 
 def _normalise(token: str) -> str:
@@ -129,7 +137,7 @@ def iter_files(root: str):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in filenames:
-            if any(s in fn for s in SKIP_FILE_SUBSTR):
+            if any(s in fn for s in SKIP_FILE_SUBSTR) or _TEST_FILE.match(fn):
                 continue
             ext = os.path.splitext(fn)[1].lower()
             if ext in SCAN_EXTS or fn.startswith(SCAN_ENV_PREFIX):

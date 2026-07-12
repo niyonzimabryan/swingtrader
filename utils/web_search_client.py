@@ -326,4 +326,4 @@ class WebSearchClient:
         """Get default model from settings or fallback."""
         if self.settings:
             return self.settings.analyst_model
-        return "claude-sonnet-4-6"
+        return "claude-sonnet-5"

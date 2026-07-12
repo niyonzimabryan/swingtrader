@@ -1781,14 +1781,14 @@ V2 is a comprehensive upgrade across all four phases (A-D), replacing stubs with
 
 #### Discovery Agent
 - **Purpose:** Finds 8-12 actionable swing trade catalysts via web search, beyond the static S&P 500 universe
-- **Model:** Sonnet 4.6 + `web_search_20250305` + extended thinking (10K budget)
+- **Model:** Sonnet 5 + `web_search_20250305` + extended thinking (10K budget)
 - **Output:** `DiscoveryOutput` with validated tickers, catalyst summaries, relevance scores
 - **Source routing:** Discovered tickers skip Haiku pre-screen (already validated)
 - **File:** `agents/discovery_agent.py`
 
 #### Web Research Agent (replaces Reddit)
 - **Purpose:** Real-time web research for sentiment, institutional positioning, bull/bear debates
-- **Model:** Sonnet 4.6 + `web_search_20250305` (up to 8 searches per ticker)
+- **Model:** Sonnet 5 + `web_search_20250305` (up to 8 searches per ticker)
 - **Output:** Structured JSON with: key_finding, catalyst_context, competitive_dynamics, management_signals, bull_bear_debate, institutional_positioning
 - **Scoring weight:** 0.20 (replaces Reddit's former 0.15, redistributed from pattern)
 - **File:** `agents/web_research_agent.py`
