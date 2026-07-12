@@ -37,6 +37,7 @@ class Result:
     verdict: str
     reason: str
     threshold: float
+    min_n: int = 0                  # spec's statistical floor, carried into attestations (v2)
 
 
 def _run_cost(catalog, model, in_tok, out_tok):
@@ -126,6 +127,7 @@ def evaluate(
         value=value, ci_low=lo, ci_high=hi, n=n, n_excluded=excluded,
         cost_candidate=cost_cand, cost_incumbent=cost_inc, cost_estimated=estimated,
         free_upgrade=free_upgrade, verdict=verdict, reason=reason, threshold=spec.threshold,
+        min_n=spec.min_n,
     )
 
 

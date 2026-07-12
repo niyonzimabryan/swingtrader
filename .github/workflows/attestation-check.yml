@@ -1,0 +1,30 @@
+name: attestation-check
+
+# Fails the build when a committed model swap is not backed by a still-valid
+# eval attestation (Problem B v2). Attestations invalidate on model mismatch,
+# expiry (90d), registry (models.json) change, rubric change, or a corpus
+# below the task's statistical floor.
+# The checker is vendored at tools/check_attestations.py and verifies via the
+# vendored evals/vendor/model_evals — both synced from the model-registry repo.
+# Optional: set the MODEL_EVALS_ATTEST_KEY repo secret to enforce HMAC
+# signatures; unset, integrity is still checked via the SHA-256 seal.
+# Caveat: GitHub does not expose secrets to fork PRs, so signature
+# enforcement there only happens on the post-merge push run.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  attestation-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify model attestations
+        env:
+          MODEL_EVALS_ATTEST_KEY: ${{ secrets.MODEL_EVALS_ATTEST_KEY }}
+        run: python tools/check_attestations.py .

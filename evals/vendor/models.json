@@ -8,13 +8,13 @@
   "claude-3-5-sonnet": {
     "note": "retired 2025-10-28",
     "provider": "anthropic",
-    "replace": "claude-sonnet-4-6",
+    "replace": "claude-sonnet-5",
     "status": "retired"
   },
   "claude-3-7-sonnet": {
     "note": "retired 2026-02-19",
     "provider": "anthropic",
-    "replace": "claude-sonnet-4-6",
+    "replace": "claude-sonnet-5",
     "status": "retired"
   },
   "claude-3-haiku": {
@@ -106,7 +106,7 @@
   "claude-sonnet-4-0": {
     "note": "retires 2026-06-15",
     "provider": "anthropic",
-    "replace": "claude-sonnet-4-6",
+    "replace": "claude-sonnet-5",
     "status": "deprecated"
   },
   "claude-sonnet-4-5": {

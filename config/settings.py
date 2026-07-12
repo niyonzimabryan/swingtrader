@@ -96,13 +96,13 @@ class Settings(BaseSettings):
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
     scoring_model: str = "claude-opus-4-6"
-    analyst_model: str = "claude-sonnet-4-6"
+    analyst_model: str = "claude-sonnet-5"
     filter_model: str = "claude-haiku-4-5-20251001"
 
     # --- V2: Web Search & Discovery ---
     web_search_provider: str = "gemini"  # "gemini" (default) or "anthropic"
     discovery_max_tickers: int = 12
-    discovery_model: str = "claude-sonnet-4-6"  # Discovery uses Sonnet, NOT Haiku
+    discovery_model: str = "claude-sonnet-5"  # Discovery uses Sonnet, NOT Haiku
     discovery_output_max_tokens: int = 8192
     discovery_max_searches: int = 8
 
