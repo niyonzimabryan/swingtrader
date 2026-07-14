@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     memo_threshold: float = 0.55  # Production threshold (override via .env for testing)
     high_conviction_threshold: float = 0.75
     catalyst_escalation_threshold: int = 3  # Haiku score 1-5 to trigger Sonnet
+    # BRY-301: scan-complete alert fires once per scan when at least this
+    # fraction of scanned tickers failed processing (billing outage / LLM
+    # provider down) — a scan can otherwise "complete" with zero memos silently.
+    catalyst_failure_rate_alert_threshold: float = 0.9
 
     # --- Spec I0: Funnel guardrails (protect the first healthy scan) ---
     # After tier-2 screening, keep only the top-N escalated tickers by Gemini

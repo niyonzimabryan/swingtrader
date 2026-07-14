@@ -91,12 +91,15 @@ class AnthropicRetryTest(unittest.TestCase):
         client = AnthropicClient(api_key="test")
         create = Mock(side_effect=billing)
         client.client.messages.create = create
-        with patch("time.sleep"), patch("utils.anthropic_client.log") as mock_log:
+        with patch("time.sleep"), patch("utils.anthropic_client.log") as mock_log, \
+                patch("utils.billing_alerts.page_once") as mock_page:
             with self.assertRaises(anthropic.BadRequestError):
                 client.analyze("m", "sys", "user")
         self.assertEqual(create.call_count, 1)  # never retried
         mock_log.critical.assert_called_once()
         self.assertEqual(mock_log.critical.call_args.args[0], "anthropic_credit_exhausted")
+        mock_page.assert_called_once()  # BRY-301: pages the operator directly, not just logs
+        self.assertEqual(mock_page.call_args.args[0], "anthropic")
 
 
 class CatalystEscalationRetryTest(unittest.TestCase):
@@ -130,10 +133,13 @@ class GeminiRetryTest(unittest.TestCase):
         )
         self.assertTrue(is_gemini_billing_error(billing))
         self.assertFalse(is_gemini_billing_error(ServerError("503 backend error")))
-        with patch("utils.web_search_client.log") as mock_log:
+        with patch("utils.web_search_client.log") as mock_log, \
+                patch("utils.billing_alerts.page_once") as mock_page:
             self.assertFalse(_is_retryable_gemini_error(billing))
         mock_log.critical.assert_called_once()
         self.assertEqual(mock_log.critical.call_args.args[0], "gemini_credit_exhausted")
+        mock_page.assert_called_once()  # BRY-301: pages the operator directly, not just logs
+        self.assertEqual(mock_page.call_args.args[0], "gemini")
         self.assertFalse(_is_retryable_gemini_error(SimpleNamespace(code=400)))
 
     def test_discovery_gemini_search_retries_then_succeeds(self):

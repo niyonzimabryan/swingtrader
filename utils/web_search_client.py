@@ -9,7 +9,7 @@ import json
 
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception
 
-from utils import gemini_ledger
+from utils import billing_alerts, gemini_ledger
 from utils.anthropic_client import AnthropicClient
 from utils.logger import get_logger
 
@@ -39,6 +39,11 @@ def _is_retryable_gemini_error(exc: BaseException) -> bool:
     if is_gemini_billing_error(exc):
         # Loud, greppable marker — mirrors anthropic_client's anthropic_credit_exhausted.
         log.critical("gemini_credit_exhausted", error=str(exc)[:300])
+        billing_alerts.page_once(
+            "gemini",
+            "🚨 Gemini credit balance exhausted — prepayment credits are depleted; "
+            f"Gemini calls will fail until topped up. Error: {str(exc)[:200]}",
+        )
         return False
     if isinstance(exc, (ConnectionError, TimeoutError)):
         return True

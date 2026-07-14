@@ -1,6 +1,7 @@
 import json
 import anthropic
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception
+from utils import billing_alerts
 from utils.logger import get_logger
 
 log = get_logger("anthropic_client")
@@ -30,8 +31,17 @@ def _is_retryable_anthropic_error(exc: BaseException) -> bool:
     APITimeoutError subclasses APIConnectionError, so timeouts are covered.
     """
     if is_billing_error(exc):
-        # Loud, greppable marker — the scheduler turns this into a Telegram page.
+        # Loud, greppable marker — the scheduler turns this into a Telegram page
+        # when a scan raises, but per-ticker exception handling can swallow this
+        # before it gets that far (BRY-301) — page directly here too, once per
+        # process, so a billing outage can't go unnoticed.
         log.critical("anthropic_credit_exhausted", error=str(exc))
+        billing_alerts.page_once(
+            "anthropic",
+            "🚨 Anthropic credit balance exhausted — every Claude call will fail "
+            "until it's topped up at console.anthropic.com. Scans may keep "
+            f"'completing' with fallback scores and zero memos until this is fixed. Error: {str(exc)[:200]}",
+        )
         return False
     if isinstance(exc, (anthropic.RateLimitError, anthropic.APIConnectionError)):
         return True
