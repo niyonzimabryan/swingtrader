@@ -75,10 +75,13 @@ class WeeklyReport:
                 Trade.status == "closed",
             ).all()
 
-            # Memos generated this week
+            # Memos generated this week. Exploration-cohort auto-trades (I2) persist
+            # a sentinel memo purely to reuse the order path — never an operator
+            # signal — so they are excluded from operator-facing memo counts.
             memos = session.query(Memo).filter(
                 Memo.created_at >= week_start_utc,
                 Memo.created_at <= week_end_utc,
+                Memo.status != "auto_exploration",
             ).all()
 
             # All open trades
@@ -150,6 +153,17 @@ class WeeklyReport:
                     "days_held": (t.exit_date - t.entry_date).days if t.exit_date and t.entry_date else 0,
                 })
 
+            # I2: cohort P&L split (memo vs exploration) from auto-tagged trades.
+            def _cohort_pnl(tag: str) -> dict:
+                rows = [t for t in trades_closed if tag in (t.operator_notes or "")]
+                return {"count": len(rows), "pnl": sum(t.pnl_absolute or 0 for t in rows)}
+
+            cohort_pnl = {"memo": _cohort_pnl("AUTO:memo"), "exploration": _cohort_pnl("AUTO:exploration")}
+
+        # I1: calibration decile curve (opens its own session; plain math, no LLM).
+        from tracking.shadow_ledger import calibration_report
+        calibration = calibration_report()
+
         return {
             "week_start": week_start.strftime("%b %d"),
             "week_end": week_end.strftime("%b %d, %Y"),
@@ -170,6 +184,8 @@ class WeeklyReport:
             "positions": position_data,
             "closed_details": closed_details,
             "profitable_positions": sum(1 for p in position_data if p["pnl_pct"] > 0),
+            "calibration": calibration,
+            "cohort_pnl": cohort_pnl,
         }
 
     def _generate_narrative(self, data: dict) -> str:
@@ -264,5 +280,35 @@ Generate the WHAT WORKED and WHAT DIDN'T sections."""
                 text += f"  ⚠️ {past_max} position\\(s\\) past max hold\n"
             else:
                 text += f"  No positions past max hold\n"
+
+        # I1: calibration decile curve — the data that decides future thresholds.
+        cal = data.get("calibration") or {}
+        if cal.get("total_matured"):
+            text += f"\n*CALIBRATION \\({cal['total_matured']} matured, win% / median T10\\)*\n"
+            for b in cal.get("buckets", []):
+                if not b.get("count"):
+                    continue
+                med = b.get("median_t10")
+                med_str = f"{med:+.1f}%" if med is not None else "n/a"
+                text += (
+                    f"  `{b['label']}`: n\\=`{b['count']}` `{b['win_rate']:.0f}%` `{med_str}`\n"
+                )
+            by_dir = cal.get("by_direction") or {}
+            if by_dir:
+                for dirn, s in by_dir.items():
+                    med = s.get("median_t10")
+                    med_str = f"{med:+.1f}%" if med is not None else "n/a"
+                    text += (
+                        f"  {escape_md(dirn)}: n\\=`{s['count']}` `{s['win_rate']:.0f}%` `{med_str}`\n"
+                    )
+
+        # I2: auto-cohort realized P&L (paper), once trades close.
+        cohort_pnl = data.get("cohort_pnl") or {}
+        if any(cohort_pnl.get(k, {}).get("count") for k in ("memo", "exploration")):
+            text += f"\n*AUTO COHORT P&L \\(closed, paper\\)*\n"
+            for name in ("memo", "exploration"):
+                c = cohort_pnl.get(name, {})
+                if c.get("count"):
+                    text += f"  {escape_md(name)}: `{c['count']}` closed `${c['pnl']:+,.2f}`\n"
 
         return text

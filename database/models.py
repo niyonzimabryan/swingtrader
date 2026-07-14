@@ -600,6 +600,49 @@ class EventContext(Base):
     event = relationship("HistoricalEvent", back_populates="context")
 
 
+class ScoredCandidate(Base):
+    """Shadow calibration ledger (Spec I1).
+
+    One row for EVERY ticker that reaches scoring (scheduled + ad-hoc),
+    regardless of outcome. Forward returns are filled nightly once each horizon
+    matures. This is the labeled dataset (~30/day) that drives all future
+    threshold decisions from decile data instead of guesses.
+    """
+    __tablename__ = "scored_candidates"
+    __table_args__ = (
+        Index("ix_scored_candidates_run_id", "run_id"),
+        Index("ix_scored_candidates_returns_pending", "returns_computed_at", "scored_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(80), default="")
+    ticker = Column(String(10), nullable=False, index=True)
+    scored_at = Column(DateTime, default=utcnow_naive)
+    source = Column(String(30), default="")  # tier2_gemini / discovery / watchlist / ...
+    final_score = Column(Float, default=0)
+    catalyst_score = Column(Float, nullable=True)
+    fundamental_score = Column(Float, nullable=True)
+    pattern_score = Column(Float, nullable=True)
+    pattern_status = Column(String(40), default="")
+    web_research_score = Column(Float, nullable=True)
+    direction = Column(String(20), default="neutral")
+    regime = Column(String(20), default="")
+    entry_price = Column(Float, nullable=True)  # price at scoring time
+    suggested_stop = Column(Float, nullable=True)
+    target_1 = Column(Float, nullable=True)
+    memo_generated = Column(Boolean, default=False)
+    paper_traded = Column(Boolean, default=False)  # I2
+    cohort = Column(String(20), default="below")   # memo | exploration | below
+    # Forward returns (percent), filled nightly once each horizon matures.
+    ret_t1 = Column(Float, nullable=True)
+    ret_t3 = Column(Float, nullable=True)
+    ret_t5 = Column(Float, nullable=True)
+    ret_t10 = Column(Float, nullable=True)
+    ret_t20 = Column(Float, nullable=True)
+    returns_computed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow_naive)
+
+
 class DeepResearchRequest(Base):
     """Tracks async deep research tasks for high-conviction ideas."""
     __tablename__ = "deep_research_requests"

@@ -50,9 +50,12 @@ class DailyDigest:
         today_utc = today_start.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
         with get_session() as session:
-            # Memos generated today
+            # Memos generated today. Exploration-cohort auto-trades (I2) persist a
+            # sentinel memo purely to reuse the order path — exclude it here so it
+            # never inflates the operator-facing count.
             memos_today = session.query(Memo).filter(
-                Memo.created_at >= today_utc
+                Memo.created_at >= today_utc,
+                Memo.status != "auto_exploration",
             ).all()
 
             # Trades opened today
