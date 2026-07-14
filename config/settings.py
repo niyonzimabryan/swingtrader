@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     max_holding_days: int = 20
     drawdown_circuit_breaker_pct: float = 0.10
     daily_loss_halt_pct: float = 0.03
+    # Assumed per-fill slippage for the offline event-replay backtester (Spec J).
+    # Applied adversely to market-style fills (entry, stop, time exits) only.
+    backtest_slippage_bps: float = 10.0
 
     # --- Broker Selection & Execution Mode ---
     broker_primary: str = "alpaca"
