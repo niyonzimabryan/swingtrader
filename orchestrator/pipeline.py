@@ -344,10 +344,12 @@ class TradingPipeline:
         escalated_count = 0
         memo_details = []
         outcomes = []
+        catalyst_failures = 0
         for item in scan_list:
             try:
                 outcome = self._process_scan_item(item, regime, scan_session_id)
             except Exception as e:
+                catalyst_failures += 1
                 log.error("ticker_scan_failed", ticker=item.ticker, error=str(e))
                 continue
 
@@ -395,6 +397,7 @@ class TradingPipeline:
             tier2_escalated=tier2_escalated_precap,
             tier2_capped=tier2_kept,
             catalyst_analyzed=len(outcomes),
+            catalyst_failed=catalyst_failures,
             catalyst_gate_passed=sum(1 for o in outcomes if o.catalyst_gate_passed),
             scored=sum(1 for o in outcomes if o.scored),
             memo_threshold_passed=memos_generated,
@@ -416,6 +419,45 @@ class TradingPipeline:
 
         # Send scan completion notification
         self._send_scan_notification(duration, len(scan_list), escalated_count, memos_generated, memo_details)
+        self._maybe_alert_high_failure_rate(len(scan_list), catalyst_failures)
+
+    def _maybe_alert_high_failure_rate(self, total_scanned: int, catalyst_failures: int) -> None:
+        """
+        BRY-301: per-ticker exceptions (billing exhaustion, LLM provider outages)
+        are caught so one bad ticker can't kill the whole scan — but that means a
+        scan can finish with status="success" and zero memos while almost every
+        ticker silently failed, and the scan-failure Telegram path (which only
+        fires when run_full_scan() itself raises) never sees it. Page the
+        operator once per scan when that happens instead.
+        """
+        if total_scanned == 0:
+            return
+        threshold = float(getattr(self.settings, "catalyst_failure_rate_alert_threshold", 0.9))
+        failure_rate = catalyst_failures / total_scanned
+        if failure_rate <= threshold:
+            return
+
+        log.warning(
+            "catalyst_error_rate_high",
+            failed=catalyst_failures,
+            scanned=total_scanned,
+            failure_rate=round(failure_rate, 3),
+        )
+        if not self.notification_manager or not self.bot_loop or self.bot_loop.is_closed():
+            return
+
+        msg = (
+            f"⚠️ Scan completed but nearly all LLM calls failed — "
+            f"{catalyst_failures}/{total_scanned} tickers errored ({failure_rate:.0%}). "
+            f"Check provider credit balance / API status."
+        )
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.notification_manager.system_message(msg),
+                self.bot_loop,
+            )
+        except Exception as e:
+            log.error("catalyst_error_rate_alert_failed", error=str(e))
 
     def _send_scan_notification(self, duration_s, total_scanned, escalated, memos_generated, memo_details):
         """Send scan completion notification via Telegram."""

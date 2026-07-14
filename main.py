@@ -21,6 +21,7 @@ from execution.position_monitor import PositionMonitor
 from bot.daily_digest import DailyDigest
 from bot.weekly_report import WeeklyReport
 from tracking.position_reconciliation import reconcile_broker_positions
+from utils import billing_alerts
 from utils.lifecycle import MonitorWatchdog
 from utils.logger import setup_logging, get_logger
 
@@ -156,6 +157,7 @@ async def main():
     notifications = NotificationManager(mq, settings.telegram_chat_id)
     pipeline.notification_manager = notifications
     pipeline.bot_loop = asyncio.get_running_loop()  # For deep research async scheduling
+    billing_alerts.register(notifications, pipeline.bot_loop)
 
     # Initialize order monitor — always bound to the Alpaca broker, never the
     # mode-sensitive router. These monitors manage Alpaca order lifecycles only;
