@@ -2,7 +2,12 @@
 
 ## Document Purpose
 
-This PRD serves as the source of truth for building an automated swing trading system. It is designed to be consumed by both human developers and AI coding agents (Claude Code). When building, refer to this document for architectural decisions, scope boundaries, and acceptance criteria.
+This PRD is the source of truth for the automated swing trading system: product direction lives in §2 (kept current), and §§3–16 are the detailed build spec (largely implemented; superseded details are noted in place rather than rewritten). It is designed to be consumed by both human developers and AI coding agents (Claude Code).
+
+Companion documents:
+- **Current system state & the questions it can answer:** [`docs/SYSTEM_CAPABILITIES.md`](docs/SYSTEM_CAPABILITIES.md)
+- **July 2026 audit + remediation:** [`docs/audits/2026-07-04-system-audit.md`](docs/audits/2026-07-04-system-audit.md), specs in [`specs/audit-2026-07-04/`](specs/audit-2026-07-04/README.md)
+- **Task tracking:** Linear team BRY + `todoscratchpad.md`
 
 ---
 
@@ -16,38 +21,56 @@ Build an agentic system that identifies, evaluates, and executes swing trades on
 
 ---
 
-## 2. Phased Roadmap
+## 2. Product Direction & Phased Roadmap *(updated 2026-07-14)*
 
-### Phase 1 — Foundation (This Build)
-- Catalyst scanner + fundamental scorer
-- Paper trading via Alpaca
-- All trades generate IC memos delivered to the operator
-- No autonomous execution
-- Performance tracking and signal attribution logging
-- Historical pattern matching for thesis support
-- Macro regime classification (simple)
-- Reddit sentiment as supplementary signal
+**Organizing principle:** the pipeline is built and hardened; what is unproven
+is decision *quality*. Every phase below is gated on evidence from the
+system's own measurement instruments (see `docs/SYSTEM_CAPABILITIES.md`), not
+on feature completeness. **North-star metric: calibration** — does
+`final_score` predict T+10/T+20 outcomes (win-rate by score decile, from the
+shadow ledger + backtest replays)? Secondary: memo precision (fraction of
+≥0.55 memos that hit T1 before the stop).
 
-### Phase 2 — Selective Autonomy
-- Graduate high-confidence, well-validated setup types to autonomous execution
-- Tighten IC memo threshold (only novel/ambiguous setups need approval)
-- Introduce position management automation (trailing stops, scaling)
-- Backtest framework for validating new signal ideas against historical data
+### Phase 0 — Restore & verify *(current, days)* 
+Gate: Anthropic credit top-up (BRY-301), then: scheduler on → one supervised
+scan (`scan_funnel_summary` review; joint debut of fixed tier-2/discovery,
+sonnet-5 analyst tier, warm pattern library) → `AUTO_APPROVE_PAPER=true`.
 
-### Phase 3 — Expansion
-- Real capital deployment (small, graduated)
-- Additional asset classes or prediction markets
-- Multi-strategy support
-- Portfolio-level optimization
+### Phase 1 — Prove decision quality *(≈2–6 weeks)* — SHIPPED, gathering data
+The flywheel (specs I/J, merged 2026-07): every scored ticker lands in the
+shadow calibration ledger with forward returns attached nightly; the paper
+account autonomously trades the memo tier (≥0.55) and the 0.45–0.55
+exploration band (paper-only by structural guard); the event-replay backtester
+provides per-class expectancy and parameter sweeps from the historical
+library. Operator approval is no longer a data bottleneck — it remains only at
+the live-money boundary. Milestones: BRY-243 scoring parity eval at corpus
+≥150 (Opus→Sonnet-5 cost decision, attestation-gated); first decile curve in
+the Sunday report; 30–50 closed paper trades.
 
-### Phase 4+ — Reinforcement Learning & Adaptive Intelligence
-- Reward-weighted signal calibration (contextual bandits on trade outcomes)
-- Position sizing and exit timing optimization (full RL)
-- Fine-tuned judgment models from operator decision history
-- Adversarial thesis stress-testing via self-play
-- Constitutional trading principles as RL regularizer
+### Phase 2 — Calibrate & tune *(gated on Phase 1 data)*
+Attribution-driven rebalance of scoring weights (after 50+ closed trades;
+`tracking/attribution.py`); own-trade pattern evidence (BRY-60); threshold
+changes (memo bar, exploration band promotion) decided from cohort P&L and
+decile data; per-scan cost attribution (BRY-106, on the `llm_call` ledger);
+Alembic before further schema churn (BRY-107).
 
-**This PRD scopes Phase 1 only. Phases 2-3 are directional. Phase 4+ is a detailed roadmap (Section 13) with data collection requirements that must be baked into Phase 1.**
+### Phase 3 — Graduated live capital *(gated on a monotonic decile curve)*
+Micro live trading via the existing Robinhood review-first path (tiny caps,
+every order human-confirmed), then position-sizing policy (BRY-103), then
+reduced approval friction (batch approval UX, BRY-102). If calibration is
+flat, return to scoring design — not more autonomy.
+
+### Phase 4+ — Reinforcement Learning & Adaptive Intelligence *(unchanged)*
+As specified in Section 13; the shadow ledger and closed-trade history built
+in Phase 1 are its training substrate.
+
+**Standing scope decisions:** intraday/day-trading is out of scope — the
+signal stack's edge is multi-day repricing of information, and labeled
+decisions come cheaper from shadow-scoring than from trading (see
+SYSTEM_CAPABILITIES "flywheel"). LLM-stage historical backtesting is
+permanently excluded (lookahead). Reddit sentiment is retired (2026-06,
+BRY-237) — web research replaced it. OSS public launch (BRY-235) is deferred
+until Phase 1 produces a calibration story.
 
 ---
 
