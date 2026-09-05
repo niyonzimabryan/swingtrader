@@ -40,6 +40,9 @@ believe in July" is a query.
 ### `theses`
 - ticker, title, one-sentence claim
 - direction and intended horizon
+- a **stated probability** (0–1) that the claim resolves true by `resolution_at`, and
+  the observable that resolves it. Required to reach `active`. Without a number the
+  thesis can never be scored, and "I was basically right" is not a track record.
 - the **argument**: numbered claims, each with evidence references
 - the **bear case**, required and non-empty — a thesis without one is `draft`
 - **invalidators** (§4) — the falsifiable part
@@ -124,6 +127,12 @@ A scheduled job, no inference:
   invalidated versus quietly abandoned, and share of closed positions whose journal
   entry matched the actual exit reason. The last one measures whether the process is
   real or decorative.
+- **Calibration**, from the stated probabilities: a Brier score over resolved theses
+  and a calibration table (stated-probability bucket vs. realized frequency, with n per
+  bucket). Reported once at least ten theses have resolved; before that it prints
+  `insufficient` like every other small-n number in this series. A thesis whose
+  probability was revised after entry keeps the *original* number for scoring and shows
+  the revision history.
 
 ## 7. How an agent uses it
 
@@ -157,6 +166,9 @@ bull argument.
 | `test_never_auto_closes` | A triggered invalidator creates no order and no proposal |
 | `test_mirror_roundtrip` | Postgres → Markdown → `--import` → Postgres is lossless |
 | `test_offline_read` | With the API down, the Markdown alone answers thesis and invalidators |
+| `test_active_requires_probability` | A thesis with no stated probability or `resolution_at` cannot transition to `active` |
+| `test_brier_uses_original_probability` | A probability revised after entry is scored on the original number; the revision is kept in history |
+| `test_calibration_insufficient_below_ten` | Fewer than ten resolved theses prints `insufficient`, not a Brier score |
 
 ## 9. Definition of done
 

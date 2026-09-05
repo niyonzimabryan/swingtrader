@@ -121,6 +121,15 @@ cohort** with their terminal outcome recorded. A cohort built on a universe that
 reproduce point-in-time membership is capped at tier `archival_reconstructed` and says
 so in every rendering.
 
+**The universe must be a stored table, not a rule evaluated against today's data.**
+`universe_membership(universe_slug, ticker, member_from, member_to, source, known_at_utc)`
+is populated by a job from a source that carries history (index constituent changes,
+or a delisting-complete price file — see README §5 slot 2). A universe defined as
+"liquid US equities" computed from *current* liquidity is survivorship bias wearing a
+disguise, because the names that died were illiquid on the way down. Delisting returns
+are applied per the standard practice for the delisting reason (a negative terminal
+return for performance-related delistings, not a silent last-price carry-forward).
+
 ### 4.3 Prices
 
 Signals and covariates use corporate-action-adjusted series. Simulated fills use
@@ -186,6 +195,17 @@ Every metric additionally reported split by market regime. **If all events fall 
 regime, the engine says so and declines to generalize** rather than reporting a single
 pooled number that describes one market mood.
 
+### 5.5 Stability over time — has the edge decayed?
+The best-documented "comparable setup" in the literature, post-earnings-announcement
+drift, has shrunk materially since it was published. A cohort that pools 2010 with 2025
+can report an effect that no longer exists. So every cohort is also split
+chronologically — halves by event date, and per calendar year where n allows — and the
+headline metric is reported per slice. The response carries a `stability` block:
+the early-half and late-half estimates with CIs, and a flag `decayed=True` when the
+late-half CI excludes the early-half point estimate in the direction of zero, or the
+sign flips. A decayed cohort is not refused, but the pooled number is rendered *after*
+the split, never instead of it.
+
 ## 6. Inference
 
 ### 6.1 Uncertainty
@@ -219,6 +239,20 @@ Run automatically with every cohort:
 - **Pre-event window:** abnormal return over the 10 sessions *before* the event.
   A large pre-drift is a leakage warning, not a bonus.
 
+### 6.4 Small-sample honesty: shrink, and show both
+A cohort of 35 matured events clears the floor and still supports a wide, noisy
+estimate. Two rules:
+- Proportions (hit rate, share of events stopped out) are reported with **Wilson
+  intervals**, never normal-approximation intervals, which are wrong exactly where it
+  matters — small n and rates near 0 or 1.
+- Means are additionally reported **shrunk toward the pooled estimate of the setup
+  family** (all cohorts sharing the same primary condition, e.g. every
+  `earnings_surprise_pct > x` cohort) by an empirical-Bayes weight proportional to
+  `n / (n + k)`, with `k` fixed in config and printed. The raw and the shrunk estimate
+  both appear; the shrunk one is what an agent quotes when `n_matured < 100`. Shrinkage
+  is a stated prior, not a hidden one — the family, `k`, and the pooled value are in
+  the response.
+
 ## 7. Researcher degrees of freedom
 
 Every cohort query is logged in `comparable_queries` with its `SetupSpec`, timestamp,
@@ -238,8 +272,10 @@ class CohortAnswer:
     n_matured: int
     n_censored: int
     n_distinct_dates: int          # the honest sample size when events cluster
-    horizons: dict[int, HorizonResult]   # each: raw, CAR, BHAR, policy, CI, p_empirical
+    horizons: dict[int, HorizonResult]   # each: raw, CAR, BHAR, policy, CI (raw + shrunk), p_empirical
     regime_breakdown: dict[str, dict[int, HorizonResult]]
+    stability: StabilityResult           # §5.5: early/late halves, per-year where n allows, decayed flag
+    shrinkage: ShrinkageSpec             # §6.4: family slug, k, pooled estimate used
     balance: tuple[CovariateBalance, ...]
     null_tests: NullTestResults
     trials_against_this_pattern: int
@@ -291,6 +327,11 @@ failing test attached (§10).
 | `test_insufficient_is_returned_not_hedged` | Below the floor, `tier="insufficient"` and no point estimate is emitted |
 | `test_trial_count_increments` | The twelfth variant reports `trials_against_this_pattern=12` |
 | `test_no_model_number_in_output` | Response construction from an LLM string raises |
+| `test_universe_is_stored_not_computed` | A cohort request against a universe with no `universe_membership` rows for the period is capped at `archival_reconstructed` |
+| `test_delisting_return_applied` | A performance-delisted name carries the configured terminal return, not its last print |
+| `test_decay_split_reported` | A synthetic cohort with a real early effect and zero late effect sets `decayed=True` and renders both halves |
+| `test_wilson_not_normal` | A 3-of-10 hit rate reports the Wilson interval, and no normal-approximation interval exists in the schema |
+| `test_shrinkage_declared` | Every `HorizonResult` carries raw and shrunk means and the `ShrinkageSpec` names family, `k`, and pooled value |
 
 ## 11. Definition of done
 

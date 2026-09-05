@@ -61,6 +61,13 @@ Daily rollup: total value, cash, gross/net exposure, per-sector and per-name wei
 largest positions, concentration metrics, and the hash of the inputs. This is what
 Spec N uses when it reports "this setup would add to an exposure you already have."
 
+Also, computed deterministically from stored daily returns (no vendor risk model):
+portfolio beta to the broad benchmark over 60 and 250 sessions, realized portfolio
+volatility, and the pairwise return correlation among the largest positions. A
+portfolio of six "different" names with 0.8 pairwise correlation is one position, and
+sector codes will not say so. Rendered with the lookback window and n beside every
+figure.
+
 ### `exposure_tags`
 Free-form tags attached to holdings (`ai-infra`, `rate-sensitive`, `china-revenue`)
 sourced from dossiers (Spec M). Exposure by *narrative* is the thing a sector code
@@ -126,18 +133,13 @@ Work required:
   survivable. Record the finding in `docs/ROBINHOOD_INTEGRATION_PLAN.md` with evidence.
   Until that is proven, `can_place_attached_stop=False` and live entries stay closed.
 
-### 5.2 Schwab — the stubbed second adapter
+### 5.2 Schwab — deferred (owner decision 2026-09-05)
 
-`execution/brokers/schwab.py` implements the same interface with every method raising
-`BrokerNotConfigured` until credentials exist. Ships with:
-- the capability set declared as all-`False`,
-- a documented auth flow outline in `docs/SCHWAB_INTEGRATION_PLAN.md`,
-- contract tests that run against the fake broker so the adapter is provably
-  interface-complete before any credential exists.
-
-No Schwab API behaviour is asserted in code or docs without verification against their
-current documentation. TD Ameritrade's platform was absorbed into Schwab; the account
-and API situation must be confirmed by Bryan before the adapter is wired.
+Not built in this series. What Phase 1 ships instead is the thing that makes a second
+adapter cheap later: the `BrokerCapabilities` contract, a fake broker, and contract
+tests every adapter must pass. When Bryan asks for Schwab, the work is
+`execution/brokers/schwab.py` against that contract plus its auth flow, and nothing
+upstream changes. No Schwab API behaviour is asserted in code or docs until then.
 
 ### 5.3 Alpaca — unchanged
 

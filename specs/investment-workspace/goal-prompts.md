@@ -4,8 +4,8 @@
 
 One Codex `/goal` contract per delivery phase (README §6). Paste the block body into
 the Codex composer **after typing `/goal`** — the blocks below deliberately omit the
-slash command. Run them in order; phases 3 and 5 may run in parallel once phase 0 is
-merged.
+slash command. Run them in order; phases 3 and 5 may run in parallel once phase 0a is
+merged, and do not wait for 0b.
 
 Canonical validation command for this repo (matches CI):
 
@@ -27,16 +27,28 @@ Repeat these in each goal, or bake them into `AGENTS.md` once and reference them
 
 ---
 
-## Phase 0 — Foundation
+## Phase 0a — Schema discipline (blocks everything; dispatch first)
 
 ```
-**Objective:** Land the Alembic baseline and migrate SwingTrader's persistence from SQLite to Postgres with proven parity, per specs/investment-workspace/K-workspace-core-and-tool-surface.md section 3.
+**Objective:** Land the Alembic baseline and make the existing SQLAlchemy models run identically on SQLite and Postgres, per specs/investment-workspace/K-workspace-core-and-tool-surface.md section 3.1-3.2 and specs/investment-workspace/strategy-lab/strategy-lab-architecture.md section 14. Do not perform the production cutover in this phase.
 **Read first:** specs/investment-workspace/K-workspace-core-and-tool-surface.md, specs/investment-workspace/strategy-lab/strategy-lab-architecture.md section 14, database/db.py, database/models.py, .github/workflows/ci.yml
-**Constraints:** no behavior change to scanning, scoring, memos, or execution; no new tables in this phase; keep SQLite working as a second CI matrix entry; forbid new inline ALTER TABLE after the baseline; do not delete swing_trader.db
+**Constraints:** no behavior change to scanning, scoring, memos, or execution; no new tables in this phase; fix SQLite-isms (INSERT OR IGNORE, sqlite ON CONFLICT forms, naive datetimes, Boolean/JSON assumptions, WAL pragmas applied unconditionally) so the models are engine-neutral; add a Postgres service to the CI matrix alongside SQLite; forbid new inline ALTER TABLE or create_all() schema changes after the baseline, enforced by a test; do not delete swing_trader.db
 **Validate:** `python -m unittest discover -s tests -p "test_*.py" && python -m compileall -q .` after each change, against both SQLite and Postgres
 **Document:** Write concise, targeted documentation for all changes — create new .md files or update existing docs as needed.
+**Checkpoints:** work in checkpoints; log each SQLite-ism found and how it was made engine-neutral
+**Stop when:** the full suite passes identically on SQLite and Postgres in CI, an empty-database `alembic upgrade head` produces the exact current schema on both engines, and a test fails if anyone adds a schema change outside Alembic — OR when a schema decision needs human input.
+```
+
+## Phase 0b — Cutover (blocks Phases 1, 2, 4; not 3 or 5)
+
+```
+**Objective:** Migrate SwingTrader's production persistence from SQLite to Postgres on Railway with proven parity, and stand up the workspace service skeleton, per specs/investment-workspace/K-workspace-core-and-tool-surface.md section 3.2 and section 6.
+**Read first:** specs/investment-workspace/K-workspace-core-and-tool-surface.md, database/db.py, the Phase 0a documentation, railway.toml, Dockerfile
+**Constraints:** requires Phase 0a merged; scripts/migrate_sqlite_to_postgres.py dumps tables in dependency order, verifies row counts and per-table content hashes on both sides, is idempotent, refuses a non-empty target without --force, and writes its report to docs/audits/; keep the SQLite file as a read-only archive; the workspace service is a separate Railway service and the bot process does not import it; WORKSPACE_API_ENABLED defaults false; pause before touching Railway variables or services — that is an owner action
+**Validate:** `python -m unittest discover -s tests -p "test_*.py" && python -m compileall -q .` after each change
+**Document:** Write concise, targeted documentation for all changes — create new .md files or update existing docs as needed.
 **Checkpoints:** work in checkpoints; log which tables have verified row-count and content-hash parity
-**Stop when:** the full suite passes identically on SQLite and Postgres, scripts/migrate_sqlite_to_postgres.py is idempotent and verified by test, and an empty-database `alembic upgrade head` produces the exact current schema — OR when a schema decision needs human input.
+**Stop when:** the migration script is verified by a test that round-trips a populated SQLite fixture into Postgres with matching hashes, the service skeleton answers /health on both engines, and the Railway cutover steps are written as an owner runbook — OR when a Railway or credential action is needed.
 ```
 
 ## Phase 1 — See it
@@ -44,7 +56,7 @@ Repeat these in each goal, or bake them into `AGENTS.md` once and reference them
 ```
 **Objective:** Build the portfolio ledger and the read-only workspace tool surface so holdings, cash, exposure, and freshness are answerable from any agent client, per specs/investment-workspace/L-portfolio-ledger-and-brokers.md and K sections 4-6.
 **Read first:** specs/investment-workspace/L-portfolio-ledger-and-brokers.md, specs/investment-workspace/K-workspace-core-and-tool-surface.md, execution/brokers/, tracking/position_reconciliation.py, docs/ROBINHOOD_INTEGRATION_PLAN.md
-**Constraints:** read paths only — no order placement code in this phase; sync is append-only and never zeroes a position on error; null cost basis stays null; the Schwab adapter ships interface-complete, credential-free, and disabled; PORTFOLIO_SYNC_ENABLED defaults false
+**Constraints:** read paths only — no order placement code in this phase; sync is append-only and never zeroes a position on error; null cost basis stays null; no Schwab adapter (owner deferred it) — ship the BrokerCapabilities contract, a fake broker, and the contract tests instead; PORTFOLIO_SYNC_ENABLED defaults false
 **Validate:** `python -m unittest discover -s tests -p "test_*.py" && python -m compileall -q .` after each change
 **Document:** Write concise, targeted documentation for all changes — create new .md files or update existing docs as needed.
 **Checkpoints:** work in checkpoints; log which spec-L test-plan rows are passing
@@ -72,7 +84,7 @@ Repeat these in each goal, or bake them into `AGENTS.md` once and reference them
 **Validate:** `python -m unittest discover -s tests -p "test_*.py" && python -m compileall -q .` after each change
 **Document:** Write concise, targeted documentation for all changes — create new .md files or update existing docs as needed.
 **Checkpoints:** work in checkpoints; after each one, log which of the twelve failure modes in section 2 now has a passing named test
-**Stop when:** all fourteen tests in section 10 pass, policy-simulated outcomes reconcile exactly with the existing event replay, and a real run against the warmed event library produces one `clean_pit` and one `insufficient` answer — OR when a statistical choice needs human judgment.
+**Stop when:** every test in section 10 passes (including the universe, delisting-return, decay, Wilson, and shrinkage rows), policy-simulated outcomes reconcile exactly with the existing event replay, and a real run against the warmed event library produces one `clean_pit` and one `insufficient` answer — OR when a statistical choice needs human judgment.
 ```
 
 ## Phase 4 — Widen it

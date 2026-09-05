@@ -55,8 +55,8 @@ its own delivery plan. Read order for Bryan: this README, then N, then P.
 
 | Decision | Default | Why |
 |---|---|---|
-| Broker of record, today | **Robinhood** via the connected MCP server | It is the account and interface that actually exists and is authenticated. |
-| Second broker | **Schwab** adapter written to the same capability interface, shipped **stubbed and unauthenticated** | Schwab absorbed TD Ameritrade; its Trader API is the plausible second venue. No credentials are assumed. IBKR is deferred (Spec L §7). |
+| Broker of record, today | **Robinhood** via the connected MCP server — **confirmed by owner 2026-09-05** | It is the account and interface that actually exists and is authenticated. |
+| Second broker | **Schwab, deferred.** Owner: "RH is fine, might do Schwab later." Phase 1 ships the capability interface and contract tests only; no Schwab adapter file, no auth flow doc, until the owner asks. | Schwab absorbed TD Ameritrade; its Trader API is the plausible second venue. Building a stub nobody will exercise for months is maintenance without information. IBKR is deferred (Spec L §7). |
 | Trade execution | **Agent proposes; Bryan approves; code executes.** No agent, local or cloud, may place an order. | Non-negotiable. Encoded in Spec L §6 and Spec P §5, not in prompts. |
 | State of record | **Postgres on Railway**, with narrative research as **Markdown in the repo** | SQLite on a Railway volume is single-host and unreachable from a cloud session. This is the change that unlocks "accessible everywhere." |
 | Hosting | Existing Railway project `e556a6d9-2023-4c81-a031-e32e160a33be`, one new web service for the workspace API/MCP | Reuses the deploy path already documented in the root `CLAUDE.md`. |
@@ -64,10 +64,11 @@ its own delivery plan. Read order for Bryan: this README, then N, then P.
 | Live capital | Unchanged from Spec Q: one live champion, entry-by-entry approval, hard caps, kill switch | The Strategy Lab safety model is already correct and is not reopened here. |
 | Repo mode | **Production.** Surgical, flagged, backward-compatible. | There is live-money code in this repo. Every spec below ships behind a flag defaulting off. |
 
-**Assumption stated explicitly:** Bryan's instruction "if you have access to Robinhood
-already pretend it's that, but make a Schwab" is read as *build against the live
-Robinhood MCP now, and define the Schwab adapter to the same interface so it drops in
-when credentials exist.* If that reading is wrong, only Spec L §7 changes.
+**Resolved 2026-09-05:** the earlier instruction "if you have access to Robinhood
+already pretend it's that, but make a Schwab" was superseded by "RH is fine, might do
+Schwab later." Robinhood is the only broker built in this series. The capability
+interface in Spec L §5 is still designed so a second adapter drops in; the adapter
+itself is not written until asked.
 
 ---
 
@@ -151,7 +152,8 @@ be verified.
 
 | Phase | Ships | Useful on its own because |
 |---|---|---|
-| **0. Foundation** | Alembic baseline (already required by Spec Q §14), Postgres migration, Railway workspace service skeleton | Unblocks every cloud session; ends the SQLite single-host trap |
+| **0a. Schema discipline** | Alembic baseline (already required by Spec Q §14); SQLite-ism audit with the fixes applied so the same models run on both engines; CI matrix runs the suite on SQLite **and** Postgres | Every later table is a migration, not an inline `create_all()`. Spec N and Spec Q can start the moment this merges — they need Alembic, not the cutover |
+| **0b. Cutover** | Postgres provisioned on Railway, one-shot migration with parity report, Railway workspace service skeleton | Unblocks every cloud session; ends the SQLite single-host trap. Blocks Phases 1, 2, 4 (anything a remote session reads live) |
 | **1. See it** | Spec L portfolio ledger + Robinhood sync + Spec K read-only tool surface | "What do I own and what am I exposed to" answerable from anywhere |
 | **2. Remember it** | Spec M dossiers/theses + Markdown mirror | Research survives the session it was done in |
 | **3. Measure it** | Spec N comparable-setups engine over the existing warmed event library | The core question gets a trustworthy answer |
@@ -159,8 +161,10 @@ be verified.
 | **5. Race it** | Spec Q Strategy Lab (its own six-PR plan) | Champion vs challengers, on evidence |
 | **6. Act on it** | Spec L §6 proposal→approval→execution path, live only per Spec Q §12 | Approved orders, with full protection lifecycle |
 
-Phases 3 and 5 both depend on Phase 0; they do not depend on each other and can run in
-parallel by different agents.
+Phases 3 and 5 depend only on **0a**; they do not depend on each other or on 0b and can
+run in parallel by different agents while 0b is in flight. The comparable-setups engine
+is SQL + NumPy over the event library that already exists locally; forcing it to wait
+on a database cutover was a sequencing error in v0.1.
 
 ---
 
