@@ -1,6 +1,6 @@
 # SwingTrader Investment Workspace — spec series K–Q
 
-**Status:** Draft v0.1, for owner decisions
+**Status:** Draft v0.2 — research-upgraded 2026-09-05; three owner decisions open (§3, marked **OPEN**)
 **Date:** 2026-09-05
 **Owner:** Bryan Niyonzima
 **Target repository:** `niyonzimabryan/swingtrader`
@@ -63,6 +63,11 @@ its own delivery plan. Read order for Bryan: this README, then N, then P.
 | Model spend | Deterministic-by-default. Every scheduled job is Python. LLM calls only on a human turn or an explicit synthesis step, each one budgeted and ledgered. | Bryan has already hit credit exhaustion once (BRY-301); the architecture should make that a nuisance, not an outage. |
 | Live capital | Unchanged from Spec Q: one live champion, entry-by-entry approval, hard caps, kill switch | The Strategy Lab safety model is already correct and is not reopened here. |
 | Repo mode | **Production.** Surgical, flagged, backward-compatible. | There is live-money code in this repo. Every spec below ships behind a flag defaulting off. |
+| Robinhood execution scope — **OPEN** | Default until decided: **execution stays manual**; the workspace does everything up to the proposal card. | Robinhood's official agentic MCP confines order placement to a separately funded "Agentic" account and leaves every other account read-only to agents (research §F.1, unverified from inside this session). Phase 6 cannot act on the primary account through it. The alternative is to fund the Agentic account. Also to resolve: *which* Robinhood MCP server is actually connected — the tool names in v0.1 matched an unofficial browser-login server (Spec L §5.1). |
+| Data stack — **OPEN** | Default: **free-tier first.** SEC XBRL + EDGAR bulk sets, FRED/ALFRED, Alpaca news, `fja05680/sp500` constituent history, existing FMP history for the warmed event library. **Sharadar** (~$69/mo, unverified price) is the named upgrade, bought the first time a cohort Bryan cares about comes back `archival_reconstructed` or `insufficient` for want of delisted names. | There is no free delisting-complete US price source, so pre-purchase cohorts are honestly capped by the tier system rather than quietly wrong. Every other slot has a free, high-quality answer (§5). |
+| Data budget | **$100/month ceiling** on data subscriptions. Adding a paid source retires one or is an explicit owner decision. | Model spend was already budgeted (Spec P §6); data spend was not, and slot-filling ratchets. |
+| Data licensing | `docs/DATA_LICENSES.md` + CI check that `research/` holds no raw vendor series (Spec K §3.3). | The repo is public and mirrors research to Markdown; Tiingo, Polygon and Sharadar forbid redistribution, and several forbid derived works. |
+| Position sizing | Agents never choose a quantity. `propose_order` carries a `risk_fraction`; code sizes from entry and stop under the caps (Spec L §6.6). | v0.1 had no sizing rule anywhere and sizing dominates selection in realised P&L. |
 
 **Resolved 2026-09-05:** the earlier instruction "if you have access to Robinhood
 already pretend it's that, but make a Schwab" was superseded by "RH is fine, might do
@@ -118,30 +123,34 @@ Three boundaries are load-bearing and must not be crossed:
 
 ---
 
-## 5. Research slots — what the pending best-in-class research decides
+## 5. Research slots — decided
 
-A separate deep-research task (dispatched 2026-09-05, results not yet back at the time
-of writing) is scanning open- and closed-source options. **Its findings change vendors
-and libraries, not the architecture above** — every slot below sits behind an adapter
-that already exists in `data/base_adapter.py` or is defined in these specs.
+The best-in-class research landed 2026-09-05:
+[`research/2026-09-05-best-in-class-research.md`](research/2026-09-05-best-in-class-research.md)
+(full report, ~900 lines, with sources). **Read its verification caveat first:** the
+research session's egress proxy blocked most vendor domains, so prices and several
+vendor capabilities are marked **[S]** (search extract) rather than **[V]** (fetched).
+Re-check every price before spending. The findings changed vendors, libraries, and a
+handful of spec sections that were wrong on the evidence (§8 lists them); they did not
+change the architecture in §4.
 
-Do not treat the candidate names as endorsements. They are the shortlist the research
-should score, not verified capabilities.
+| Slot | Spec | Decision | Runner-up | What would change it |
+|---|---|---|---|---|
+| Backtest / event-study engine | N, Q | **Keep and extend `backtest/simulator.py`** — vectorised NumPy path + `ExecutionPolicy` dataclass. No engine reproduces its semantics and §10 needs bit-for-bit equality. `backtrader` is inactive; `nautilus_trader` is LGPL + Rust mid-migration; `vectorbt` OSS is Commons-Clause and maintenance-only. | `vectorbt` OSS for cohort-wide forward-return matrices only | Intraday fills or multi-leg options → `nautilus_trader` |
+| PIT equity prices + corp actions + delisted | N, O | **Free-first (§3), then Sharadar SEP + ACTIONS + TICKERS** (~$69/mo [S], ~15k delisted names, flat-file). Polygon supplies **no dividend-adjusted series**; Norgate needs a Windows updater process; no free source keeps delisted names. | EODHD (~$20–80 [S]); Tiingo Power $30 [S] as cheap fallback | Only caring about 5 years of liquid large caps → Tiingo is enough |
+| PIT fundamentals | N, O | **SEC XBRL `companyfacts` + `submissions` (free)** — `accn` → `acceptanceDateTime` is a `known_at_utc` to the second, from the regulator; restatements arrive as new facts. Sharadar SF1 `datekey` as the normalised convenience layer when bought. FMP stays exploratory-tier. | EODHD `filing_date` (verify coverage) | Needing pre-2009 fundamentals → SF1 becomes mandatory |
+| SEC filings / entity resolution | O | **`edgartools`** (MIT, released 2026-09-02) + SEC bulk 13F / insider / financial-statement data sets + **OpenFIGI** for CUSIP→ticker (free, accepts CUSIP input). CIK↔ticker history rebuilt from `submissions` `formerNames`. | `sec-api.io` Personal $49/mo [S] | Heavy 20-year full-text search over exhibits |
+| PIT macro | O | **Keep `fredapi`** (has `get_series_as_of_date` / `get_series_all_releases`), pinned and wrapped — upstream is rated inactive. Vintages are **day-precision** (Spec O §2). `USREC` only via its vintage. Treasury curves are unrevised. | `pyfredapi` (active 2025) | `fredapi` breaking on a pandas release |
+| News with timestamps | O | **Alpaca News API** (Benzinga, publisher timestamps, 2015→, free with the existing Alpaca account, 200 req/min). Finnhub as cross-check. Gemini-search + Firecrawl **removed from every cohort path**. GDELT never supplies `known_at`. FNSPID for historical backfill once its licence is confirmed. | Tiingo news, bundled if Tiingo is bought | — |
+| Statistical rigor | N, Q | **`arch`** (stationary/circular block bootstrap, `optimal_block_length`, StepM/SPA/MCS) + **`statsmodels`** (two-way clustered SEs) + ~200 vendored lines (Wilson, empirical Bayes, calendar-time regression). **`mlfinlab` is not open source — never a dependency.** Every Python event-study package is unmaintained and naive. | `purgedcv` / `ml4t-diagnostic` (MIT) for Spec Q's CPCV / deflated Sharpe / PBO | Spec Q growing real ML factor work → `skfolio` + `purgedcv` |
+| Remote MCP transport / auth | K | **Official `mcp` SDK mounted in FastAPI**, streamable HTTP, static bearer with hashed scoped tokens. **Pin `mcp>=1.29,<2` now**; migrate to v2 (`MCPServer`) in its own PR. Bearer reaches Claude Code and Codex today. | `fastmcp` 4.x, only if claude.ai connector OAuth is needed | A claude.ai connector becoming a requirement |
 
-| Slot | Spec | Adoption criteria (in priority order) | Candidates for the research to score |
-|---|---|---|---|
-| Backtest / event-study engine | N, Q | Must reproduce `backtest/simulator.py` exit semantics exactly, or be rejected. Then: PIT correctness, speed, dependency weight. | keep-and-extend the existing simulator; `vectorbt`; `nautilus_trader`; `backtrader`; `zipline-reloaded` |
-| Point-in-time equity price + corp-action data | N, O | Adjustment provenance and delisted-name coverage first. Cost second. | `Polygon`; `Databento`; `Tiingo`; `Nasdaq Data Link`; incumbent `FMP` |
-| Point-in-time fundamentals | N | Availability timestamps (`known_at_utc`) present, or the source is exploratory-only. | `Sharadar SF1`; `S&P Compustat PIT`; incumbent `FMP` |
-| SEC filings / entity resolution | O | CIK↔ticker history, amendment handling, full-text search. | `edgartools`; raw EDGAR full-text + `frames` API; `sec-api.io`; Robinhood MCP `get_sec_filing_facts` |
-| Point-in-time macro | O | Vintage/as-published series, not revised. | `FRED` + **`ALFRED` vintages** (key already provisioned); Treasury direct |
-| News with timestamps | O | Publication timestamp fidelity and dedup, not volume. | incumbent Gemini-search + Firecrawl; `Benzinga`; `Tiingo news`; Robinhood MCP `get_equity_news` |
-| Statistical rigor library | N | Block bootstrap, multiple-testing, deflated Sharpe. | `arch` (bootstrap); `statsmodels`; hand-rolled per Spec N §6 |
-| Remote MCP transport / auth | K | Works unmodified in Claude Code, Codex, and a cloud session. | `fastmcp` streamable-HTTP; hand-rolled FastAPI + MCP SDK |
+Estimated data cost under the recommended stack: **~$100–120/month** falling to
+~$80–90 once FMP retires; **~$10–20/month** (Railway only) on the free-first default.
+All [S]-tier prices; verify.
 
-When the research lands, the only edit required is this table plus the named adapter
-in the relevant spec. **If a spec's design would change because of a research finding,
-that is a bug in the spec** — say so and fix the boundary.
+**If a spec's design would change because of a research finding, that is a bug in the
+spec** — it was said so in v0.1, and §8 lists where it turned out to be true.
 
 ---
 
@@ -162,7 +171,9 @@ be verified.
 | **6. Act on it** | Spec L §6 proposal→approval→execution path, live only per Spec Q §12 | Approved orders, with full protection lifecycle |
 
 Phases 3 and 5 depend only on **0a**; they do not depend on each other or on 0b and can
-run in parallel by different agents while 0b is in flight. The comparable-setups engine
+run in parallel by different agents while 0b is in flight. Phase 3's regime split uses
+`regime_v1`, built only from never-revised inputs (Spec O §4.2), so it does not wait on
+Phase 4's macro-vintage work either; revised series enter as `regime_v2` afterwards. The comparable-setups engine
 is SQL + NumPy over the event library that already exists locally; forcing it to wait
 on a database cutover was a sequencing error in v0.1.
 
@@ -179,3 +190,59 @@ on a database cutover was a sequencing error in v0.1.
 - No code path exists by which an agent can place an order.
 - `pytest` green, and a documented disaster case: the workspace API being down degrades
   agent sessions to read-only-from-git, never to wrong answers.
+
+---
+
+## 8. Changelog — v0.1 → v0.2 (2026-09-05)
+
+What the research and the owner's replies changed. Each item names the section so a
+reader of v0.1 can diff by eye.
+
+**Owner decisions (§3).** Robinhood confirmed; Schwab deferred (L §5.2 rewritten, stub
+dropped from Phase 1). Three new rows opened: Robinhood execution scope, data stack,
+and two settled defaults — data budget ceiling and data licensing.
+
+**Sequencing (§6, goal-prompts).** Phase 0 split into 0a (Alembic + engine-neutral
+models) and 0b (Postgres cutover). Specs N and Q now depend on 0a only. `regime_v1`
+decoupled from Phase 4.
+
+**Spec N — sections the evidence overturned.** §4.2 stored `universe_membership` +
+named delisting-return convention (Shumway); §4.3 three price series + factors with
+ex-dates; §4.5 SMD warn 0.10 / label 0.25 + variance ratio, CEM over PSM; §5.2 BHAR
+only >20 sessions, calendar-time portfolio is the tiebreak (Fama; Mitchell & Stafford);
+§5.5 decay split; §6.1 block length estimated by `optimal_block_length` and printed;
+§6.2 clustered SE unreliable below 30 clusters, asymmetric disagreement rule; §6.4
+Wilson + declared shrinkage; §7 trial count keyed by family slug, Romano–Wolf StepM,
+**deflated Sharpe / PBO moved to Spec Q**; §8 `depth` (quick/full), `vendor_pit`
+provenance class; `horizons_days` → `horizons_sessions`; lookahead harness borrowed
+from freqtrade; analog ranker constrained to pre-event features. Engine and library
+decisions recorded in §3.
+
+**Spec O.** `precision` and provenance class on every observation (§2); day-precision
+macro known at the close; SEC XBRL as the free PIT fundamentals source (§3.4); Form 4
+transaction codes named; OpenFIGI + `formerNames` history; deterministic regime
+classifier stated as deliberate with `regime_v1` on unrevised inputs only (§4.2);
+Alpaca news primary, Gemini/Firecrawl out of cohort paths, MinHash dedup (§5).
+
+**Spec K.** Official `mcp` SDK pinned `<2`; bearer-for-CLI auth reality; concrete rate
+limits; `CLAUDE.md` imports `AGENTS.md` instead of a parity test; licensing rule and CI
+check on the mirror.
+
+**Spec L.** Official-vs-unofficial Robinhood server resolution and the Agentic-account
+boundary (§5.1); attached-stop probe verifies at the broker; options never silently
+omitted; booking method + wash-sale awareness on lots; hourly sync; max/avg pairwise
+correlation instead of a matrix; **§6.6 position sizing — agents never set quantity**;
+Schwab 7-day refresh-token evidence; IBKR OAuth institutional-only.
+
+**Spec M.** Stated probability required for `active`; Brier with decomposition;
+calibration table floors.
+
+**Spec P.** Subagent front-matter (`tools`, `model`, `maxTurns`, no `Agent`) as the
+enforcement point; Codex parity stated as pasted briefs; per-response nonce on
+untrusted content; `research_write` refuses all-untrusted sources; injection risk
+bounded by the no-broker-path boundary.
+
+**Explicitly not adopted (yet):** conformal predictive intervals (N §6.4 note),
+Ken French three-factor exposure (L §3 note), Redis stream resumability (K §4 note),
+OpenBB-style progressive tool disclosure (fifteen tools do not need it), HMM or
+jump-model regimes (O §4.2 says why).

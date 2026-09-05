@@ -64,6 +64,15 @@ YAML front-matter carrying the identifiers that link it back to Postgres. A comm
 or a scheduled job keeps them consistent (`scripts/sync_research_mirror.py`, direction:
 Postgres → repo, never the reverse without an explicit `--import`).
 
+**Licensing rule for the mirror.** The repo is public. Vendor price and fundamentals
+data (Tiingo, Polygon, Sharadar, FMP) may not be redistributed, and several licences
+extend to derived works; Yahoo data via `yfinance` sits outside Yahoo's terms entirely.
+So `research/` holds narrative, sourced claims, and *summary* figures that cite a
+cohort id — never a raw series, never a vendor table. `docs/DATA_LICENSES.md` maps each
+source to what may be committed versus what lives only in Postgres, and a CI check
+(`test_no_vendor_series_in_mirror`) fails on a numeric column longer than a handful of
+rows under `research/`.
+
 Consequence: **git clone is the offline fallback.** If the workspace API is down, an
 agent session still has every thesis, every dossier, and every past decision — just not
 live prices. That degradation is designed, documented, and tested (§8).
@@ -81,6 +90,17 @@ swingtrader-workspace  (FastAPI, one Railway service)
 The existing bot process stays a separate service. It calls the workspace over REST
 rather than importing it, so a workspace deploy never restarts the trading monitor.
 
+**Transport decision (research slot 8):** the official `mcp` Python SDK, mounted into
+the FastAPI app, streamable HTTP (SSE is formally deprecated as of the 2026-07 spec
+revision). The surface here is fifteen tools with no sampling, elicitation, or proxying,
+which is exactly the case where one dependency beats a framework. Both the official SDK
+(1.x → 2.x in 2026-08, `FastMCP` renamed `MCPServer`) and `fastmcp` (2 → 3 → 4 within
+seven months) are churning; **pin `mcp>=1.29,<2` now** and migrate to v2 in a dedicated
+PR. `fastmcp` becomes the answer only if claude.ai connector OAuth is required (§4.1).
+Railway's reference MCP deployment adds Redis for stream resumability so a long
+`compare_setups` call survives the proxy closing an idle connection — adopt that if and
+when a call exceeds the proxy timeout, not before.
+
 ### 4.1 Authentication
 
 - One long-lived **owner token** per client, issued by `swing auth issue --label
@@ -89,7 +109,13 @@ rather than importing it, so a workspace deploy never restarts the trading monit
   scope** — order execution is not reachable by token at all (§6 of Spec L).
 - Every request is logged with token label, tool name, and argument hash. `/admin`
   requires a separate token that is never placed in an agent's environment.
-- Rate limits per token; a runaway agent loop must cost time, not money.
+- Rate limits per token, concrete: 60 read calls and 10 write calls per minute per
+  token by default. A runaway agent loop must cost time, not money.
+- **Static bearer tokens reach Claude Code and Codex today** (`--header "Authorization:
+  Bearer …"` and `bearer_token_env_var` respectively). claude.ai custom connectors are
+  OAuth-first, with static-header support only in beta as of this writing. The plan is
+  bearer for CLI clients now; if a claude.ai connector is wanted later, add an OAuth
+  provider (the one argument for `fastmcp`) without changing the tool surface.
 
 ### 4.2 MCP tool surface
 
@@ -125,9 +151,12 @@ The repo ships the configuration for all three clients so attaching is copy-past
 
 - `.mcp.json` — Claude Code project-scoped MCP server entry pointing at
   `https://<service>.up.railway.app/mcp` with `${WORKSPACE_TOKEN}`.
-- `AGENTS.md` — Codex's entry point: the same workflow rules as `CLAUDE.md`, plus the
-  MCP config location. Kept in sync by a test that asserts the two files agree on the
-  non-negotiables (§8).
+- `AGENTS.md` — the shared entry point, and now a Linux Foundation standard read
+  natively by Codex, Cursor, Copilot and others. It holds the workflow rules and the
+  non-negotiables. **`CLAUDE.md` line 1 is `@AGENTS.md`**, the documented Claude Code
+  import; Claude-specific material sits below the import. Parity is structural, not
+  tested — the earlier plan to hand-maintain two files and test their agreement was a
+  maintenance tax nobody else pays. A much smaller test remains (§8).
 - `docs/WORKSPACE_ACCESS.md` — how to attach from a cloud session and from the phone.
 
 `CLAUDE.md` at the repo root gains a short "how to work in this repo" section: read the
@@ -177,7 +206,9 @@ The workspace's job is to make the expensive thing rare.
 | `test_provenance_required` | Every read tool's response model requires a non-empty `provenance` block |
 | `test_stale_is_flagged_not_hidden` | With a frozen clock past the freshness budget, tools return data **and** `stale=true` |
 | `test_offline_git_fallback` | With the API unreachable, `research/` Markdown alone answers "what is my thesis on X" |
-| `test_agents_md_parity` | `AGENTS.md` and `CLAUDE.md` agree on the non-negotiable rules (no order placement, provenance required, deterministic jobs) |
+| `test_claude_md_imports_agents_md` | `CLAUDE.md` line 1 is `@AGENTS.md`, and `AGENTS.md` contains the four non-negotiable strings (no order placement, no model statistic, provenance required, deterministic jobs) |
+| `test_no_vendor_series_in_mirror` | No file under `research/` contains a numeric series longer than the configured cap |
+| `test_rate_limit_per_token` | The 61st read call in a minute on one token is refused with a retry-after |
 | `test_token_scopes` | A `read` token is refused on `research_write` and `propose_order` |
 
 ## 9. Definition of done

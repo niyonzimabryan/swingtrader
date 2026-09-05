@@ -31,6 +31,15 @@ honest `known_at_utc`.
 For SEC filings this is unusually clean: the acceptance timestamp *is* `known_at_utc`.
 That is why filings are the highest-quality plane and are built first.
 
+Every `source_observations` row also carries **`precision`** (`second` | `day`) and a
+**provenance class** (`observed_live` | `vendor_pit` | `archival_reconstructed`, Spec N
+§8). Precision matters because several planes are dated, not timestamped: an ALFRED
+vintage is a date, a Sharadar `datekey` is a date. A `day`-precision fact is treated as
+known at the **close** of that date, never at its open, so an intraday cohort cannot
+inherit six and a half hours of lookahead from a macro print. `vendor_pit` is the class
+for a filing-date or acceptance-date stamp we did not observe ourselves but a regulator
+or vendor did; it is defensible and it is not the same as having been there.
+
 ---
 
 ## 3. Filings plane — what strong investors are doing
@@ -56,20 +65,28 @@ Rules encoded in code, not in a doc:
 2. 13F shows longs only. No short, no options detail, no cash. Nothing may infer
    "conviction" from position size without the denominator, and the denominator is not
    in the filing. Rendering a 13F position without its portfolio share is a defect.
-3. Form 4 must distinguish **open-market purchase** from award, option exercise,
-   10b5-1 planned sale, and tax withholding. Conflating them is the most common
-   insider-data error and inverts the signal.
+3. Form 4 must distinguish by **transaction code**: `P` (open-market purchase) and `S`
+   (sale) are the informative ones; `A` (award), `M` (option exercise), `F` (tax
+   withholding) and `G` (gift) are never pooled with them, and the 10b5-1 plan checkbox
+   (on the form since 2023) flags planned sales. Conflating them is the most common
+   insider-data error and inverts the signal. `edgartools` exposes the codes; the
+   discipline is ours.
 4. Amendments (`13F-HR/A`, `4/A`) supersede via `superseded_observation_id`; the
    original stays readable.
 
 ### 3.2 Entity resolution
 
-The hard, unglamorous part. `filings/entities.py`:
+The hard, unglamorous part — realistically a week of work. `filings/entities.py`:
 - CIK ↔ ticker ↔ security, **with history** (tickers are reused; companies rename).
+  EDGAR's `company_tickers.json` is a *current* snapshot; history is reconstructed from
+  each CIK's `submissions` JSON (`formerNames`, ticker/exchange arrays) and stored with
+  the date range it applied to.
 - Manager CIK ↔ tracked-investor record, with a curated `tracked_investors` list Bryan
   maintains (name, CIK, style, why tracked, notes).
-- CUSIP → ticker mapping for 13F holdings tables, with unmapped rows surfaced rather
-  than dropped. Silent drops are how a "top holdings" view quietly lies.
+- CUSIP → ticker mapping for 13F holdings tables via **OpenFIGI** (free; accepts CUSIP as
+  input, which is the direction needed), with unmapped **and ambiguous** rows surfaced
+  rather than dropped — share classes and ADRs map to several FIGIs. Silent drops are
+  how a "top holdings" view quietly lies.
 
 ### 3.3 Derived views
 
@@ -90,11 +107,25 @@ over Z days, n=N" is.
 ### 3.4 Sourcing
 
 EDGAR is free, authoritative, and carries acceptance timestamps — the primary source.
-The Robinhood MCP surface also exposes filing, filing-index, and filing-facts tools that
-may cover part of this; the research (README §5) decides whether a library, a paid API,
-or direct EDGAR access is the implementation. **The adapter interface does not change
-with that answer**: a plane produces `source_observations` rows, and nothing downstream
-knows where they came from.
+**Decision (research slot 4):** `edgartools` (MIT, actively released, rate-limit aware,
+covers 13F / Form 4 with codes / XBRL / full-text search / CIK lookup) as the client;
+the SEC's bulk **Form 13F**, **Insider Transactions**, and **Financial Statement** data
+sets for backfill; OpenFIGI for CUSIP resolution. `sec-api.io` is the paid fallback only
+if parser breakage costs more than an hour a month. The Robinhood MCP filing tools are
+not relied on — the tool names cited in earlier drafts belong to an *unofficial*
+community server (Spec L §5.1). **The adapter interface does not change with that
+answer**: a plane produces `source_observations` rows, and nothing downstream knows
+where they came from.
+
+**Fundamentals are on the same plane.** The SEC XBRL `companyfacts` API gives every
+reported fact with its accession number and filing date; joined to the `submissions`
+`acceptanceDateTime`, that is a `known_at_utc` to the second, from the regulator, for
+free — and restatements arrive as new facts with later stamps, so `known_at <= t`
+returns the as-reported figure automatically. This is the `clean_pit`/`vendor_pit`
+fundamentals source for Spec N (README §5 slot 3); FMP fundamentals carry no
+availability stamp and stay exploratory. XBRL coverage begins ~2009; tag normalisation
+(`Revenues` vs `RevenueFromContractWithCustomerExcludingAssessedTax`) is real work that
+`edgartools` largely does.
 
 Access must respect the source's published rate limits and identification requirements;
 `filings/client.py` owns throttling and retry in one place.
@@ -120,11 +151,33 @@ Concretely:
 Without this, Spec N's regime labels are contaminated on every historical event and
 every "how do setups like this do in this environment" answer is quietly wrong.
 
+Two facts about ALFRED the code must respect: vintages are **dated, not timestamped**
+(so `precision='day'`, known at the close of the vintage date — §2), and the NBER
+recession indicator `USREC` is announced with a long lag and revised, so it is only
+usable as its ALFRED vintage, never as the current series. `fredapi` already exposes
+`get_series_as_of_date` / `get_series_all_releases` and stays; it is rated inactive
+upstream, so it is pinned and wrapped in `data/macro_data.py` so a break is a one-file
+fix (`pyfredapi` is the runner-up). Treasury par yield curves are published once and not
+revised, so they are trivially point-in-time.
+
 ### 4.2 Regime labelling
 
 A **versioned, deterministic** regime classifier — `macro/regime_v1.py` — over inputs
 that are all vintage-correct: trend and drawdown state of the broad market, realized and
 implied volatility level, the yield curve, credit spreads, and inflation/growth direction.
+
+**Deterministic is the deliberate choice, not the simple one.** Hidden-Markov regime
+models overfit without regularisation, collapse states onto tiny-variance regions, and
+produce short-lived regimes that are unintuitive and underperform buy-and-hold in
+practice; practitioners fall back to fixed-parameter, deterministic classifiers for
+exactly the backtest-reliability reason this system needs. Nobody "upgrades" this to an
+HMM later without a Spec Q experiment showing it helps.
+
+**`regime_v1` uses only inputs that are never revised** — price trend and drawdown,
+realized volatility, VIX level, and the Treasury yield curve — so it is point-in-time
+by construction and Spec N's regime split (§5.4) does not wait on this plane's vintage
+work. Revised macro series (inflation, employment, credit-spread composites) enter as
+`regime_v2` once §4.1 has landed and their vintages are stored.
 
 Rules:
 - Output is a small, fixed label set with explicit thresholds, checked into code.
@@ -143,7 +196,15 @@ special case that bypasses measurement.
 
 ## 5. News plane — timestamps, dedup, novelty
 
-Extends `data/news_data.py` rather than replacing it. Three additions:
+Extends `data/news_data.py` rather than replacing it. **Source decision (research slot
+6):** the **Alpaca News API** (Benzinga-sourced, publisher timestamps, history to 2015,
+free with the Alpaca account already configured) is the primary timestamped source;
+Finnhub stays as a cross-check for the earliest-timestamp rule; Tiingo news is the
+runner-up if Tiingo is bought for prices. GDELT stamps *ingest* time, not publication,
+and may never supply `known_at_utc`. The incumbent Gemini-search + Firecrawl path cannot
+establish publication time and is **removed from every cohort path**; it remains a live
+research tool only. The FNSPID dataset (15.7M timestamped articles, S&P 500, 1999–2023)
+is a candidate for historical backfill once its licence is confirmed. Three additions:
 
 ### 5.1 Timestamp fidelity
 Store publication timestamp, first-seen-by-us timestamp, and the *earliest* timestamp
@@ -153,7 +214,11 @@ article whose publication time cannot be established is stored with
 
 ### 5.2 Clustering, source tiering, novelty
 - Cluster near-duplicate coverage into one story; a story republished by twenty outlets
-  is one event, and counting it twenty times manufactures false momentum.
+  is one event, and counting it twenty times manufactures false momentum. The stack is
+  deterministic: exact canonical-URL match, then MinHash/LSH over title-plus-lead
+  shingles (`datasketch`, MIT) for wire pickups, with embedding cosine as an optional
+  third pass for paraphrases. The cluster's `known_at_utc` is the minimum publisher
+  timestamp across members.
 - Tier sources: primary (company release, filing) > established wire/publication >
   aggregator > unattributed. The tier travels with the fact.
 - **Novelty score**: does this story contain information absent from the prior cluster,
@@ -183,6 +248,14 @@ dating, dossier evidence (Spec M), and the invalidator triggers of Spec M §4.
 | `test_no_llm_in_regime` | Import-graph: `macro/regime_v1.py` reaches no model client |
 | `test_news_cluster_counts_once` | Twenty republications produce one story |
 | `test_untimestamped_news_not_replay_eligible` | Such an article cannot qualify a `clean_pit` cohort |
+| `test_day_precision_known_at_close` | A `precision='day'` fact is not visible to a cohort whose cutoff is 10:00 on that date |
+| `test_ambiguous_cusip_surfaced` | A CUSIP mapping to several FIGIs lands in warnings with all candidates, not a silent pick |
+| `test_form4_codes_never_pooled` | `P` and `S` rows are never aggregated with `A`/`M`/`F`/`G`; a 10b5-1 sale is flagged |
+| `test_usrec_only_via_vintage` | Requesting `USREC` without a vintage raises |
+| `test_regime_v1_inputs_unrevised` | Every `regime_v1` input series is on the never-revised allowlist |
+| `test_xbrl_known_at_from_acceptance` | A `companyfacts` row's `known_at_utc` equals its filing's `acceptanceDateTime`, precision `second` |
+| `test_adapter_schema_change_fails_loudly` | An adapter receiving an unexpected payload shape raises; it never writes nulls |
+| `test_gemini_search_not_in_cohort_path` | Import-graph: `comparables/` reaches no Gemini or Firecrawl client |
 
 ## 7. Definition of done
 

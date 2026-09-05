@@ -620,24 +620,33 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
 `specs/investment-workspace/README.md`; per-phase Codex `/goal` contracts in
 `goal-prompts.md`. Nothing is implemented — these are specs only.
 
-- [ ] **Bryan decision — confirm the owner-decision table** (`README.md` §3) — broker of
-      record (Robinhood now, Schwab stubbed), Postgres as state of record, repo mode
-      (assumed *production*: surgical + flagged), and the standing rule that no agent
-      places an order. Everything downstream assumes these.
-- [ ] **Fold in the pending best-in-class research** — a separate deep-research task was
-      dispatched 2026-09-05 (backtest engines, PIT data vendors, EDGAR tooling, macro
-      vintages, news). Findings land in `README.md` §5 "research slots" and **must not
-      change the architecture** — every slot sits behind an existing adapter. If a
-      finding *would* change a spec's design, that is a bug in the spec.
-- [ ] **Phase 0 — foundation** — Alembic baseline + SQLite→Postgres with proven parity
-      (`K` §3). **This closes `BRY-107` below**, which has been "decision pending" since
-      July; the decision is made in Spec K. Blocks every other phase.
+- [x] **Broker decision — confirmed 2026-09-05**: Robinhood now, Schwab deferred ("RH is
+      fine, might do Schwab later"). Schwab stub dropped from Phase 1; capability
+      contract + fake broker ship instead (`L` §5.2).
+- [ ] **Bryan decisions still OPEN** (`README.md` §3, rows marked OPEN) — (1) Robinhood
+      execution scope: the official agentic MCP only places orders in a separately
+      funded "Agentic" account, so Phase 6 can't act on the primary account — fund it,
+      or keep execution manual (default); also confirm *which* Robinhood MCP server is
+      connected — the v0.1 tool names matched an unofficial browser-login server.
+      (2) Data stack: free-first default vs buying Sharadar (~$69/mo, unverified) now.
+- [x] **Best-in-class research folded in — v0.2, 2026-09-05** — full report at
+      `specs/investment-workspace/research/2026-09-05-best-in-class-research.md`;
+      README §5 slot table now carries decisions; README §8 is the v0.1→v0.2 changelog.
+      Caveat: the research session's proxy blocked most vendor domains, so prices and
+      several vendor capabilities are search-extract tier — verify before spending.
+- [ ] **Phase 0a — schema discipline** — Alembic baseline + engine-neutral models + CI
+      matrix on SQLite and Postgres (`K` §3.1–3.2). **This closes `BRY-107` below**,
+      which has been "decision pending" since July; the decision is made in Spec K.
+      Blocks everything; N and Q need only this, not the cutover.
+- [ ] **Phase 0b — Postgres cutover** — migration script with parity report + Railway
+      workspace service skeleton. Blocks Phases 1, 2, 4.
 - [ ] **Phase 1 — portfolio ledger + read-only tool surface** (`L`, `K` §4)
 - [ ] **Phase 2 — research workspace: dossiers, theses, invalidators, git mirror** (`M`)
 - [ ] **Phase 3 — comparable-setups engine** (`N`) — the centerpiece: "how have setups
       genuinely like this performed", with PIT integrity, benchmark subtraction,
       overlap-aware uncertainty, regime splits, null tests, and a real `insufficient`
-      answer. Parallelizable with Phase 5.
+      answer. Parallelizable with Phase 5; needs only Phase 0a. Build `depth="quick"`
+      first. Deps: `arch` + `statsmodels`; never `mlfinlab` (not open source).
 - [ ] **Phase 4 — evidence planes: filings (13F/13D/G/Form 4), vintage-correct macro,
       timestamped news** (`O`)
 - [ ] **Phase 5 — Strategy Lab** (`Q`) — ships on its own six-PR plan and prompts.

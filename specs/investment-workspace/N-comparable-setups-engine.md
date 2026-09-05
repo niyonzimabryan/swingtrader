@@ -1,6 +1,6 @@
 # Spec N — Comparable-setups engine
 
-**Series:** [Investment Workspace K–Q](README.md) · **Status:** Draft v0.1 · **Date:** 2026-09-05
+**Series:** [Investment Workspace K–Q](README.md) · **Status:** Draft v0.2 (research-upgraded) · **Date:** 2026-09-05
 **Flag:** `COMPARABLE_SETUPS_ENABLED=false`
 **This is the centerpiece spec.** Every other spec in the series either feeds it or
 delivers it.
@@ -76,6 +76,27 @@ It reuses, and does not reimplement: `backtest/simulator.py` (exit semantics),
 similarity ranking, which becomes one *candidate generator* feeding §4.5 rather than
 the answer itself), and `data/event_outcomes.py`.
 
+**Engine decision (research slot 1, README §5):** keep and extend the simulator. No
+open-source engine reproduces its semantics (T+1 open entry, stop-before-target on the
+same bar, gap-through fills at the open, half-out at T1 with the stop unchanged,
+calendar-day time exit, slippage on every leg), and §10 requires bit-for-bit equality.
+Extension work is a vectorised NumPy path for cohort-scale replay and an
+`ExecutionPolicy` dataclass so Spec Q's named policies are data, not arguments.
+
+**Inference libraries (research slot 7):** `arch` (stationary/circular block bootstrap,
+`optimal_block_length`, StepM/SPA) and `statsmodels` (cluster-robust and two-way
+clustered covariance). Wilson intervals, empirical-Bayes shrinkage, and the calendar-time
+portfolio regression are vendored (~200 lines) with tests. **`mlfinlab` is not open
+source** (all rights reserved, commercial licence) and must not appear in
+`requirements.txt`; `purgedcv` or `ml4t-diagnostic` (both MIT) are the Spec Q options
+for CPCV / deflated Sharpe / PBO, which do not belong in this spec (§7).
+
+**The analog ranker is a generator, never a selector.** Its similarity score must use
+only pre-event features, and the final statistics are computed over the matched set
+(§4.5) invariant to the ranker's ordering or its fixed top-k. Otherwise similarity
+becomes a hidden selection-on-outcome channel — failure mode 10 wearing a different hat.
+`test_analog_generator_adds_no_bias` (§10) asserts this.
+
 ## 4. Cohort construction
 
 ### 4.0 A setup is a typed predicate, not a vibe
@@ -87,13 +108,16 @@ class SetupSpec:
     version: str
     conditions: tuple[Condition, ...]   # each references a fact type + operator + value
     universe: str                       # e.g. "liquid_us_equity_v1" (Spec Q §7)
-    horizons_days: tuple[int, ...]      # e.g. (1, 3, 5, 10, 20)
+    horizons_sessions: tuple[int, ...]  # e.g. (1, 3, 5, 10, 20) — trading sessions, not calendar days
     execution_policy: str | None        # e.g. "event_swing_14cal_v1"
     match_covariates: tuple[str, ...]
     lookback_years: int
 ```
 
-Every field is required. The spec is content-hashed; a cohort answer is keyed by
+Every field is required. Horizons are in **trading sessions**; the simulator's time exit
+is in **calendar days** (it mirrors `order_monitor`). Both are fine; mixing them silently
+is not, so the unit is in the field name and printed in every response. The spec is
+content-hashed; a cohort answer is keyed by
 `(setup_hash, as_of_date, data_snapshot_version)` and is therefore reproducible and
 cacheable. **Changing any condition creates a new setup version** — the same immutability
 rule Spec Q applies to strategies, for the same reason: otherwise the question is
@@ -127,14 +151,24 @@ is populated by a job from a source that carries history (index constituent chan
 or a delisting-complete price file — see README §5 slot 2). A universe defined as
 "liquid US equities" computed from *current* liquidity is survivorship bias wearing a
 disguise, because the names that died were illiquid on the way down. Delisting returns
-are applied per the standard practice for the delisting reason (a negative terminal
-return for performance-related delistings, not a silent last-price carry-forward).
+are applied by delisting reason, with the convention **named, configured, and printed**:
+approximately **−30% for NYSE/AMEX and −55% for Nasdaq** performance-related delistings
+(Shumway 1997; Shumway & Warther 1999 — the Nasdaq bias is ~4.7× the NYSE/AMEX one,
+and the corrected return makes the Nasdaq size effect disappear). Mergers and
+acquisitions use the deal terms where stored. "Standard practice" left unnamed gets
+implemented as −100% or 0% by whoever writes it; neither is right.
 
 ### 4.3 Prices
 
-Signals and covariates use corporate-action-adjusted series. Simulated fills use
-unadjusted OHLC where available. Both are stored on the cohort so the discrepancy is
-inspectable rather than assumed away.
+Three series are stored per name, not two: **raw** OHLC (what fills happened at),
+**split-adjusted** (what signals and covariates are computed on), and **total-return**
+(split + dividend, what the benchmark comparison is made on). The split and dividend
+factors are stored with their ex-dates so any series reconstructs from the others and
+the adjustment provenance is inspectable. Simulated fills use raw OHLC; signals use
+split-adjusted; abnormal returns compare total-return to a total-return benchmark. A
+price-return stock against a total-return index is a systematic negative bias equal to
+the yield gap, and at least one major vendor supplies no dividend-adjusted series at all
+(README §5 slot 2), so this is a storage rule, not a preference.
 
 ### 4.4 Censoring
 
@@ -156,10 +190,16 @@ comparable to *this* one," which is the actual question. Default covariates:
 - calendar proximity (to avoid a cohort that is one week of history)
 
 Implementation: exact matching on sector and buckets where sample allows, coarsened
-exact matching as the fallback, and a **balance diagnostic printed with every answer** —
-standardized mean difference per covariate between the query event and the cohort. A
-covariate with |SMD| > 0.25 is listed as an explicit warning: *"your event is much more
-liquid than its comparables."* An unbalanced cohort is not hidden; it is labelled.
+exact matching (Iacus, King & Porro) as the fallback — CEM bounds imbalance ex ante and
+suits covariates that are already categorical or bucketed; propensity-score matching is
+model-dependent and can *increase* imbalance, so it is not used. A **balance diagnostic
+is printed with every answer**: standardized mean difference and variance ratio per
+covariate between the query event and the cohort. Thresholds follow current matched-
+cohort practice, not Rubin's older 0.25 rule: |SMD| > 0.10 is a **warning** (*"your event
+is more liquid than its comparables"*), |SMD| > 0.25 is a hard **`unbalanced`** label on
+the covariate. A variance ratio outside [0.5, 2] is also warned, because two groups can
+share a mean and differ entirely in their tails. An unbalanced cohort is not hidden; it
+is labelled.
 
 ## 5. Outcome measurement
 
@@ -176,9 +216,14 @@ adjustments computed:
 - vs. broad market (long-only US equity benchmark, matching Spec Q §10)
 - vs. sector
 
-For horizons beyond 20 sessions, buy-and-hold abnormal return (BHAR) is reported
-alongside CAR, since compounding differences matter at longer horizons and the two can
-disagree. Both are shown; neither is quietly preferred.
+For horizons beyond 20 sessions only, buy-and-hold abnormal return (BHAR) is reported
+alongside CAR. The literature is not neutral here: BHAR compounds the expected-return
+model's errors and its conventional test statistics are biased by cross-sectional
+correlation (Fama 1998; Mitchell & Stafford 2000), so when CAR, BHAR and the
+calendar-time portfolio (§6.2) disagree, **the calendar-time portfolio is the tiebreak**
+and the docs say so. Short-horizon methods are the reliable ones (Kothari & Warner 2007);
+the default horizons all sit inside that regime, so BHAR is not implemented until a
+>20-session horizon is actually requested.
 
 ### 5.3 Policy-simulated return — the honest one
 The same events replayed through `backtest/simulator.py` under the named
@@ -209,9 +254,12 @@ the split, never instead of it.
 ## 6. Inference
 
 ### 6.1 Uncertainty
-- **Stationary block bootstrap** over calendar time (not naive resampling of events),
-  producing percentile confidence intervals for every reported statistic. Block length
-  chosen from the horizon so overlapping windows are resampled together.
+- **Stationary block bootstrap** (Politis & Romano 1994) over calendar time, not naive
+  resampling of events, producing percentile confidence intervals for every reported
+  statistic. Block length is **estimated, not assumed**: `arch.bootstrap.optimal_block_length`
+  (Politis & White 2004 with the Patton–Politis–White 2009 correction) on the
+  calendar-time abnormal-return series, with the horizon as a floor so overlapping
+  windows are always resampled together. The chosen length is printed in the response.
 - Confidence intervals are **required in the response schema**. A point estimate without
   one cannot be constructed by the type system.
 
@@ -225,9 +273,17 @@ rounding error. Two defences, both required:
   returns, and test that series. This absorbs cross-sectional correlation by
   construction.
 
-**The two methods must agree in sign and rough magnitude.** When they do not, the
-response is downgraded to `inconclusive` with both numbers shown. Disagreement is
-information, not something to average away.
+Clustered standard errors are computed two-way (event date × ticker) via `statsmodels`.
+**With fewer than ~30 clusters the asymptotics fail**, and the §8 floor is 15 distinct
+dates, so when `n_distinct_dates < 30` the clustered SE is labelled `unreliable` and the
+bootstrap CI is the only interval rendered.
+
+**The two methods must agree in sign.** When they do not, the response is downgraded to
+`inconclusive` with both numbers shown. When they agree in sign but differ materially in
+magnitude, the calendar-time portfolio estimate is the headline (it is the preferred
+estimator, §5.2) and the bootstrap figure is shown beside it. Disagreement is
+information, not something to average away — but a symmetric rule that discards both
+was throwing away the better one.
 
 ### 6.3 Null tests
 Run automatically with every cohort:
@@ -251,16 +307,31 @@ estimate. Two rules:
   `n / (n + k)`, with `k` fixed in config and printed. The raw and the shrunk estimate
   both appear; the shrunk one is what an agent quotes when `n_matured < 100`. Shrinkage
   is a stated prior, not a hidden one — the family, `k`, and the pooled value are in
-  the response.
+  the response. Shrinkage estimates are themselves unstable at small n, which is why
+  `k` is fixed in config rather than estimated per cohort.
+
+Later, not v1: a conformal predictive interval for a *single next outcome* ("if I take
+this trade, what range should I expect") is a genuine addition to the CI on the mean and
+is distribution-free. Noted so it is not reinvented as something less honest.
 
 ## 7. Researcher degrees of freedom
 
 Every cohort query is logged in `comparable_queries` with its `SetupSpec`, timestamp,
 requester, and result. The response reports **how many setup variants have been tried
 against this fact pattern**, so the twelfth variant cannot present itself as the first.
-Where the trial count and sample support it, a deflated-significance diagnostic is
-computed and shown. The system will not stop Bryan from searching; it will refuse to let
-him forget that he did.
+"This fact pattern" is defined, not vibes: the equivalence class is the **setup family
+slug** from §6.4 — the same key used for shrinkage. One concept, two uses; without a
+defined class the trial count is gameable by renaming.
+
+The adjusted significance is a **Romano–Wolf stepdown** (`arch`'s StepM), which controls
+family-wise error while accounting for the heavy dependence between overlapping setup
+variants; a Šidák correction on the effective number of independent trials is the cheap
+fallback. Both the raw empirical p-value and the adjusted one are printed with the trial
+count, and the reader sees all three. **Deflated Sharpe, PBO and CPCV are not computed
+here** — they are defined over a strategy's Sharpe under N trials, not over a cohort's
+mean abnormal return, and applying them to a CAR produces a number that looks rigorous
+and means nothing. They live in Spec Q §10, where they belong. The system will not stop
+Bryan from searching; it will refuse to let him forget that he did.
 
 ## 8. Response contract and refusal
 
@@ -268,7 +339,10 @@ him forget that he did.
 @dataclass(frozen=True)
 class CohortAnswer:
     setup: SetupSpec
-    tier: Literal["clean_pit", "archival_reconstructed", "insufficient"]
+    depth: Literal["quick", "full"]
+    tier: Literal["clean_pit", "vendor_pit", "archival_reconstructed", "insufficient"]
+    provenance_mix: dict[str, int]   # events per provenance class: observed_live / vendor_pit / archival
+    block_length: int                # §6.1, the estimated length actually used
     n_matured: int
     n_censored: int
     n_distinct_dates: int          # the honest sample size when events cluster
@@ -283,9 +357,25 @@ class CohortAnswer:
     sources: tuple[SourceRef, ...]
 ```
 
+Provenance has three classes, not two, because most of the history will be the middle
+one: **`observed_live`** (we recorded the fact when it happened), **`vendor_pit`** (a
+vendor's filing-date or acceptance-date stamp, reconstructed but defensible — a Sharadar
+`datekey`, an EDGAR `acceptanceDateTime`), and **`archival_reconstructed`** (a guessed
+`known_at_utc`). `observed_live` and `vendor_pit` may be pooled, with the mix printed;
+`archival_reconstructed` is never pooled with either. Conflating the middle class with
+either neighbour lies in a different direction each time.
+
+`depth` exists because a response with a dozen mandatory nested blocks is the most
+likely place this spec stalls. **`quick`** returns raw, CAR, n, n_distinct_dates,
+bootstrap CI, tier, balance, and the trial count — enough to iterate on a setup in
+seconds. **`full`** returns everything below. `full` is **mandatory** for any answer
+referenced by `journal_append`, `research_write`, or a Spec Q promotion; a `quick`
+answer cannot be cited, and the type system enforces it (`test_quick_answer_not_citable`).
+Same rigour where it matters; a ten-times faster loop where it does not.
+
 Hard rules:
 
-- **No field is optional.** A missing statistic is a failure, not a null.
+- **No field is optional** at the declared depth. A missing statistic is a failure, not a null.
 - `tier="insufficient"` is returned — with the reason — whenever `n_matured` is below
   the configured floor (default 30 matured events **and** 15 distinct event dates,
   because clustered events are not independent observations), or the cohort spans a
@@ -332,6 +422,17 @@ failing test attached (§10).
 | `test_decay_split_reported` | A synthetic cohort with a real early effect and zero late effect sets `decayed=True` and renders both halves |
 | `test_wilson_not_normal` | A 3-of-10 hit rate reports the Wilson interval, and no normal-approximation interval exists in the schema |
 | `test_shrinkage_declared` | Every `HorizonResult` carries raw and shrunk means and the `ShrinkageSpec` names family, `k`, and pooled value |
+| `test_truncated_data_identical_answer` | **Lookahead harness** (borrowed from freqtrade's `lookahead-analysis`): re-running any cohort with every fact table truncated at each event's cutoff yields a byte-identical answer. Runs on every cohort in CI, not only on synthetic fixtures |
+| `test_analog_generator_adds_no_bias` | Final statistics are invariant to the analog ranker's ordering and top-k; the ranker's features are all pre-event |
+| `test_smd_thresholds` | An SMD of 0.15 warns; 0.30 labels `unbalanced`; a variance ratio of 3 warns |
+| `test_block_length_estimated_and_printed` | `block_length` comes from `optimal_block_length` bounded below by the horizon, and appears in the response |
+| `test_few_clusters_marks_clustered_se_unreliable` | `n_distinct_dates=20` renders the bootstrap CI only |
+| `test_calendar_time_is_tiebreak` | Same-sign, different-magnitude estimates headline the calendar-time figure |
+| `test_trial_count_keyed_by_family` | Renaming a setup slug within the same family does not reset `trials_against_this_pattern` |
+| `test_vendor_pit_never_pooled_with_archival` | Mixed provenance yields separate blocks; `provenance_mix` sums to n |
+| `test_quick_answer_not_citable` | `journal_append` / `research_write` refuse a `depth="quick"` answer |
+| `test_three_price_series_stored` | A cohort's price inputs carry raw, split-adjusted, and total-return series plus factors with ex-dates |
+| `test_horizons_are_sessions` | A 5-session horizon over a holiday week spans the correct calendar dates |
 
 ## 11. Definition of done
 
@@ -342,4 +443,8 @@ failing test attached (§10).
   `insufficient` and one `clean_pit` answer on real data, both hand-verified.
 - Policy-simulated outcomes reconcile exactly with the existing event-replay backtester.
 - A written page in `docs/` explains, in Bryan's words, what the tiers mean and why an
-  `insufficient` answer is the system working correctly.
+  `insufficient` answer is the system working correctly — and says in advance that with
+  a floor of 30 events it will be a frequent answer (a 1% abnormal return with 8%
+  cross-sectional dispersion has a standard error near 1.5% at n=30). The page cites the
+  post-earnings-drift literature on decay (Chordia, Subrahmanyam & Tong 2014; Martineau
+  2022; contested by Meursault et al. 2023) as the reason §5.5 exists.

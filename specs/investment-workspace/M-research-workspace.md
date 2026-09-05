@@ -128,9 +128,13 @@ A scheduled job, no inference:
   entry matched the actual exit reason. The last one measures whether the process is
   real or decorative.
 - **Calibration**, from the stated probabilities: a Brier score over resolved theses
-  and a calibration table (stated-probability bucket vs. realized frequency, with n per
-  bucket). Reported once at least ten theses have resolved; before that it prints
-  `insufficient` like every other small-n number in this series. A thesis whose
+  once ten have resolved, with its **decomposition** into reliability, resolution and
+  uncertainty — the decomposition separates "my 70%s happen 70% of the time" from "I
+  only ever say 60%", which the raw score cannot. The calibration table (stated bucket
+  vs. realized frequency, n per bucket) waits for forty resolutions and uses three
+  coarse buckets (≤40%, 40–60%, ≥60%) below a hundred. Before those floors it prints
+  `insufficient` like every other small-n number in this series. Reference point:
+  Tetlock's superforecasters score roughly 0.20–0.25. A thesis whose
   probability was revised after entry keeps the *original* number for scoring and shows
   the revision history.
 

@@ -34,17 +34,28 @@ Broker slug, external account id, account type (`cash`/`margin`/`ira`), currency
 capability set (§5), enabled flag, last successful sync, last sync error.
 
 ### `holdings`
-Account, ticker, quantity, average cost when the broker supplies it, market value,
-`as_of_utc`, source. **Point-in-time by append**, not by update: a sync writes a new row
+Account, instrument (ticker for equities; a typed instrument row for anything else),
+quantity, average cost when the broker supplies it, market value, `as_of_utc`, source.
+**Options are out of scope for analysis but never invisible:** a Robinhood account can
+hold options, and a portfolio view that silently omits a short put is the worst failure
+this table can have. Any non-equity position the sync sees is stored with
+`instrument_type` and rendered as an `unsupported_instrument_present` warning with its
+notional, in every overview, until options are modelled. **Point-in-time by append**, not by update: a sync writes a new row
 and supersedes the previous one, so "what did I hold on date D" is answerable. A
 nightly job collapses unchanged runs to keep the table small.
 
 ### `tax_lots`
-Account, ticker, open date, quantity, cost basis, term (`short`/`long`), broker lot id.
-Populated where the broker exposes it — Robinhood's MCP surface includes an equity
-tax-lot endpoint. When absent, the field is null and every consumer must treat null as
-*unknown*, never as zero. Basis is **informational only**; this system does not compute
-taxes and does not give tax advice.
+Account, ticker, open date, quantity, cost basis, term (`short`/`long`), broker lot id,
+and a per-account **booking method** from `{STRICT, FIFO, LIFO, AVERAGE, NONE}` — the
+vocabulary borrowed from beancount, where `STRICT` means a sale must name its lots and
+`NONE` means lots are not tracked. Populated where the broker exposes lots; when absent,
+the field is null and every consumer must treat null as *unknown*, never as zero.
+
+One derived flag, because it is cheap and a swing trader who trims and re-adds triggers
+it constantly: **`wash_sale_window`** on a proposed buy that falls within 30 days either
+side of a realised loss in the same name. It is shown on the proposal card. Basis and
+the flag are **informational only**; this system does not compute taxes and does not
+give tax advice.
 
 ### `cash_balances`
 Account, settled cash, unsettled cash, buying power, `as_of_utc`.
@@ -63,10 +74,12 @@ Spec N uses when it reports "this setup would add to an exposure you already hav
 
 Also, computed deterministically from stored daily returns (no vendor risk model):
 portfolio beta to the broad benchmark over 60 and 250 sessions, realized portfolio
-volatility, and the pairwise return correlation among the largest positions. A
-portfolio of six "different" names with 0.8 pairwise correlation is one position, and
-sector codes will not say so. Rendered with the lookback window and n beside every
-figure.
+volatility, and the **maximum and average pairwise** return correlation among the
+largest positions — not a full matrix, which over ten names and sixty sessions is mostly
+noise. A portfolio of six "different" names with 0.8 pairwise correlation is one
+position, and sector codes will not say so. Rendered with the lookback window and n
+beside every figure. Later, not v1: a three-factor regression on Ken French's freely
+published factors, which are point-in-time clean.
 
 ### `exposure_tags`
 Free-form tags attached to holdings (`ai-infra`, `rate-sensitive`, `china-revenue`)
@@ -84,9 +97,11 @@ A scheduled Python job, no inference:
    `tracking/position_reconciliation.py` path and pages Telegram.
 4. Compute the daily `portfolio_snapshots` row after the close.
 
-Cadence: every 15 minutes during market hours, once after the close, once pre-market.
-Freshness budget is 20 minutes intraday; past that, every tool response carries
-`stale=true` (Spec K §4.2).
+Cadence: hourly during market hours, on demand from any tool call that finds the
+freshness budget exceeded, once after the close, once pre-market. Freshness budget is
+60 minutes intraday; past that, every tool response carries `stale=true` (Spec K §4.2).
+A swing-trading horizon does not need a 15-minute sync, and hourly is a quarter of the
+API pressure on a broker surface whose limits are not published.
 
 **Failure policy:** a broker that errors leaves the previous rows intact and marks the
 account stale. It never zeroes a position. A sync that would delete more than 50% of
@@ -121,17 +136,43 @@ process.
 
 ### 5.1 Robinhood — the live adapter
 
-Implemented against the connected Robinhood MCP server, which exposes accounts,
-portfolio, equity positions, tax lots, orders, realized P&L, and order review/placement
-tools. `execution/brokers/robinhood.py` and the encrypted token store
-(`docs/ROBINHOOD_TOKEN_STORE.md`) already exist and are extended, not rewritten.
+Implemented against the connected Robinhood MCP server. `execution/brokers/robinhood.py`
+and the encrypted token store (`docs/ROBINHOOD_TOKEN_STORE.md`) already exist and are
+extended, not rewritten.
+
+**Which server, exactly — resolve before Phase 1.** Robinhood ships an *official*
+agentic MCP endpoint (`agent.robinhood.com/mcp/trading`, OAuth, GA mid-2026 per the
+research; unverified from inside this session). It reads positions, balances, orders
+and quotes across accounts, and trades through `review_equity_order` →
+`place_equity_order` → `cancel_equity_order` with market/limit/stop/trailing types.
+**Order placement is confined to a separately funded "Agentic" account; every other
+account is read-only to agents.** The tools named in earlier drafts of this series
+(`get_sec_filing_facts`, `get_equity_news`, tax lots, realized P&L) match *unofficial*
+community servers that log in through a browser session — a materially different
+security posture. The first Phase 1 checkpoint records in
+`docs/ROBINHOOD_INTEGRATION_PLAN.md` which server is connected, its exact tool list,
+and its auth model, with evidence.
+
+**The Agentic-account boundary is a product decision, not a Phase 6 discovery.** If
+Bryan's positions live in the primary account, the propose→approve→execute path in §6
+can never act on them through the official server. The options are: fund the Agentic
+account and run live entries there; or accept that execution stays manual in the app
+while the workspace does everything up to the proposal. README §3 carries the decision;
+this spec builds the same read paths either way.
 
 Work required:
-- Read paths for positions, lots, cash, and orders → the tables in §3.
+- Read paths for positions, lots (where exposed), cash, and orders → the tables in §3,
+  across every account the token can see.
 - Capability probe at startup, recorded on `brokerage_accounts`, re-probed daily.
-- **Determine empirically** whether an attached protective exit is available and
-  survivable. Record the finding in `docs/ROBINHOOD_INTEGRATION_PLAN.md` with evidence.
-  Until that is proven, `can_place_attached_stop=False` and live entries stay closed.
+- **Determine empirically** whether a protective exit survives our process. Stop and
+  trailing order *types* exist on the official surface; no evidence was found of a
+  bracket or OCO stop attached to the entry. A standalone stop placed after the fill is
+  probably sufficient, but it is a second order that can fail independently, so the
+  probe asserts that the stop **exists at the broker after entry** — not that the call
+  returned success. Record the finding in `docs/ROBINHOOD_INTEGRATION_PLAN.md` with
+  evidence. Until proven, `can_place_attached_stop=False` and live entries stay closed.
+- Use the broker's own `review_equity_order` as the pre-trade snapshot in §6 rather than
+  reimplementing its price collar.
 
 ### 5.2 Schwab — deferred (owner decision 2026-09-05)
 
@@ -140,6 +181,11 @@ adapter cheap later: the `BrokerCapabilities` contract, a fake broker, and contr
 tests every adapter must pass. When Bryan asks for Schwab, the work is
 `execution/brokers/schwab.py` against that contract plus its auth flow, and nothing
 upstream changes. No Schwab API behaviour is asserted in code or docs until then.
+
+The deferral is also the right call on the evidence: Schwab's Trader API refresh token
+expires after **seven days** and renewing it requires an interactive browser login that
+`schwab-py` cannot perform unattended. For a Railway service that is a weekly manual
+re-auth, forever. Revisit only if Schwab changes it.
 
 ### 5.3 Alpaca — unchanged
 
@@ -177,6 +223,14 @@ Enforced invariants (in addition to every invariant in Spec Q §12):
    limits is created in `risk_rejected` and shown with the reason, so the agent can
    explain *why* rather than silently omitting the idea.
 5. The kill switch (`/live_kill on`) blocks approval-to-placement and survives restart.
+6. **An agent never chooses a quantity.** `propose_order` carries `entry`, `stop`, and a
+   `risk_fraction` of equity (bounded by config, default 0.5%, hard cap 1%); the
+   execution service computes size as `risk_dollars / (entry − stop)`, then applies the
+   concentration, sector, and daily-notional caps. Sizing dominates selection in realised
+   P&L and nothing in v0.1 said where a quantity came from. Kelly-style sizing is
+   explicitly not used: it needs an edge estimate this system has just spent Spec N
+   proving is uncertain, and at these sample sizes half-Kelly is still a guess. The
+   computed size and every cap that bound it are shown on the approval card.
 
 **Assistant boundary, stated plainly:** an AI assistant operating this workspace does
 not place trades and does not give personalized investment advice. It assembles
@@ -186,7 +240,9 @@ property of the architecture above, not a policy in a prompt.
 ## 7. Interactive Brokers
 
 Deferred. IBKR is a separate integration with its own gateway/session model, not a
-Schwab or TD substitute. Revisit only after Robinhood read+protect is proven and the
+Schwab or TD substitute — its OAuth direct connection is institutional-only, and retail
+access runs through a local Client Portal Gateway process that must be kept alive, which
+is the worst unattended-session model of the three for this architecture. Revisit only after Robinhood read+protect is proven and the
 Schwab decision is resolved. Tracked in `todoscratchpad.md` under Future Improvements
 where it already sits.
 
@@ -203,7 +259,12 @@ where it already sits.
 | `test_approval_is_single_use` | A replayed approval callback is rejected |
 | `test_risk_recomputed_at_approval` | A proposal valid at creation is refused when fresh state breaches a limit |
 | `test_external_orders_ingested` | An order placed outside the system appears with `origin='external'` |
-| `test_schwab_interface_complete` | The stub satisfies every `BrokerAdapter` method against the fake broker |
+| `test_fake_broker_contract` | The fake broker satisfies every `BrokerAdapter` method and every capability declaration path, so a future adapter has a contract to pass |
+| `test_options_never_silently_omitted` | A synced account holding an option renders `unsupported_instrument_present` with notional in `portfolio_overview` |
+| `test_wash_sale_window_flagged` | A proposed buy 20 days after a realised loss in the same name carries `wash_sale_window=true`; 40 days does not |
+| `test_agent_cannot_set_quantity` | `propose_order` rejects a `quantity` argument; size is derived from `risk_fraction`, entry and stop |
+| `test_risk_fraction_capped` | A `risk_fraction` above the hard cap is refused, not clamped silently |
+| `test_attached_stop_verified_at_broker` | The capability probe passes only when the stop is readable from the broker after entry |
 
 ## 9. Definition of done
 
@@ -211,5 +272,6 @@ where it already sits.
   account, correct against a hand-check of the Robinhood app on one trading day.
 - Reconciliation raises on a deliberately induced mismatch and pages.
 - Robinhood's protective-exit capability is documented with evidence either way.
-- The Schwab adapter is interface-complete, credential-free, and disabled.
+- Which Robinhood MCP server is connected, its tool list, and its auth model are
+  recorded with evidence, and the Agentic-account decision is in README §3.
 - The import-graph test proves no agent path to a broker placement.
