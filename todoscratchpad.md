@@ -623,12 +623,15 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
 - [x] **Broker decision — confirmed 2026-09-05**: Robinhood now, Schwab deferred ("RH is
       fine, might do Schwab later"). Schwab stub dropped from Phase 1; capability
       contract + fake broker ship instead (`L` §5.2).
-- [ ] **Bryan decisions still OPEN** (`README.md` §3, rows marked OPEN) — (1) Robinhood
-      execution scope: the official agentic MCP only places orders in a separately
-      funded "Agentic" account, so Phase 6 can't act on the primary account — fund it,
-      or keep execution manual (default); also confirm *which* Robinhood MCP server is
-      connected — the v0.1 tool names matched an unofficial browser-login server.
-      (2) Data stack: free-first default vs buying Sharadar (~$69/mo, unverified) now.
+- [x] **Robinhood execution scope — decided 2026-09-05: use the Agentic account.** Risk
+      caps span the combined book (`L` §5.1, §6). Phase 1 still confirms *which* MCP
+      server is connected — the v0.1 tool names matched an unofficial browser-login server.
+- [ ] **Bryan decision still OPEN** (`README.md` §3) — data stack: free-first default vs
+      buying Sharadar (~$69/mo, unverified) now.
+- [ ] **Second research pass (ChatGPT Deep Research)** — prompt saved at
+      `specs/investment-workspace/research/2026-09-05-deep-research-prompt.md`; its job
+      is to verify the [S]-tier claims the first pass couldn't fetch and fill the gaps
+      listed there. Findings go into README §5 / §8 like the first pass.
 - [x] **Best-in-class research folded in — v0.2, 2026-09-05** — full report at
       `specs/investment-workspace/research/2026-09-05-best-in-class-research.md`;
       README §5 slot table now carries decisions; README §8 is the v0.1→v0.2 changelog.

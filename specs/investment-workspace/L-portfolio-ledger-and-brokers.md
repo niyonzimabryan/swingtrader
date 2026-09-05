@@ -153,12 +153,14 @@ security posture. The first Phase 1 checkpoint records in
 `docs/ROBINHOOD_INTEGRATION_PLAN.md` which server is connected, its exact tool list,
 and its auth model, with evidence.
 
-**The Agentic-account boundary is a product decision, not a Phase 6 discovery.** If
-Bryan's positions live in the primary account, the propose→approve→execute path in §6
-can never act on them through the official server. The options are: fund the Agentic
-account and run live entries there; or accept that execution stays manual in the app
-while the workspace does everything up to the proposal. README §3 carries the decision;
-this spec builds the same read paths either way.
+**The Agentic-account boundary — decided (README §3): use the Agentic account.** Live
+entries under §6 are placed there; the primary account is read-only to the workspace.
+Two consequences the code must honour: every risk check in §6 (concentration, sector,
+daily notional, drawdown) runs over the **combined** book across both accounts, never
+the Agentic account in isolation — otherwise a name held in the primary account is
+invisible to the cap on adding to it; and `brokerage_accounts` carries an
+`agent_placeable` flag so a proposal targeting a read-only account is created
+`risk_rejected` with that reason rather than failing at placement.
 
 Work required:
 - Read paths for positions, lots (where exposed), cash, and orders → the tables in §3,
@@ -265,6 +267,8 @@ where it already sits.
 | `test_agent_cannot_set_quantity` | `propose_order` rejects a `quantity` argument; size is derived from `risk_fraction`, entry and stop |
 | `test_risk_fraction_capped` | A `risk_fraction` above the hard cap is refused, not clamped silently |
 | `test_attached_stop_verified_at_broker` | The capability probe passes only when the stop is readable from the broker after entry |
+| `test_risk_caps_span_all_accounts` | A concentration cap counts the primary account's holding when sizing an Agentic-account proposal in the same name |
+| `test_proposal_on_readonly_account_rejected` | A proposal targeting an account with `agent_placeable=False` lands in `risk_rejected` with the reason |
 
 ## 9. Definition of done
 
