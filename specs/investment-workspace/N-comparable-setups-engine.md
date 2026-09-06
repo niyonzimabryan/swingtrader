@@ -142,6 +142,25 @@ company press-released before filing. Any consensus-based surprise fact, if ever
 must pass the restatement test (download twice a month apart; if the stored history
 changed, it is restated) before it can be anything but `archival_reconstructed`.
 
+**Consensus recovered from timestamped news is a legitimate second source** (owner's
+suggestion, 2026-09-06). Earnings previews and reaction pieces routinely state the
+number — "analysts expect EPS of $1.23 on revenue of $4.1B", "beat the $1.18 consensus
+by five cents" — and a Benzinga article via Alpaca carries a publisher timestamp, so the
+figure is point-in-time by construction: `known_at_utc` is the article time, and a
+post-print article still states the consensus *as it stood at the print*, which is the
+right vintage. `filings/consensus_from_news.py` extracts it **deterministically** (a
+regex/grammar over the article body, not a model — a model reading a number out of a
+sentence is parsing, not producing a statistic, but the deterministic path is
+reproducible and the model path is not) and stores `consensus_eps_news` with the source
+article, the count of independent articles agreeing, and the spread between them when
+they disagree (Zacks, FactSet and Refinitiv consensus differ, and articles cite
+whichever their author uses). Provenance class is `vendor_pit`. Coverage will be
+skewed to large, well-covered names and is an empirical question: the first checkpoint
+of the earnings setup pulls fifty past prints, runs the extractor, and records the hit
+rate before anything depends on it. `sue_seasonal` remains the fact every event has;
+`consensus_eps_news` is the better fact where it exists, and a cohort can require it.
+Nothing derived from the articles leaves Postgres (Spec O §5).
+
 **Setups are pre-registered, not improvised, in v1.** A small fixed roster of typed
 setups ships in `comparables/setups/` (earnings SUE, gap-and-go, insider cluster, and
 whatever Spec Q's challengers need), each with its conditioning set frozen. The general
@@ -535,6 +554,8 @@ failing test attached (§10).
 | `test_delisting_audit_recorded` | A price snapshot without a delisting-audit result cannot back a `clean_pit` or `vendor_pit` cohort |
 | `test_policy_return_is_net` | The headline policy return includes the half-spread and slippage; gross is a separately labelled field |
 | `test_sue_from_xbrl_only` | `sue_seasonal` is computed from `companyfacts` rows and never from a vendor estimate field |
+| `test_consensus_from_news_is_deterministic` | The extractor yields identical output on repeated runs and never imports a model client; `known_at_utc` equals the article timestamp |
+| `test_consensus_news_disagreement_recorded` | Two articles citing different consensus figures store both and the spread, not a silent pick |
 | `test_announcement_time_from_8k_acceptance` | An event dated from `filingDate` rather than `acceptanceDateTime` is rejected |
 | `test_sector_is_current_vintage` | The balance block marks `sector` `vintage=current`; sector is never a required stratum |
 | `test_shrinkage_k_method_of_moments` | Simulated families with known `τ²` recover `k` within tolerance; `τ̂² <= 0` yields full shrinkage, printed |
