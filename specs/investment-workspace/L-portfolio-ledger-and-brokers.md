@@ -52,8 +52,16 @@ vocabulary borrowed from beancount, where `STRICT` means a sale must name its lo
 the field is null and every consumer must treat null as *unknown*, never as zero.
 
 One derived flag, because it is cheap and a swing trader who trims and re-adds triggers
-it constantly: **`wash_sale_window`** on a proposed buy that falls within 30 days either
-side of a realised loss in the same name. It is shown on the proposal card. Basis and
+it constantly: **`wash_sale_window`** on a proposed buy that falls within the 61-day
+window (30 days before, the sale day, 30 days after — off-by-one is the usual bug) of a
+realised loss in a substantially identical security, per IRS Publication 550. The check
+spans every Robinhood account the token can read, since the rule reaches across
+accounts; it cannot see a spouse's or another broker's, and says so. Same-FIGI matches
+are `high` confidence; same-issuer different-class or convertibles are `possible`; the
+flag **never emits a determination** — "substantially identical" is a facts-and-
+circumstances test, not a computation. An IRA purchase is flagged separately because
+there the loss is permanently disallowed rather than deferred. Shown on the proposal
+card. Basis and
 the flag are **informational only**; this system does not compute taxes and does not
 give tax advice.
 
@@ -140,18 +148,45 @@ Implemented against the connected Robinhood MCP server. `execution/brokers/robin
 and the encrypted token store (`docs/ROBINHOOD_TOKEN_STORE.md`) already exist and are
 extended, not rewritten.
 
-**Which server, exactly — resolve before Phase 1.** Robinhood ships an *official*
-agentic MCP endpoint (`agent.robinhood.com/mcp/trading`, OAuth, GA mid-2026 per the
-research; unverified from inside this session). It reads positions, balances, orders
-and quotes across accounts, and trades through `review_equity_order` →
-`place_equity_order` → `cancel_equity_order` with market/limit/stop/trailing types.
-**Order placement is confined to a separately funded "Agentic" account; every other
-account is read-only to agents.** The tools named in earlier drafts of this series
-(`get_sec_filing_facts`, `get_equity_news`, tax lots, realized P&L) match *unofficial*
-community servers that log in through a browser session — a materially different
-security posture. The first Phase 1 checkpoint records in
-`docs/ROBINHOOD_INTEGRATION_PLAN.md` which server is connected, its exact tool list,
-and its auth model, with evidence.
+**Which server — resolved.** The repo already talks to the *official* Robinhood
+Trading MCP (`agent.robinhood.com/mcp/trading`, set in `config/settings.py`) over the
+MCP SDK's OAuth provider; the nine tools `execution/brokers/robinhood.py` calls are all
+on Robinhood's published list (verification §6). No unofficial server was ever used;
+the v0.1 tool names were a drafting error. Facts verified from Robinhood's own support
+pages (verification §1–§5), and what they leave open:
+
+- **Beta, not GA.** The May 2026 launch post says "launching in beta"; no exit-from-beta
+  statement exists. There is no developer documentation: no order-type table, no
+  `place_equity_order` schema, no rate limits, no token lifetime, no SLA, no
+  deprecation policy. Onboarding and re-auth are desktop-only. The documented recovery
+  path for a broken connection is a human reconnect.
+- **Placement is confined to the Agentic account**, verbatim: "Your agent can only place
+  trades in your Robinhood Agentic account." Reads span all accounts. No published
+  balance cap. A **cash** Agentic account settles T+1 — proceeds from a Monday close
+  are not redeployable until Tuesday — unless *limited margin* is enabled; margin
+  borrowing is not available. The simulator models the T+1 delay (Spec N §5.3).
+- **Tools exist for** equity positions, `get_equity_tax_lots`, `get_realized_pnl`,
+  `get_pnl_trade_history`, orders, quotes, tradability, `review_equity_order`,
+  `place_equity_order`, `cancel_equity_order`, and the same for options and crypto.
+  Options are readable **and tradeable**; the workspace never uses the option or crypto
+  write tools (import-graph test).
+- **No tool exposes dividends received, cash movements, deposits, fees, or corporate
+  actions on the account.** `get_equity_fundamentals` carries security-level dividend
+  metadata, not receipts. So the ledger's cash and total-return accounting reconciles
+  dividends from a market-data dividend feed applied to holdings, flagged
+  `reconstructed`, until Robinhood exposes them.
+- **Order types, brackets, OCO, and stop persistence (GTC) are undocumented.** The
+  published surface has exactly three equity write tools and no attach-stop tool. The
+  answer lives in the `tools/list` JSON Schema for `place_equity_order` and
+  `review_equity_order`, which `_tools_cache` already fetches. **Dumping that schema is
+  the first Phase 1 checkpoint** and is what decides `can_place_attached_stop`.
+- **Unattended session survival is undocumented.** The token store persists refresh
+  tokens correctly and *may* work indefinitely on a beta product with no contract. The
+  second Phase 1 checkpoint runs the sync on Railway with no human for 30 days and logs
+  every refresh with timestamps. Until then, every read path asserts freshness and
+  **refuses rather than serves** when `as_of_utc` is older than the budget on any path
+  that feeds a proposal — a ledger that silently stops syncing is worse than one that
+  loudly breaks.
 
 **The Agentic-account boundary — decided (README §3): use the Agentic account.** Live
 entries under §6 are placed there; the primary account is read-only to the workspace.
@@ -166,13 +201,16 @@ Work required:
 - Read paths for positions, lots (where exposed), cash, and orders → the tables in §3,
   across every account the token can see.
 - Capability probe at startup, recorded on `brokerage_accounts`, re-probed daily.
-- **Determine empirically** whether a protective exit survives our process. Stop and
-  trailing order *types* exist on the official surface; no evidence was found of a
-  bracket or OCO stop attached to the entry. A standalone stop placed after the fill is
-  probably sufficient, but it is a second order that can fail independently, so the
-  probe asserts that the stop **exists at the broker after entry** — not that the call
-  returned success. Record the finding in `docs/ROBINHOOD_INTEGRATION_PLAN.md` with
-  evidence. Until proven, `can_place_attached_stop=False` and live entries stay closed.
+- **Determine empirically** whether a protective exit survives our process, starting
+  from the schema dump above. Plan on the assumption that a stop is a **separate order
+  placed after the fill**, which means the execution service owns the race between fill
+  and stop placement: entry fills → stop placed → stop **read back from the broker** →
+  only then is the position `protected`; a position that is filled and not read back as
+  protected within the configured window pages immediately. If standalone stops are not
+  indefinitely good-till-cancelled, the stop is re-placed before expiry by a scheduled
+  job and a 20-session hold cannot outlive it. Record the finding in
+  `docs/ROBINHOOD_INTEGRATION_PLAN.md` with evidence. Until proven,
+  `can_place_attached_stop=False` and live entries stay closed.
 - Use the broker's own `review_equity_order` as the pre-trade snapshot in §6 rather than
   reimplementing its price collar.
 
@@ -228,7 +266,11 @@ Enforced invariants (in addition to every invariant in Spec Q §12):
 6. **An agent never chooses a quantity.** `propose_order` carries `entry`, `stop`, and a
    `risk_fraction` of equity (bounded by config, default 0.5%, hard cap 1%); the
    execution service computes size as `risk_dollars / (entry − stop)`, then applies the
-   concentration, sector, and daily-notional caps. Sizing dominates selection in realised
+   concentration, sector, and daily-notional caps. Where a cited `full` cohort answer is
+   attached, the size is additionally scaled by the **lower bound of its CI**: a
+   non-positive lower bound scales the proposal to zero and the card says why. The
+   engine outputs a distribution; sizing from its mean alone throws away the thing that
+   makes it valuable. Sizing dominates selection in realised
    P&L and nothing in v0.1 said where a quantity came from. Kelly-style sizing is
    explicitly not used: it needs an edge estimate this system has just spent Spec N
    proving is uncertain, and at these sample sizes half-Kelly is still a guess. The
@@ -267,6 +309,11 @@ where it already sits.
 | `test_agent_cannot_set_quantity` | `propose_order` rejects a `quantity` argument; size is derived from `risk_fraction`, entry and stop |
 | `test_risk_fraction_capped` | A `risk_fraction` above the hard cap is refused, not clamped silently |
 | `test_attached_stop_verified_at_broker` | The capability probe passes only when the stop is readable from the broker after entry |
+| `test_unprotected_fill_pages` | A fill whose stop is not read back within the window raises a page and blocks further entries |
+| `test_stale_ledger_refuses_proposal` | `propose_order` against holdings older than the freshness budget is refused with the age, not served |
+| `test_no_option_or_crypto_write_tools` | Import-graph: no code path references `place_option_order`, `place_crypto_order`, or their review/cancel tools |
+| `test_dividends_reconstructed_flagged` | A dividend cash flow derived from a market-data feed carries `reconstructed=true` |
+| `test_t1_settlement_modelled` | On a cash Agentic account, proceeds from a close are unavailable to a same-day proposal |
 | `test_risk_caps_span_all_accounts` | A concentration cap counts the primary account's holding when sizing an Agentic-account proposal in the same name |
 | `test_proposal_on_readonly_account_rejected` | A proposal targeting an account with `agent_placeable=False` lands in `risk_rejected` with the reason |
 
@@ -276,6 +323,7 @@ where it already sits.
   account, correct against a hand-check of the Robinhood app on one trading day.
 - Reconciliation raises on a deliberately induced mismatch and pages.
 - Robinhood's protective-exit capability is documented with evidence either way.
-- Which Robinhood MCP server is connected, its tool list, and its auth model are
-  recorded with evidence, and the Agentic-account decision is in README §3.
+- The `place_equity_order` / `review_equity_order` JSON Schema is dumped and recorded
+  in `docs/ROBINHOOD_INTEGRATION_PLAN.md`, and the 30-day unattended refresh log has
+  started.
 - The import-graph test proves no agent path to a broker placement.

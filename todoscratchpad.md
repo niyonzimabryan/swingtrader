@@ -624,14 +624,27 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
       fine, might do Schwab later"). Schwab stub dropped from Phase 1; capability
       contract + fake broker ship instead (`L` §5.2).
 - [x] **Robinhood execution scope — decided 2026-09-05: use the Agentic account.** Risk
-      caps span the combined book (`L` §5.1, §6). Phase 1 still confirms *which* MCP
-      server is connected — the v0.1 tool names matched an unofficial browser-login server.
-- [ ] **Bryan decision still OPEN** (`README.md` §3) — data stack: free-first default vs
-      buying Sharadar (~$69/mo, unverified) now.
-- [ ] **Second research pass (ChatGPT Deep Research)** — prompt saved at
-      `specs/investment-workspace/research/2026-09-05-deep-research-prompt.md`; its job
-      is to verify the [S]-tier claims the first pass couldn't fetch and fill the gaps
-      listed there. Findings go into README §5 / §8 like the first pass.
+      caps span the combined book (`L` §5.1, §6). Verified 2026-09-06 from Robinhood's
+      own pages; the repo already uses the official server (the "unofficial server"
+      worry was a drafting error). Beta, no developer docs, T+1 on cash accounts, no
+      dividend tools.
+- [x] **Second research pass — verification, folded in as v0.3 (2026-09-06)** — report
+      at `docs/research/2026-09-research-verification.md` (merged from
+      `claude/research-workspace-verify-hbuexz`); README §10 is the v0.2→v0.3 changelog.
+- [ ] **P0 (ops) — cherry-pick the `mcp<2` pin to `main` before the next Railway
+      deploy** (commit `18b47a2` on this branch). Verified in a clean venv: `mcp` 2.1.1
+      drops `streamablehttp_client`, so a fresh install breaks every Robinhood call and
+      the broker reports "install the SDK" while the SDK is installed.
+- [ ] **Owner action — dump the Robinhood `tools/list` schema** for
+      `place_equity_order` / `review_equity_order` (README §9.1). Only source for order
+      types, attached stops, GTC. Decides `can_place_attached_stop`; blocks Phase 6.
+- [ ] **Owner action — Sharadar, 15 min logged in** (README §9.2): price, delisted
+      retention with terminal prices, TICKERS delisting reason, SF1 `datekey`, terms.
+      Everything both research passes say about Sharadar is unverified.
+- [ ] **Owner action — twenty-delisting audit** (README §9.3, Spec N §4.2) before paying
+      any vendor. EODHD $19.99 and Tiingo $30 are the verified cheap options.
+- [ ] **Bryan decision still OPEN** (`README.md` §3) — data stack: free-first default,
+      then EODHD vs Tiingo vs Sharadar per the audit.
 - [x] **Best-in-class research folded in — v0.2, 2026-09-05** — full report at
       `specs/investment-workspace/research/2026-09-05-best-in-class-research.md`;
       README §5 slot table now carries decisions; README §8 is the v0.1→v0.2 changelog.

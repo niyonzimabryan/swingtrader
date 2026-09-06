@@ -1,6 +1,6 @@
 # Spec N — Comparable-setups engine
 
-**Series:** [Investment Workspace K–Q](README.md) · **Status:** Draft v0.2 (research-upgraded) · **Date:** 2026-09-05
+**Series:** [Investment Workspace K–Q](README.md) · **Status:** Draft v0.3 (verification-upgraded) · **Date:** 2026-09-05
 **Flag:** `COMPARABLE_SETUPS_ENABLED=false`
 **This is the centerpiece spec.** Every other spec in the series either feeds it or
 delivers it.
@@ -123,9 +123,32 @@ cacheable. **Changing any condition creates a new setup version** — the same i
 rule Spec Q applies to strategies, for the same reason: otherwise the question is
 rewritten after seeing the answer.
 
-Conditions reference *fact types*, never free text: `earnings_surprise_pct`,
-`guidance_direction`, `gap_pct`, `dollar_volume_20d`, `atr_pct`, `dist_from_sma50`,
-`sector`, `market_cap_bucket`, `days_since_prior_event`. A natural-language request from
+Conditions reference *fact types*, never free text: `sue_seasonal`, `guidance_direction`,
+`gap_pct`, `dollar_volume_20d`, `atr_pct`, `dist_from_sma50`, `market_cap_decile`,
+`realized_vol_decile`, `days_since_prior_event`, and `sector` (current-vintage, see §4.5).
+
+**Earnings surprise is defined without analyst estimates.** No retail source offers a
+verifiable point-in-time consensus archive (verification §23): FMP, EODHD and the
+Robinhood `get_earnings_results` tool are restated snapshots, Zacks point-in-time is
+institutional. A restated consensus used as a pre-print fact is lookahead in the
+direction that flatters the engine, wrapped in machinery that makes it believable. So
+the v1 surprise fact is a **seasonal random-walk SUE** — actual EPS minus the same
+quarter a year earlier, scaled by the standard deviation of that difference — computed
+entirely from SEC XBRL `companyfacts` with `accn`/`acceptanceDateTime` for vintage. It
+is a weaker proxy than analyst-based SUE and the literature says so; it is honest,
+free, and reproducible. The announcement **timestamp** comes from the 8-K Item 2.02
+`acceptanceDateTime`, exact to the second in UTC, falling back to `archival` when a
+company press-released before filing. Any consensus-based surprise fact, if ever bought,
+must pass the restatement test (download twice a month apart; if the stored history
+changed, it is restated) before it can be anything but `archival_reconstructed`.
+
+**Setups are pre-registered, not improvised, in v1.** A small fixed roster of typed
+setups ships in `comparables/setups/` (earnings SUE, gap-and-go, insider cluster, and
+whatever Spec Q's challengers need), each with its conditioning set frozen. The general
+"any predicate" engine is the same code path but the roster is what the multiplicity
+accounting (§7) counts against; a free-form request counts as a trial against the
+nearest family. For one person with one strategy the roster delivers most of the value
+with a countable trial budget. A natural-language request from
 Bryan is translated into a `SetupSpec` by the agent, **shown back to him in full before
 the cohort is built**, and stored. The translation is the only model involvement, and it
 is visible and editable.
@@ -150,7 +173,25 @@ so in every rendering.
 is populated by a job from a source that carries history (index constituent changes,
 or a delisting-complete price file — see README §5 slot 2). A universe defined as
 "liquid US equities" computed from *current* liquidity is survivorship bias wearing a
-disguise, because the names that died were illiquid on the way down. Delisting returns
+disguise, because the names that died were illiquid on the way down. No affordable source exists for Russell membership history, and S&P history is a
+hand-maintained Wikipedia scrape (`fja05680/sp500`, MIT, 1996→) or a ~12-year vendor
+window (EODHD, ≈2014→). So the primary universe is **self-defined and reproducible**:
+a rank-by-market-cap and dollar-volume rule applied point-in-time to the delisting-
+complete price file, documented as `liquid_us_equity_v1`. A documented rule beats a
+badly reconstructed index. Index membership tables are stored as an additional
+covariate where they exist, with their provenance.
+
+**Vendor delisting completeness is unverified for every vendor** and the failure is
+silent: a file can carry a delisted ticker's full history and still stop at the last
+quote with no terminal collapse. Before any vendor is paid, and again on every price-
+file refresh, `scripts/audit_delisting_returns.py` pulls twenty known performance-
+related delistings (2015–2024) and checks whether the last observation is a collapse or
+a stop; a stop means the terminal return below is synthesised, and the audit result is
+recorded on the data snapshot. The **within-cohort delisting rate** is a first-class
+output beside the return statistics, and a cohort whose floor is met by survivors alone
+is refused on composition, not only on n.
+
+Delisting returns
 are applied by delisting reason, with the convention **named, configured, and printed**:
 approximately **−30% for NYSE/AMEX and −55% for Nasdaq** performance-related delistings
 (Shumway 1997; Shumway & Warther 1999 — the Nasdaq bias is ~4.7× the NYSE/AMEX one,
@@ -180,14 +221,23 @@ censoring reason distribution.
 ### 4.5 Matching
 
 Raw filtering answers "events meeting these conditions." Matching answers "events
-comparable to *this* one," which is the actual question. Default covariates:
+comparable to *this* one," which is the actual question. Default covariates, all
+computable point-in-time from the price file with no licence and no vintage problem:
 
-- GICS-style sector (or the existing `config/peers.py` grouping)
-- market-cap bucket (quintile, point-in-time)
-- liquidity bucket (20-day median dollar volume, point-in-time)
-- realized volatility bucket (20-day, point-in-time)
-- market regime label at the event date (Spec O §4)
+- market-cap decile (point-in-time)
+- liquidity decile (20-day median dollar volume, point-in-time)
+- realized volatility decile (20-day, point-in-time)
+- price level bucket
+- market regime label at the event date (Spec O §4) — reported, not required (§5.4)
 - calendar proximity (to avoid a cohort that is one week of history)
+
+**Sector is a current-vintage covariate and is labelled as one.** Historical GICS
+assignment history is an institutional licence; every sector field available at retail
+is the company's sector *today*. A name that migrated sectors is therefore matched by
+where it ended up. Sector (from `config/peers.py` or the vendor field) may still be
+used for matching — migration is rare and the contamination is small — but it carries
+`vintage=current` in the balance block, is never a *required* stratum, and a cohort
+whose comparability rests mainly on sector says so in its warnings.
 
 Implementation: exact matching on sector and buckets where sample allows, coarsened
 exact matching (Iacus, King & Porro) as the fallback — CEM bounds imbalance ex ante and
@@ -232,13 +282,24 @@ semantics, and slippage the system would actually have used.** A cohort that loo
 excellent raw and mediocre under a 2-ATR stop is telling you the edge is in the tail you
 would have been stopped out of. That distinction is the whole point.
 
-Cost assumptions are explicit and stressed: baseline 10 bps adverse per fill, with a
-mandatory sensitivity at 25 and 50 bps rendered next to the baseline.
+**The headline policy number is net of costs.** At swing-trading turnover, spread plus
+impact can consume the entire measured edge, and a base rate reported gross describes a
+strategy nobody can run. The cost model is explicit and stressed: a **half-spread
+estimate by liquidity decile** (from stored quote data where available, otherwise a
+configured table by decile), plus adverse slippage of 10 bps per fill at baseline, with
+mandatory sensitivity at 25 and 50 bps rendered beside it; commissions zero. Gross is
+shown too, labelled gross. Where the setup's execution policy involves a cash Agentic
+account, T+1 settlement (Spec L §5.1) is modelled as a redeploy delay so turnover is
+the achievable turnover.
 
 ### 5.4 Per-regime breakdown
-Every metric additionally reported split by market regime. **If all events fall in one
-regime, the engine says so and declines to generalize** rather than reporting a single
-pooled number that describes one market mood.
+Every metric additionally reported split by market regime where each cell clears the
+floor. Regime is context, not a gate: with daily bars and realistic event counts, most
+regime cells will be `insufficient`, and the cells that clear will be the common
+regimes — which is still worth knowing. **If all events fall in one regime, the pooled
+number carries a `single_regime` warning** and the docs say the answer describes one
+market mood; v0.2's outright refusal on that condition spent the whole cohort to guard
+against a caveat, and is dropped.
 
 ### 5.5 Stability over time — has the edge decayed?
 The best-documented "comparable setup" in the literature, post-earnings-announcement
@@ -265,13 +326,19 @@ the split, never instead of it.
 
 ### 6.2 Clustering
 Events cluster in calendar time (earnings season) and cross-section (sectors move
-together). Naive standard errors on such a cohort are wrong by a large multiple, not a
-rounding error. Two defences, both required:
-- standard errors clustered by event date;
-- a **calendar-time portfolio cross-check**: form the portfolio of all names currently
-  inside their event window on each date, compute the time series of its abnormal
-  returns, and test that series. This absorbs cross-sectional correlation by
-  construction.
+together). Fifty events across four reporting days are four observations wearing a
+disguise, and a bootstrap over the *event* dimension does not fix same-date dependence:
+the CI comes out too narrow by roughly the square root of events per date. So:
+
+- **The calendar-time portfolio is the primary estimator.** Form the portfolio of all
+  names currently inside their event window on each date, take its daily abnormal-return
+  series, and regress on the benchmark. This dissolves cross-sectional clustering
+  instead of correcting for it. The §6.1 stationary block bootstrap runs on *that*
+  series and produces the headline CI.
+- **Two-way clustered CAR regression (event date × ticker) is the cross-check**, not
+  the headline.
+- The response carries **`n_eff`**, an effective sample size from distinct event dates
+  and the average within-date correlation, beside `n_matured`.
 
 Clustered standard errors are computed two-way (event date × ticker) via `statsmodels`.
 **With fewer than ~30 clusters the asymptotics fail**, and the §8 floor is 15 distinct
@@ -303,16 +370,34 @@ estimate. Two rules:
   matters — small n and rates near 0 or 1.
 - Means are additionally reported **shrunk toward the pooled estimate of the setup
   family** (all cohorts sharing the same primary condition, e.g. every
-  `earnings_surprise_pct > x` cohort) by an empirical-Bayes weight proportional to
-  `n / (n + k)`, with `k` fixed in config and printed. The raw and the shrunk estimate
-  both appear; the shrunk one is what an agent quotes when `n_matured < 100`. Shrinkage
-  is a stated prior, not a hidden one — the family, `k`, and the pooled value are in
-  the response. Shrinkage estimates are themselves unstable at small n, which is why
-  `k` is fixed in config rather than estimated per cohort.
+  `sue_seasonal > x` cohort) by an empirical-Bayes weight `n / (n + k)`. **`k` is not a
+  tuning knob**: under the normal-normal hierarchical model it equals within-cohort
+  variance over between-cohort variance, `σ²/τ²`, estimated by method of moments across
+  the family (pooled within-cohort variance; observed variance of cohort means minus
+  average sampling variance for `τ²`). When `τ̂²` comes out at or below zero the cohorts
+  differ no more than noise predicts, `k` is infinite, and every cohort in the family is
+  reported as the family mean — that is the correct answer, not a bug, and it is printed
+  as such. The raw and the shrunk estimate both appear; the shrunk one is what an agent
+  quotes when `n_matured < 100`. The family, `k̂`, `σ̂²`, `τ̂²`, and the pooled value are
+  in the response. Thirty lines of NumPy, unit-tested against a simulation with known
+  `τ²`. Shrinkage assumes cohorts are exchangeable draws from the family; a family
+  defined by a variable chosen *because it looked predictive* is not exchangeable, and
+  shrinkage then understates the selection problem rather than fixing it — §7 is not
+  optional.
 
 Later, not v1: a conformal predictive interval for a *single next outcome* ("if I take
 this trade, what range should I expect") is a genuine addition to the CI on the mean and
 is distribution-free. Noted so it is not reinvented as something less honest.
+
+### 6.5 The engine's own track record
+The decision journal (Spec M) scores Bryan's predictions. Nothing in v0.2 scored the
+engine's. Every `full` `CohortAnswer` that is cited — point estimate, CI, horizon,
+`as_of` — is written to `cohort_predictions`, and a scheduled job scores it against the
+realized outcome of the *query event* once the horizon matures: was the realized return
+inside the CI, and on which side of the point estimate. Coverage of the nominal 90%
+interval and the sign hit rate are printed in the Sunday report once twenty predictions
+have matured. After a year that log is the only real evidence about whether any of this
+machinery works, and it is the one measurement no methodological rigour substitutes for.
 
 ## 7. Researcher degrees of freedom
 
@@ -327,7 +412,11 @@ The adjusted significance is a **Romano–Wolf stepdown** (`arch`'s StepM), whic
 family-wise error while accounting for the heavy dependence between overlapping setup
 variants; a Šidák correction on the effective number of independent trials is the cheap
 fallback. Both the raw empirical p-value and the adjusted one are printed with the trial
-count, and the reader sees all three. **Deflated Sharpe, PBO and CPCV are not computed
+count, and the reader sees all three. The response also prints **the number of cells
+examined** — regime × horizon × any conditioning split — because the recent
+post-earnings-drift literature finds drift surviving mainly in conditional subsets, and
+an engine that can slice on all of them will find significance somewhere. `arch`'s SPA
+and MCS are first-class outputs over a family's cells, not diagnostics run on request. **Deflated Sharpe, PBO and CPCV are not computed
 here** — they are defined over a strategy's Sharpe under N trials, not over a cohort's
 mean abnormal return, and applying them to a CAR produces a number that looks rigorous
 and means nothing. They live in Spec Q §10, where they belong. The system will not stop
@@ -343,6 +432,10 @@ class CohortAnswer:
     tier: Literal["clean_pit", "vendor_pit", "archival_reconstructed", "insufficient"]
     provenance_mix: dict[str, int]   # events per provenance class: observed_live / vendor_pit / archival
     block_length: int                # §6.1, the estimated length actually used
+    n_eff: float                     # §6.2, effective sample size from distinct dates
+    delisting_rate: float            # §4.2, share of cohort members that delisted in-window
+    cells_examined: int              # §7
+    cost_model: CostModel            # §5.3, half-spread table + slippage used
     n_matured: int
     n_censored: int
     n_distinct_dates: int          # the honest sample size when events cluster
@@ -376,10 +469,12 @@ Same rigour where it matters; a ten-times faster loop where it does not.
 Hard rules:
 
 - **No field is optional** at the declared depth. A missing statistic is a failure, not a null.
-- `tier="insufficient"` is returned — with the reason — whenever `n_matured` is below
-  the configured floor (default 30 matured events **and** 15 distinct event dates,
-  because clustered events are not independent observations), or the cohort spans a
-  single regime, or point-in-time integrity cannot be established.
+- `tier="insufficient"` is returned — with the reason — whenever the cohort is below
+  the floor, **which is on distinct event dates first** (default 20 distinct dates) and
+  matured events second (default 30), because clustered events are not independent
+  observations and the event count is the wrong denominator; or when the floor is met
+  only by survivors (§4.2 delisting-rate composition check); or when point-in-time
+  integrity cannot be established. A single-regime cohort is warned, not refused (§5.4).
 - **`insufficient` is a valid, expected, frequently-correct answer.** The engine prints
   it rather than manufacturing a ranking. Every consumer — Telegram, the weekly report,
   the MCP tool, an agent's prose — must render it as a refusal, never round it into a
@@ -433,6 +528,18 @@ failing test attached (§10).
 | `test_quick_answer_not_citable` | `journal_append` / `research_write` refuse a `depth="quick"` answer |
 | `test_three_price_series_stored` | A cohort's price inputs carry raw, split-adjusted, and total-return series plus factors with ex-dates |
 | `test_horizons_are_sessions` | A 5-session horizon over a holiday week spans the correct calendar dates |
+| `test_floor_is_on_distinct_dates` | 60 events on 12 dates is `insufficient`; 30 events on 20 dates is not |
+| `test_calendar_time_is_primary` | The headline estimate and CI come from the calendar-time series; the clustered CAR is a cross-check field |
+| `test_n_eff_reported` | `n_eff` falls as within-date correlation rises, holding `n_matured` fixed |
+| `test_survivor_only_cohort_refused` | A cohort meeting the floor only after excluding delisted members is `insufficient` on composition |
+| `test_delisting_audit_recorded` | A price snapshot without a delisting-audit result cannot back a `clean_pit` or `vendor_pit` cohort |
+| `test_policy_return_is_net` | The headline policy return includes the half-spread and slippage; gross is a separately labelled field |
+| `test_sue_from_xbrl_only` | `sue_seasonal` is computed from `companyfacts` rows and never from a vendor estimate field |
+| `test_announcement_time_from_8k_acceptance` | An event dated from `filingDate` rather than `acceptanceDateTime` is rejected |
+| `test_sector_is_current_vintage` | The balance block marks `sector` `vintage=current`; sector is never a required stratum |
+| `test_shrinkage_k_method_of_moments` | Simulated families with known `τ²` recover `k` within tolerance; `τ̂² <= 0` yields full shrinkage, printed |
+| `test_engine_predictions_scored` | A matured cited answer produces a `cohort_predictions` row with in-interval and sign fields |
+| `test_cells_examined_counted` | Adding a regime split to a query increments `cells_examined` by the number of regimes |
 
 ## 11. Definition of done
 

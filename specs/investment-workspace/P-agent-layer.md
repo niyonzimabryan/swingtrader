@@ -1,6 +1,6 @@
 # Spec P — Agent layer
 
-**Series:** [Investment Workspace K–Q](README.md) · **Status:** Draft v0.1 · **Date:** 2026-09-05
+**Series:** [Investment Workspace K–Q](README.md) · **Status:** Draft v0.3 · **Date:** 2026-09-05
 
 ---
 
@@ -18,7 +18,7 @@ no chat UI, no agent runtime to maintain. What the repo provides instead:
 - **Tools** — the Spec K MCP surface, identical across clients.
 - **Memory** — Spec M's dossiers, theses, and journal; Spec L's ledger; Spec N's query
   log. Durable state lives in the workspace, never in a transcript.
-- **Instructions** — `CLAUDE.md` and `AGENTS.md`, kept in agreement by test.
+- **Instructions** — `AGENTS.md`, imported by `CLAUDE.md` line 1 (Spec K §4.3).
 - **Subagents** — defined as repo files so both clients can use them (§4).
 
 This is deliberate. Every framework layer is a thing to maintain that adds no research
@@ -93,10 +93,19 @@ import graphs are not.
    delimiters carrying a **per-response random nonce** (static delimiters are defeated
    by guessing an inexact one), the provenance block marks them `content_trust:
    "untrusted"`, and `research_write` refuses a section whose sources are all
-   untrusted-tier unless a human-authored flag is set. The strongest defence is
-   boundary 1: with no agent path to a broker, the worst an injected instruction in a
-   10-K exhibit can do is a bad `research_write`, which is reviewable and reversible.
-   That converts an open problem into a bounded one, and the spec says so.
+   untrusted-tier unless a human-authored flag is set.
+   **Delimiters and nonces are parsing aids, not a control.** The 2026 evidence
+   (verification §31) is that every text-level mitigation fails under adaptive attack
+   and only architectural isolation holds (CaMeL-style: untrusted data supplies values,
+   never control flow). This system already has the architecture: boundaries 1 and 2
+   mean a successful injection through the SEC or news planes — which are attacker-
+   writable by anyone who can file or issue a release — cannot move money and cannot
+   corrupt a number. The worst case is a bad `research_write`, reviewable and
+   reversible. Two structural additions: the **ingestion job that parses filings and
+   news has no write tool at all** (its allowlist is read-only; it produces
+   `source_observations` rows through code, not through a tool call), and every
+   ingested claim carries `source_url` and `source_trust` so untrusted-origin text is
+   rendered distinctly wherever a human reads it.
 
 ## 6. Cost discipline
 
@@ -141,6 +150,7 @@ a scheduled agent over an unreliable memory just automates being wrong.
 | `test_no_model_number_in_output` | Constructing a `CohortAnswer` from model text raises |
 | `test_untrusted_content_marked` | Filing and news bodies are wrapped with a per-response random nonce and `content_trust="untrusted"`; two responses never share a nonce |
 | `test_research_write_refuses_all_untrusted` | A section whose sources are all untrusted-tier is refused without the human-authored flag |
+| `test_ingestion_has_no_write_tools` | The filings/news ingestion agent definition lists no write tool and no `Agent` |
 | `test_session_budget_enforced` | The hard cap stops further model calls and reports why |
 
 ## 9. Definition of done

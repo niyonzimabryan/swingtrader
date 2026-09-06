@@ -29,7 +29,12 @@ honest `known_at_utc`.
 > `clean_pit` cohort or a Spec Q promotion.
 
 For SEC filings this is unusually clean: the acceptance timestamp *is* `known_at_utc`.
-That is why filings are the highest-quality plane and are built first.
+That is why filings are the highest-quality plane and are built first. **It is
+`acceptanceDateTime`, never `filingDate`.** Verified live (verification §13): a Form 4
+with `filingDate` 2026-09-03 was accepted at 22:30 UTC that day, after the close. Keying
+on the filing date treats post-close information as available intraday, systematically
+and in the direction that flatters results. A test rejects any `known_at_utc` derived
+from `filingDate`.
 
 Every `source_observations` row also carries **`precision`** (`second` | `day`) and a
 **provenance class** (`observed_live` | `vendor_pit` | `archival_reconstructed`, Spec N
@@ -51,7 +56,7 @@ constraints are structural, not fixable by better parsing.
 
 | Form | Content | Timeliness | Honest use |
 |---|---|---|---|
-| **13F-HR** | Long US-listed equity positions of managers over the reporting threshold | Quarter-end, filed up to ~45 days later | Idea generation; conviction and concentration context. **Never timing.** A position may be closed before you read it. |
+| **13F-HR** | Long US-listed equity positions of managers over the reporting threshold | Quarter-end, filed up to ~45 days later | **Deferred from Phase 4.** At a 1–20 session horizon a quarterly snapshot with a 45-day lag is nearly useless, and it is the most work of the three planes. The table row stays because the rules below still apply when it is built. |
 | **13D** | Beneficial ownership above the threshold with intent to influence | Days after crossing | Activist situations; the *intent* narrative matters more than the stake |
 | **13G** | Passive above-threshold ownership | Slower than 13D | Ownership structure, float, index/passive share |
 | **Form 4** | Insider transactions | Within ~2 business days | **The one with genuine timeliness.** Open-market purchases by operating insiders are the informative subset |
@@ -123,9 +128,15 @@ reported fact with its accession number and filing date; joined to the `submissi
 free — and restatements arrive as new facts with later stamps, so `known_at <= t`
 returns the as-reported figure automatically. This is the `clean_pit`/`vendor_pit`
 fundamentals source for Spec N (README §5 slot 3); FMP fundamentals carry no
-availability stamp and stay exploratory. XBRL coverage begins ~2009; tag normalisation
-(`Revenues` vs `RevenueFromContractWithCustomerExcludingAssessedTax`) is real work that
-`edgartools` largely does.
+availability stamp and stay exploratory. XBRL coverage is **per tag, not per company**: filers migrate tags (`Revenues` →
+`RevenueFromContractWithCustomerExcludingAssessedTax`), so a naive pipeline shows gaps
+that look like missing quarters and drops firms from cohorts non-randomly, since tag
+migration correlates with filer size. `filings/xbrl_aliases.py` holds explicit tag-alias
+maps with tests, and the ingest job **alerts on a coverage discontinuity** rather than
+absorbing it. `edgartools` does much of the normalisation; the alias map is the part
+that is ours. Two things to confirm in a REPL before relying on them: that the parsed
+Form 4 object exposes the transaction code and the 10b5-1 flag as fields, and how
+13F-HR/A amendments are represented (a naive union of HR and HR/A double-counts).
 
 Access must respect the source's published rate limits and identification requirements;
 `filings/client.py` owns throttling and retry in one place.
@@ -203,8 +214,13 @@ Finnhub stays as a cross-check for the earliest-timestamp rule; Tiingo news is t
 runner-up if Tiingo is bought for prices. GDELT stamps *ingest* time, not publication,
 and may never supply `known_at_utc`. The incumbent Gemini-search + Firecrawl path cannot
 establish publication time and is **removed from every cohort path**; it remains a live
-research tool only. The FNSPID dataset (15.7M timestamped articles, S&P 500, 1999–2023)
-is a candidate for historical backfill once its licence is confirmed. Three additions:
+research tool only. FNSPID is **dropped**: its licence is CC BY-NC-4.0 with an explicit prohibition on
+commercial use, and a system that informs real trades is commercial use regardless of
+aggregation. Alpaca's terms are the other constraint: they bar publishing the data "or
+any derived products" and combining it with other sources for redistribution. So
+**nothing derived from the news plane leaves Postgres** — no article text, no novelty
+score, no news-derived feature appears in the `research/` mirror; a dossier may cite a
+story by URL and date, and that is all (Spec K §3.3). Three additions:
 
 ### 5.1 Timestamp fidelity
 Store publication timestamp, first-seen-by-us timestamp, and the *earliest* timestamp
@@ -256,6 +272,10 @@ dating, dossier evidence (Spec M), and the invalidator triggers of Spec M §4.
 | `test_xbrl_known_at_from_acceptance` | A `companyfacts` row's `known_at_utc` equals its filing's `acceptanceDateTime`, precision `second` |
 | `test_adapter_schema_change_fails_loudly` | An adapter receiving an unexpected payload shape raises; it never writes nulls |
 | `test_gemini_search_not_in_cohort_path` | Import-graph: `comparables/` reaches no Gemini or Firecrawl client |
+| `test_filing_date_never_known_at` | A `source_observations` write whose `known_at_utc` equals a `filingDate` midnight for an EDGAR source is rejected |
+| `test_xbrl_alias_coverage_alert` | A tag migration in a fixture company produces a continuous series and an alert, not a gap |
+| `test_news_derivatives_stay_in_postgres` | The mirror job refuses any file containing a news body, novelty score, or news-derived feature |
+| `test_8k_202_timestamp` | An earnings event's `known_at_utc` is the Item 2.02 8-K `acceptanceDateTime` |
 
 ## 7. Definition of done
 
@@ -263,6 +283,7 @@ dating, dossier evidence (Spec M), and the invalidator triggers of Spec M §4.
 - Insider open-market clusters are a queryable Spec N fact type, and a real cohort has
   been run against them and reported honestly — including if the answer is
   `insufficient`.
+- 13D/G, Form 4, and 8-K are live; 13F is documented as deferred with the reason.
 - `macro_state(as_of=<past date>)` demonstrably differs from the current print on a
   revised series, verified by hand on one example and recorded in the docs.
 - Regime labels are deterministic, versioned, and reproducible from stored vintages.

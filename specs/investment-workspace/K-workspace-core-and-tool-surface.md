@@ -67,8 +67,12 @@ Postgres → repo, never the reverse without an explicit `--import`).
 **Licensing rule for the mirror.** The repo is public. Vendor price and fundamentals
 data (Tiingo, Polygon, Sharadar, FMP) may not be redistributed, and several licences
 extend to derived works; Yahoo data via `yfinance` sits outside Yahoo's terms entirely.
-So `research/` holds narrative, sourced claims, and *summary* figures that cite a
-cohort id — never a raw series, never a vendor table. `docs/DATA_LICENSES.md` maps each
+Verified clauses (verification §9, §11): Tiingo's internal-use licence — "you may not
+display or share the data with another person or organization" — and Alpaca's bar on
+publishing the data "or any derived products or services." So `research/` holds
+narrative, sourced claims, and *summary* figures that cite a cohort id — never a raw
+series, never a vendor table, never a news body or news-derived feature. Git history
+does not forget, so the check runs before the first public commit, not after. `docs/DATA_LICENSES.md` maps each
 source to what may be committed versus what lives only in Postgres, and a CI check
 (`test_no_vendor_series_in_mirror`) fails on a numeric column longer than a handful of
 rows under `research/`.
@@ -95,8 +99,10 @@ the FastAPI app, streamable HTTP (SSE is formally deprecated as of the 2026-07 s
 revision). The surface here is fifteen tools with no sampling, elicitation, or proxying,
 which is exactly the case where one dependency beats a framework. Both the official SDK
 (1.x → 2.x in 2026-08, `FastMCP` renamed `MCPServer`) and `fastmcp` (2 → 3 → 4 within
-seven months) are churning; **pin `mcp>=1.29,<2` now** and migrate to v2 in a dedicated
-PR. `fastmcp` becomes the answer only if claude.ai connector OAuth is required (§4.1).
+seven months) are churning. **The unbounded `mcp>=1.27.2` pin was a live bug**: a fresh
+install resolved to 2.1.1, where `streamablehttp_client` is renamed, and every Robinhood
+call failed with a misleading "install the SDK" error. It is pinned `<2` as of this
+revision; the v2 migration (`MCPServer`, `streamable_http_client`) is its own PR. `fastmcp` becomes the answer only if claude.ai connector OAuth is required (§4.1).
 Railway's reference MCP deployment adds Redis for stream resumability so a long
 `compare_setups` call survives the proxy closing an idle connection — adopt that if and
 when a call exceeds the proxy timeout, not before.
@@ -111,11 +117,13 @@ when a call exceeds the proxy timeout, not before.
   requires a separate token that is never placed in an agent's environment.
 - Rate limits per token, concrete: 60 read calls and 10 write calls per minute per
   token by default. A runaway agent loop must cost time, not money.
-- **Static bearer tokens reach Claude Code and Codex today** (`--header "Authorization:
-  Bearer …"` and `bearer_token_env_var` respectively). claude.ai custom connectors are
-  OAuth-first, with static-header support only in beta as of this writing. The plan is
-  bearer for CLI clients now; if a claude.ai connector is wanted later, add an OAuth
-  provider (the one argument for `fastmcp`) without changing the tool surface.
+- **Codex accepts a static bearer** (`bearer_token_env_var`, verified). Claude Code's
+  documented path is OAuth 2.1 with a loopback redirect; static-header support there
+  and in claude.ai connectors is reported but not confirmed on an Anthropic page. So
+  the server **accepts both**: OAuth 2.1 with dynamic client registration as the
+  mechanism every client definitely supports, and static bearer as the cheap path for
+  local development and cron jobs. Two auth paths, one tool surface, one scope model.
+  The MCP SDK ships the OAuth pieces; `fastmcp` is no longer needed for this.
 
 ### 4.2 MCP tool surface
 
