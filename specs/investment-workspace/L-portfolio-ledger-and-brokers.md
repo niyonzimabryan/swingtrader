@@ -102,7 +102,7 @@ A scheduled Python job, no inference:
 2. Normalize to the tables above; write append-style with a shared `sync_id`.
 3. Reconcile: any position the system believes it opened that the broker does not
    report, or vice versa, raises a `reconciliation_required` event through the existing
-   `tracking/position_reconciliation.py` path and pages Telegram.
+   `tracking/position_reconciliation.py` path and pages the out-of-band channel.
 4. Compute the daily `portfolio_snapshots` row after the close.
 
 Cadence: hourly during market hours, on demand from any tool call that finds the
@@ -237,8 +237,10 @@ adapter regardless of the primary broker setting.
 ```text
 agent session ──propose_order──► broker_orders row (status='proposed')
                                           │
-                                          │  Telegram card to owner,
-                                          │  signed + expiring reference
+                                          │  approval card to owner over the
+                                          │  out-of-band channel (Telegram today,
+                                          │  signed /admin page later) — never
+                                          │  a tool an agent can call
                                           ▼
                                    owner approves
                                           │

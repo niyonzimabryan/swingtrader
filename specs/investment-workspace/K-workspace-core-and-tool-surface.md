@@ -20,7 +20,7 @@ same answer everywhere, with no client-specific server.
 
 - A single Railway web service, `swingtrader-workspace`, exposing the same capabilities
   three ways: **REST** (for scripts and the bot), **MCP over streamable HTTP** (for
-  Claude Code, cloud sessions, and Codex), and **a `swing` CLI** (a thin client over
+  Claude on the web, Claude Code, Codex, and Cursor — local or cloud), with **no CLI** (admin operations live in `scripts/` and call
   REST, for terminals and cron).
 - Postgres as the structured store; the repo as the narrative store.
 - A session that opens the repo anywhere gets a working workspace with no local setup
@@ -109,7 +109,7 @@ when a call exceeds the proxy timeout, not before.
 
 ### 4.1 Authentication
 
-- One long-lived **owner token** per client, issued by `swing auth issue --label
+- One long-lived **owner token** per client, issued by `scripts/workspace_token.py --issue --label
   "codex-laptop"`, stored hashed, revocable, and scoped.
 - Scopes: `read`, `research:write`, `propose`, `admin`. **There is no `execute`
   scope** — order execution is not reachable by token at all (§6 of Spec L).
@@ -165,7 +165,11 @@ The repo ships the configuration for all three clients so attaching is copy-past
   import; Claude-specific material sits below the import. Parity is structural, not
   tested — the earlier plan to hand-maintain two files and test their agreement was a
   maintenance tax nobody else pays. A much smaller test remains (§8).
-- `docs/WORKSPACE_ACCESS.md` — how to attach from a cloud session and from the phone.
+- `.cursor/mcp.json` and `.codex/config.toml` — the same server entry for Cursor and
+  Codex, local and cloud, so every client attaches by copy-paste and none depends on a
+  machine being on.
+- `docs/WORKSPACE_ACCESS.md` — how to attach from Claude on the web, a Claude Code or
+  Codex cloud session, and a Cursor background agent.
 
 `CLAUDE.md` at the repo root gains a short "how to work in this repo" section: read the
 dossier before answering, write findings back through `research_write`, never claim a
@@ -198,7 +202,9 @@ The workspace's job is to make the expensive thing rare.
 
 ## 7. Non-goals
 
-- No web UI. The clients are the UI.
+- No web UI and no CLI. The agent clients are the UI; `scripts/` is the admin surface.
+- No Telegram surfaces. Telegram is retained only as the out-of-band approval and
+  paging channel (README §3), and a signed `/admin` approval page may replace it.
 - No multi-user. One owner, several tokens.
 - No websocket streaming quotes. Polling is sufficient for a swing-trading horizon and
   the failure modes are far simpler.

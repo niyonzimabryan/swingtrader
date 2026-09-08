@@ -495,7 +495,7 @@ Hard rules:
   only by survivors (§4.2 delisting-rate composition check); or when point-in-time
   integrity cannot be established. A single-regime cohort is warned, not refused (§5.4).
 - **`insufficient` is a valid, expected, frequently-correct answer.** The engine prints
-  it rather than manufacturing a ranking. Every consumer — Telegram, the weekly report,
+  it rather than manufacturing a ranking. Every consumer — the approval card, the weekly review,
   the MCP tool, an agent's prose — must render it as a refusal, never round it into a
   hedge.
 - `archival_reconstructed` results are never combined with `clean_pit` results in the

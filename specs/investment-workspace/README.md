@@ -14,7 +14,7 @@ Draft v0.1, 2026-08-21 — the experiment plane, unchanged and folded in here as
 
 SwingTrader stops being "a Telegram bot that scans and scores tickers" and becomes
 **a cloud-hosted investment workspace that any agent session can attach to** — from
-Claude Code on the laptop, a Claude cloud session, Codex, or a phone. The workspace
+Claude on the web, Claude Code local or cloud, Codex local or cloud, or Cursor. The workspace
 holds four things no chat transcript can hold: the **portfolio** (what Bryan actually
 owns, across brokers), the **research** (dossiers, theses, and what would invalidate
 them), the **evidence** (point-in-time facts, comparable historical setups, filings,
@@ -68,6 +68,7 @@ its own delivery plan. Read order for Bryan: this README, then N, then P.
 | Data budget | **$100/month ceiling** on data subscriptions. Adding a paid source retires one or is an explicit owner decision. | Model spend was already budgeted (Spec P §6); data spend was not, and slot-filling ratchets. Verified stack: Railway Pro $20 + ~$10–20 overage, EODHD $19.99 or Tiingo $30, everything else $0 — **~$50–70/month**. |
 | Data licensing | `docs/DATA_LICENSES.md` + CI check that `research/` holds no raw vendor series and nothing news-derived (Spec K §3.3). Runs **before the first public commit** of any data-bearing file. | Verified: Tiingo — "you may not display or share the data"; Alpaca — no publishing of "any derived products or services." FNSPID is CC BY-NC and dropped. Git history is permanent. |
 | Position sizing | Agents never choose a quantity. `propose_order` carries a `risk_fraction`; code sizes from entry and stop under the caps, scaled by the cited cohort's CI lower bound (Spec L §6.6). | v0.1 had no sizing rule anywhere and sizing dominates selection in realised P&L. The engine outputs a distribution; sizing from its mean throws that away. |
+| Interface — **decided 2026-09-06** | **MCP + REST over HTTPS only.** Clients: Claude on the web and in cloud sessions, Claude Code local and cloud, Codex local and cloud, Cursor local and background agents. No CLI in the plan; admin operations are `scripts/`. **No Telegram surfaces in the workspace.** The existing Telegram bot is retained *only* as the out-of-band channel for order approval and pages, because approval must come from something an agent cannot call; a signed approval page under `/admin` can replace it later without touching anything else. | Owner: "just need it accessible here and Codex/Cursor locally and in cloud sessions, API/MCP based vs CLI, not too local so everything keeps working." Nothing in the workspace depends on a machine being on. |
 | Scope cuts (v0.3) | **13F deferred** from Phase 4; **sector is a labelled current-vintage covariate**, never a required stratum; **analyst-estimate surprise from vendors replaced by XBRL seasonal SUE, with consensus recovered deterministically from timestamped news where articles state it** (N §4.0); **regime is reported, not a refusal gate**; **FNSPID dropped**. | Each is a case where the honest version of the feature is unavailable at retail and the approximate version would contaminate the number in the flattering direction (verification §22–§25, §34). |
 
 **Resolved 2026-09-05:** the earlier instruction "if you have access to Robinhood
@@ -81,10 +82,10 @@ itself is not written until asked.
 ## 4. Architecture
 
 ```text
-   Claude Code (laptop)   Claude cloud session   Codex   phone / Telegram
+   Claude (web / cloud)   Claude Code (local / cloud)   Codex   Cursor
             \                    |                 |            /
              \                   |                 |           /
-              +--------- remote MCP + REST + `swing` CLI -----+
+              +------------- remote MCP + REST (HTTPS) ---------+
                                  |
                    ┌─────────────┴──────────────┐
                    │   Workspace API (FastAPI)  │   Spec K
