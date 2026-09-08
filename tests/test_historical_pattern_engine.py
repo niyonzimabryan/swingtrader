@@ -16,7 +16,8 @@ from data.event_discovery import EventDiscoveryEngine, assert_outcome_neutral
 from data.event_extractor import EventExtractor, EventValidationError, make_dedupe_key
 from data.event_outcomes import EventOutcomeEngine, HistoricalMarketCapUnavailable, PriceBar, is_event_mature
 from data.peer_resolver import PeerResolver
-from database.db import get_session, init_db
+from database.db import get_session
+from tests.dbfixture import init_test_db
 from database.models import EventContext, EventOutcome, HistoricalEvent, PatternProviderCache, PatternSearchRun
 from memo.templates.ic_memo import format_memo_plain
 from scoring.engine import ScoringEngine
@@ -65,10 +66,10 @@ def _agent(score, status=None, direction="bullish"):
 class HistoricalPatternEngineTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.tmp.name) / "test.db"
-        init_db(f"sqlite:///{self.db_path}")
+        self.db = init_test_db("patterns")
 
     def tearDown(self):
+        self.db.cleanup()
         self.tmp.cleanup()
 
     def test_outcome_neutral_query_guard_rejects_biased_terms(self):

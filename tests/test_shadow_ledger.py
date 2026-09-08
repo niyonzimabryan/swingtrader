@@ -13,7 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from database import db as db_module
-from database.db import get_session, init_db
+from database.db import get_session
+from tests.dbfixture import init_test_db
 from database.models import ScoredCandidate
 from data.event_outcomes import PriceBar
 from tracking import shadow_ledger
@@ -91,13 +92,14 @@ class TradingDayMaturityTests(unittest.TestCase):
 class LedgerWriteTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        init_db(f"sqlite:///{Path(self.tmp.name) / 'ledger.db'}")
+        self.db = init_test_db("ledger")
 
     def tearDown(self):
         if db_module.engine is not None:
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.tmp.cleanup()
 
     def test_records_row_with_signal_breakdown_and_cohort(self):
@@ -141,13 +143,14 @@ class LedgerWriteTests(unittest.TestCase):
 class NightlyReturnsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        init_db(f"sqlite:///{Path(self.tmp.name) / 'returns.db'}")
+        self.db = init_test_db("returns")
 
     def tearDown(self):
         if db_module.engine is not None:
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.tmp.cleanup()
 
     def _seed(self, scored_at: datetime, entry=100.0, ticker="AAA"):
@@ -215,7 +218,7 @@ class NightlyReturnsTests(unittest.TestCase):
 class CalibrationReportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        init_db(f"sqlite:///{Path(self.tmp.name) / 'cal.db'}")
+        self.db = init_test_db("cal")
         rows = [
             # (final_score, ret_t10, direction)
             (0.60, 5.0, "bullish"),
@@ -235,6 +238,7 @@ class CalibrationReportTests(unittest.TestCase):
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.tmp.cleanup()
 
     def test_buckets_and_win_rates(self):

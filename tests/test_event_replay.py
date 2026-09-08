@@ -6,11 +6,9 @@ so the class table, sweep grid shape, and J4 present/absent paths are all exact.
 
 from __future__ import annotations
 
-import tempfile
 import unittest
 from collections import namedtuple
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -29,7 +27,8 @@ from backtest.event_replay import (
 )
 from config.settings import Settings
 from data.event_extractor import make_dedupe_key
-from database.db import get_session, init_db
+from database.db import get_session
+from tests.dbfixture import init_test_db
 from database.models import HistoricalEvent, ScoredCandidate
 
 FakeBar = namedtuple("FakeBar", "date open high low close volume")
@@ -88,8 +87,7 @@ def _event(session, ticker, event_type, polarity, days_ago_from=EVENT_DATE, magn
 
 class ReplayTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        init_db(f"sqlite:///{Path(self.tmp.name) / 'test.db'}")
+        self.db = init_test_db("replay")
         self.settings = Settings()
         self.provider = _Provider({
             "WINR": _make_bars(EVENT_DATE, 100, WIN_LONG),
@@ -99,7 +97,7 @@ class ReplayTests(unittest.TestCase):
         })
 
     def tearDown(self):
-        self.tmp.cleanup()
+        self.db.cleanup()
 
     def _seed_basic(self, session):
         _event(session, "WINR", "earnings_beat_structured", "bullish", magnitude=8.0)
@@ -166,13 +164,12 @@ class ReplayTests(unittest.TestCase):
 
 class SweepTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        init_db(f"sqlite:///{Path(self.tmp.name) / 'test.db'}")
+        self.db = init_test_db("sweep")
         self.settings = Settings()
         self.provider = _Provider({"WINR": _make_bars(EVENT_DATE, 100, WIN_LONG)})
 
     def tearDown(self):
-        self.tmp.cleanup()
+        self.db.cleanup()
 
     def test_sweep_grid_shape_and_caution(self):
         with get_session() as session:
@@ -204,9 +201,7 @@ class ShadowAdapterTests(unittest.TestCase):
         self.assertEqual(out["status"], "skipped_table_absent")
 
     def test_replays_ledger_rows_when_present(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        init_db(f"sqlite:///{Path(tmp.name) / 'test.db'}")
+        self.addCleanup(init_test_db("shadow").cleanup)
         scored_at = datetime(2025, 1, 15, 14, 0, 0)
         with get_session() as session:
             session.add(ScoredCandidate(
@@ -230,9 +225,7 @@ class ShadowAdapterTests(unittest.TestCase):
 class RenderTests(unittest.TestCase):
     def test_markdown_renders(self):
         from backtest.run_event_replay import render_markdown
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        init_db(f"sqlite:///{Path(tmp.name) / 'test.db'}")
+        self.addCleanup(init_test_db("render").cleanup)
         settings = Settings()
         provider = _Provider({"WINR": _make_bars(EVENT_DATE, 100, WIN_LONG)})
         with get_session() as session:
