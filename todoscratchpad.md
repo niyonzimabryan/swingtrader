@@ -658,11 +658,17 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
       workspace service skeleton. Blocks Phases 1, 2, 4.
 - [ ] **Phase 1 — portfolio ledger + read-only tool surface** (`L`, `K` §4)
 - [ ] **Phase 2 — research workspace: dossiers, theses, invalidators, git mirror** (`M`)
-- [ ] **Phase 3 — comparable-setups engine** (`N`) — the centerpiece: "how have setups
+- [x] **Independent plan review folded in — v0.4 (2026-09-06)** — 11 should-fixes, 2 cuts
+      taken; README §11 changelog. Sizing default for uncited proposals (half cap,
+      labelled `unevidenced`) awaits owner confirmation (README §3).
+- [ ] **Phase 3a — minimum SEC ingestion contract** (`N` §4.0, `O` §2/§3.4) — XBRL
+      companyfacts + submissions acceptanceDateTime + share counts + 8-K 2.02 index.
+      Free, no credentials. Needs only 0a. Blocks 3b.
+- [ ] **Phase 3b — comparable-setups engine** (`N`) — the centerpiece: "how have setups
       genuinely like this performed", with PIT integrity, benchmark subtraction,
       overlap-aware uncertainty, regime splits, null tests, and a real `insufficient`
-      answer. Parallelizable with Phase 5; needs only Phase 0a. Build `depth="quick"`
-      first. Deps: `arch` + `statsmodels`; never `mlfinlab` (not open source).
+      answer. Parallelizable with Phase 5. Fixture first, `depth="quick"` first,
+      price-only setup before earnings. Deps: `arch` + `statsmodels`; never `mlfinlab`.
 - [ ] **Phase 4 — evidence planes: filings (13F/13D/G/Form 4), vintage-correct macro,
       timestamped news** (`O`)
 - [ ] **Phase 5 — Strategy Lab** (`Q`) — ships on its own six-PR plan and prompts.

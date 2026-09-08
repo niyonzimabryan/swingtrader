@@ -1,6 +1,6 @@
 # Spec N — Comparable-setups engine
 
-**Series:** [Investment Workspace K–Q](README.md) · **Status:** Draft v0.3 (verification-upgraded) · **Date:** 2026-09-05
+**Series:** [Investment Workspace K–Q](README.md) · **Status:** Draft v0.4 (post-review) · **Date:** 2026-09-05
 **Flag:** `COMPARABLE_SETUPS_ENABLED=false`
 **This is the centerpiece spec.** Every other spec in the series either feeds it or
 delivers it.
@@ -127,6 +127,21 @@ Conditions reference *fact types*, never free text: `sue_seasonal`, `guidance_di
 `gap_pct`, `dollar_volume_20d`, `atr_pct`, `dist_from_sma50`, `market_cap_decile`,
 `realized_vol_decile`, `days_since_prior_event`, and `sector` (current-vintage, see §4.5).
 
+**Market cap needs a share count, and the price file does not carry one.** The input
+is `shares_outstanding` from SEC XBRL `dei:EntityCommonStockSharesOutstanding` (cover-
+page fact on every 10-K/10-Q, with `acceptanceDateTime` as `known_at_utc`), aggregated
+across share classes by CIK, with the vendor's share count as a fallback labelled
+`vendor_pit`. `market_cap_decile` is `price × shares_outstanding` as of the event date
+using the latest share count known at that time, ranked within the universe that day.
+
+**Minimum SEC ingestion contract — ships inside Phase 3, not Phase 4.** The earnings
+roster, `shares_outstanding`, and event timestamps all need three free, credential-less
+SEC feeds: XBRL `companyfacts` (facts with `accn`/`filed`), `submissions` (per-filing
+`acceptanceDateTime`), and the 8-K index filtered to Item 2.02. Phase 3's first
+checkpoint lands exactly those three into `source_observations` behind
+`filings/sec_minimal.py`; Phase 4 builds the full planes (13D/G, Form 4, entity
+history, news) on top of it. README §6 reflects this.
+
 **Earnings surprise is defined without analyst estimates.** No retail source offers a
 verifiable point-in-time consensus archive (verification §23): FMP, EODHD and the
 Robinhood `get_earnings_results` tool are restated snapshots, Zacks point-in-time is
@@ -224,18 +239,35 @@ Three series are stored per name, not two: **raw** OHLC (what fills happened at)
 **split-adjusted** (what signals and covariates are computed on), and **total-return**
 (split + dividend, what the benchmark comparison is made on). The split and dividend
 factors are stored with their ex-dates so any series reconstructs from the others and
-the adjustment provenance is inspectable. Simulated fills use raw OHLC; signals use
-split-adjusted; abnormal returns compare total-return to a total-return benchmark. A
+the adjustment provenance is inspectable. **Replay runs on the split-adjusted series**,
+because `backtest/simulator.py` holds fixed stop, target, and position fractions with
+no corporate-action input, and on raw prices an economically neutral 2-for-1 split
+mid-hold would fire the stop. Split-adjusted OHLC makes a split invisible to the exit
+logic, which is the correct economics; the raw series and the factor are kept so any
+fill can be mapped back to the price that actually printed. Signals use split-adjusted;
+abnormal returns compare total-return to a total-return benchmark. Parity with the
+legacy simulator holds bit-for-bit on action-free fixtures, and a split-invariance test
+asserts identical `TradeResult` on a fixture with and without a mid-hold split. A
 price-return stock against a total-return index is a systematic negative bias equal to
 the yield gap, and at least one major vendor supplies no dividend-adjusted series at all
 (README §5 slot 2), so this is a storage rule, not a preference.
 
 ### 4.4 Censoring
 
-An event whose horizon has not fully matured, or whose price history ends early
-(delisting, halt, acquisition), is **counted as censored**, reported separately, and
-never silently dropped. The response carries `n_matured`, `n_censored`, and the
-censoring reason distribution.
+Two different things, kept apart because conflating them is how terminal losses
+disappear:
+
+- **Resolved by terminal outcome.** A delisting with a known reason, an acquisition
+  with deal terms, or a to-zero name is **matured, not censored**: the §4.2 terminal
+  return is applied at the delisting date and carried flat through every remaining
+  horizon, so a name that lost 55% in session 7 contributes −55% to the 10- and
+  20-session statistics. It counts toward `n_matured` and toward `delisting_rate`.
+- **Censored.** An event whose horizon has not yet matured, or whose history ends with
+  an *unknown* reason (a halt with no resolution, a data gap), is counted in
+  `n_censored` with its reason, reported separately, and never silently dropped.
+
+`test_delisting_contributes_loss` asserts the first case changes the headline mean;
+`test_unknown_end_is_censored` asserts the second does not enter it.
 
 ### 4.5 Matching
 
@@ -261,27 +293,54 @@ whose comparability rests mainly on sector says so in its warnings.
 Implementation: exact matching on sector and buckets where sample allows, coarsened
 exact matching (Iacus, King & Porro) as the fallback — CEM bounds imbalance ex ante and
 suits covariates that are already categorical or bucketed; propensity-score matching is
-model-dependent and can *increase* imbalance, so it is not used. A **balance diagnostic
-is printed with every answer**: standardized mean difference and variance ratio per
-covariate between the query event and the cohort. Thresholds follow current matched-
-cohort practice, not Rubin's older 0.25 rule: |SMD| > 0.10 is a **warning** (*"your event
-is more liquid than its comparables"*), |SMD| > 0.25 is a hard **`unbalanced`** label on
-the covariate. A variance ratio outside [0.5, 2] is also warned, because two groups can
-share a mean and differ entirely in their tails. An unbalanced cohort is not hidden; it
-is labelled.
+model-dependent and can *increase* imbalance, so it is not used. Two diagnostics are printed with every answer, and they answer different questions:
+
+- **Is the query event typical of its cohort?** A single event has no variance, so the
+  two-group SMD does not apply. Per covariate: the query's **standardized distance**
+  from the cohort mean in cohort-SD units, and its **cohort percentile**. Distance > 1.0
+  warns (*"your event is more liquid than its comparables"*); > 2.0 is a hard
+  **`atypical`** label on the covariate.
+- **Is the matched cohort representative of the eligible pool?** Here two groups exist,
+  so the standard tools apply: SMD and variance ratio per covariate between the matched
+  cohort and the point-in-time eligible universe. |SMD| > 0.10 warns, > 0.25 labels
+  **`unbalanced`**; a variance ratio outside [0.5, 2] warns. This is what stops a
+  "comparable" cohort from quietly being the twenty most liquid names in the pool.
+
+Neither diagnostic is hidden; both are labelled.
 
 ## 5. Outcome measurement
 
 Four numbers, always all four. Reporting one is how the failure modes get in.
 
+### 5.0 Definitions, so the four numbers share units
+Fixed for every metric in this section; `docs/` carries a hand-calculated fixture that
+every implementation must reproduce to the cent.
+
+- **Event clock.** Session 0 is the first session whose open is at or after
+  `known_at_utc`. Entry is the **open of session 0** (or the simulator's fill on that
+  open, for §5.3). Horizon `h` ends at the **close of session h−1** — so a 1-session
+  horizon is open-to-close of session 0, a 5-session horizon spans five sessions.
+- **Event return** `R_i(h)` = close(session h−1) / entry − 1, on the total-return series.
+- **Benchmark return** `R_m(h)` over the identical sessions, same series basis.
+- **CAR** `= Σ_s (r_i,s − r_m,s)` over sessions 0..h−1 (daily excess returns summed).
+- **Calendar-time portfolio.** On each calendar session `t`, the portfolio holds every
+  event whose window covers `t`, **equal-weighted**; its daily return is the mean of
+  those events' daily returns; the daily abnormal return is `p_t − r_m,t`. The
+  regression is `p_t − r_f,t = α + β (r_m,t − r_f,t) + ε_t` over the cohort's span; the
+  horizon estimate reported as the headline is **`α × h`** (daily alpha scaled to the
+  horizon), with the CI from the §6.1 block bootstrap of `{p_t − r_m,t}` scaled the
+  same way. Cross-sectional CAR (the mean of `CAR_i(h)`) is the cross-check, and both
+  are printed in the same units: percent over `h` sessions.
+- **Policy return** (§5.3) is the simulator's net P&L over entry, in percent of entry
+  notional, on the same event clock.
+
 ### 5.1 Raw forward return
-Simple close-to-close over each horizon from the first tradable open after the event.
-Included for reference and because it is what everyone else quotes.
+The mean of `R_i(h)` as defined above. Included for reference and because it is what
+everyone else quotes.
 
 ### 5.2 Abnormal return — the headline
-Market-adjusted **cumulative abnormal return (CAR)** over each horizon: the event's
-return minus the contemporaneous benchmark return over the identical window. Two
-adjustments computed:
+Market-adjusted **cumulative abnormal return**, headline from the calendar-time α × h
+(§5.0, §6.2), cross-checked by the cross-sectional mean CAR. Two adjustments computed:
 - vs. broad market (long-only US equity benchmark, matching Spec Q §10)
 - vs. sector
 
@@ -360,7 +419,7 @@ the CI comes out too narrow by roughly the square root of events per date. So:
   and the average within-date correlation, beside `n_matured`.
 
 Clustered standard errors are computed two-way (event date × ticker) via `statsmodels`.
-**With fewer than ~30 clusters the asymptotics fail**, and the §8 floor is 15 distinct
+**With fewer than ~30 clusters the asymptotics fail**, and the §8 floor is 20 distinct
 dates, so when `n_distinct_dates < 30` the clustered SE is labelled `unreliable` and the
 bootstrap CI is the only interval rendered.
 
@@ -381,7 +440,12 @@ Run automatically with every cohort:
 - **Pre-event window:** abnormal return over the 10 sessions *before* the event.
   A large pre-drift is a leakage warning, not a bonus.
 
-### 6.4 Small-sample honesty: shrink, and show both
+### 6.4 Small-sample honesty: Wilson now, shrinkage when a family is big enough
+**v1 ships Wilson intervals and the bootstrap CI only.** Empirical-Bayes shrinkage as
+specified below is gated on a family having **at least five cohorts**: below that,
+`τ̂²` is noise and the "shrunk" number would be a fixed prior wearing a data-driven
+costume. The response carries `shrinkage: null` with the reason until the gate is met.
+The design is kept here so it is not reinvented as something less honest.
 A cohort of 35 matured events clears the floor and still supports a wide, noisy
 estimate. Two rules:
 - Proportions (hit rate, share of events stopped out) are reported with **Wilson
@@ -412,10 +476,17 @@ is distribution-free. Noted so it is not reinvented as something less honest.
 The decision journal (Spec M) scores Bryan's predictions. Nothing in v0.2 scored the
 engine's. Every `full` `CohortAnswer` that is cited — point estimate, CI, horizon,
 `as_of` — is written to `cohort_predictions`, and a scheduled job scores it against the
-realized outcome of the *query event* once the horizon matures: was the realized return
-inside the CI, and on which side of the point estimate. Coverage of the nominal 90%
-interval and the sign hit rate are printed in the Sunday report once twenty predictions
-have matured. After a year that log is the only real evidence about whether any of this
+realized outcome of the *query event* once the horizon matures. **The CI is on the
+cohort mean and is never scored as a predictive interval** — one trade landing outside
+the interval for the average of a hundred trades says nothing, and advertising
+"coverage" against it would manufacture a failure. Two scores instead: the **sign** of
+the realized return against the sign of the point estimate, and the realized return's
+**percentile within the cohort's stored outcome distribution**. Over many predictions
+those percentiles should be uniform; a pile-up at the tails means the cohorts are not
+describing the trades being taken. Sign hit rate and a percentile-uniformity check are
+printed in the weekly review once twenty predictions have matured.
+`test_mean_ci_not_scored_as_prediction_interval` asserts no coverage figure exists in
+the schema. After a year that log is the only real evidence about whether any of this
 machinery works, and it is the one measurement no methodological rigour substitutes for.
 
 ## 7. Researcher degrees of freedom
@@ -434,8 +505,9 @@ fallback. Both the raw empirical p-value and the adjusted one are printed with t
 count, and the reader sees all three. The response also prints **the number of cells
 examined** — regime × horizon × any conditioning split — because the recent
 post-earnings-drift literature finds drift surviving mainly in conditional subsets, and
-an engine that can slice on all of them will find significance somewhere. `arch`'s SPA
-and MCS are first-class outputs over a family's cells, not diagnostics run on request. **Deflated Sharpe, PBO and CPCV are not computed
+an engine that can slice on all of them will find significance somewhere. StepM is the one
+multiplicity correction in v1; `arch`'s SPA and MCS over a family's cells are deferred
+with shrinkage (§6.4) until families are large enough to rank. **Deflated Sharpe, PBO and CPCV are not computed
 here** — they are defined over a strategy's Sharpe under N trials, not over a cohort's
 mean abnormal return, and applying them to a CAR produces a number that looks rigorous
 and means nothing. They live in Spec Q §10, where they belong. The system will not stop
@@ -448,7 +520,9 @@ Bryan from searching; it will refuse to let him forget that he did.
 class CohortAnswer:
     setup: SetupSpec
     depth: Literal["quick", "full"]
-    tier: Literal["clean_pit", "vendor_pit", "archival_reconstructed", "insufficient"]
+    status: Literal["ok", "inconclusive", "insufficient"]        # result state
+    evidence_tier: Literal["clean_pit", "vendor_pit", "archival_reconstructed"]  # data quality
+    refusal_reason: str | None       # non-null iff status != "ok"
     provenance_mix: dict[str, int]   # events per provenance class: observed_live / vendor_pit / archival
     block_length: int                # §6.1, the estimated length actually used
     n_eff: float                     # §6.2, effective sample size from distinct dates
@@ -485,9 +559,21 @@ referenced by `journal_append`, `research_write`, or a Spec Q promotion; a `quic
 answer cannot be cited, and the type system enforces it (`test_quick_answer_not_citable`).
 Same rigour where it matters; a ten-times faster loop where it does not.
 
+**Evidence tier and result status are separate axes.** Tier says how good the data is;
+status says whether an answer exists. An `insufficient` answer is a distinct schema
+(`RefusedAnswer`: setup, depth, status, evidence_tier, refusal_reason, n_matured,
+n_distinct_dates, delisting_rate, trials) with **no statistic fields at all**, so the
+"no field is optional" rule and the "no estimate below the floor" rule stop fighting.
+`inconclusive` (§6.2 sign disagreement) is a full answer with both estimates shown and
+`status="inconclusive"`. The three shapes form a discriminated union on `status`.
+**One floor configuration** — `COHORT_FLOOR_DISTINCT_DATES=20`,
+`COHORT_FLOOR_MATURED=30` — is the only place the numbers live; every section that
+mentions a floor reads it from there.
+
 Hard rules:
 
-- **No field is optional** at the declared depth. A missing statistic is a failure, not a null.
+- **No field is optional** at the declared depth and status. A missing statistic is a
+  failure, not a null.
 - `tier="insufficient"` is returned — with the reason — whenever the cohort is below
   the floor, **which is on distinct event dates first** (default 20 distinct dates) and
   matured events second (default 30), because clustered events are not independent
@@ -561,6 +647,17 @@ failing test attached (§10).
 | `test_shrinkage_k_method_of_moments` | Simulated families with known `τ²` recover `k` within tolerance; `τ̂² <= 0` yields full shrinkage, printed |
 | `test_engine_predictions_scored` | A matured cited answer produces a `cohort_predictions` row with in-interval and sign fields |
 | `test_cells_examined_counted` | Adding a regime split to a query increments `cells_examined` by the number of regimes |
+| `test_headline_fixture_to_the_cent` | The §5.0 hand-calculated fixture (six events, two dates, one split, one delisting) reproduces every number in `docs/` exactly |
+| `test_delisting_contributes_loss` | A −55% terminal return in session 7 moves the 10- and 20-session headline; `n_censored` is unchanged |
+| `test_unknown_end_is_censored` | A halt with no resolution increments `n_censored` and does not enter the mean |
+| `test_split_invariance` | A mid-hold 2-for-1 split yields an identical `TradeResult` to the no-split fixture |
+| `test_market_cap_has_share_source` | A `market_cap_decile` condition on a name with no known share count at the event date is refused, not computed from a later count |
+| `test_query_vs_cohort_uses_distance` | The balance block for a single query event carries standardized distance and percentile, never an SMD |
+| `test_status_and_tier_separate` | An `insufficient` answer has no statistic fields; an `inconclusive` answer has both estimates and `status="inconclusive"` |
+| `test_single_floor_config` | Changing `COHORT_FLOOR_DISTINCT_DATES` moves every floor check at once |
+| `test_mean_ci_not_scored_as_prediction_interval` | `cohort_predictions` carries sign and percentile fields and no coverage field |
+| `test_shrinkage_gated_on_family_size` | A family with four cohorts returns `shrinkage=null` with the reason |
+| `test_sec_minimal_contract_in_phase3` | `comparables/` imports only `filings/sec_minimal.py` from the filings package, never the Phase 4 planes |
 
 ## 11. Definition of done
 

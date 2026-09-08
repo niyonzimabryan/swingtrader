@@ -109,6 +109,13 @@ Front-matter carries `thesis_id`, `status`, `next_review_at`, `invalidators`, an
 is Postgres → repo. `scripts/sync_research_mirror.py --import` exists for the one case
 where Bryan edits Markdown directly, and it round-trips through validation.
 
+**The mirror is deliberately partial.** Spec K §3.3 forbids news-derived content and
+vendor series in the repo, so a lossless round trip of *everything* is impossible by
+design. The export filters on provenance: sections and claims whose source tier is
+news or vendor-data are replaced by a withheld-content marker carrying the Postgres id,
+and the import step treats a marker as "keep the database copy." The round-trip
+guarantee applies to permitted content, and the test plan says so.
+
 Why both: Postgres gives querying, staleness, and joins. Git gives durability,
 diffability, review, and an offline fallback that works when the API is down (Spec K
 §3.3). Neither alone is sufficient.
@@ -168,7 +175,8 @@ bull argument.
 | `test_unsourced_is_flagged` | A section with no source renders with the warning in every surface |
 | `test_invalidator_trigger_pages` | A crossed `price_level` moves the thesis to `weakened` and pages |
 | `test_never_auto_closes` | A triggered invalidator creates no order and no proposal |
-| `test_mirror_roundtrip` | Postgres → Markdown → `--import` → Postgres is lossless |
+| `test_mirror_roundtrip_permitted_content` | Postgres → Markdown → `--import` → Postgres is lossless for **permitted** content (human and model prose, sourced claims, cohort ids, summary figures) |
+| `test_mirror_withholds_by_provenance` | A dossier section whose source is news-tier is exported as a `<!-- withheld: news-derived, see dossier_sections/<id> -->` marker, and `--import` preserves the Postgres original rather than blanking it |
 | `test_offline_read` | With the API down, the Markdown alone answers thesis and invalidators |
 | `test_active_requires_probability` | A thesis with no stated probability or `resolution_at` cannot transition to `active` |
 | `test_brier_uses_original_probability` | A probability revised after entry is scored on the original number; the revision is kept in history |

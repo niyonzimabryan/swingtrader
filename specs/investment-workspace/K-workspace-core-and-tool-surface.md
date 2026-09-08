@@ -75,7 +75,10 @@ series, never a vendor table, never a news body or news-derived feature. Git his
 does not forget, so the check runs before the first public commit, not after. `docs/DATA_LICENSES.md` maps each
 source to what may be committed versus what lives only in Postgres, and a CI check
 (`test_no_vendor_series_in_mirror`) fails on a numeric column longer than a handful of
-rows under `research/`.
+rows under `research/`. That check catches series, not prose; the prose guard is the
+**provenance filter in the export itself** (Spec M §5) — content whose source tier is
+news or vendor-data never reaches the file, and `test_mirror_withholds_by_provenance`
+proves it. Two mechanisms, two failure classes.
 
 Consequence: **git clone is the offline fallback.** If the workspace API is down, an
 agent session still has every thesis, every dossier, and every past decision — just not

@@ -1,6 +1,6 @@
 # SwingTrader Investment Workspace — spec series K–Q
 
-**Status:** Draft v0.3 — verification-upgraded 2026-09-06; one owner decision open (§3, marked **OPEN**) and four owner actions (§9)
+**Status:** Draft v0.4 — post-review 2026-09-06; one owner decision open (§3, marked **OPEN**), one default awaiting confirmation (§3 sizing), four owner actions (§9)
 **Date:** 2026-09-05
 **Owner:** Bryan Niyonzima
 **Target repository:** `niyonzimabryan/swingtrader`
@@ -67,7 +67,7 @@ its own delivery plan. Read order for Bryan: this README, then N, then P.
 | Data stack — **OPEN** | Default: **free-tier first**, then the cheapest verified delisting-complete file. SEC XBRL + EDGAR bulk sets, FRED/ALFRED, Alpaca news (Postgres-only), `fja05680/sp500`, existing FMP history for the warmed event library. First paid step: **EODHD All-World at $19.99/mo (verified)** or **Tiingo Power at $30/mo (verified)**, chosen by the twenty-delisting audit (Spec N §4.2). **Sharadar remains unverified on every axis** — price, delisted retention, `datekey`, terms — because its pricing renders client-side; that is a 15-minute owner check (§9), not a research task. | There is no free delisting-complete US price source, and *no vendor's* delisting completeness is verified until the audit runs: a file can keep a delisted ticker and still stop at the last quote. Pre-purchase cohorts are capped by the tier system rather than quietly wrong. |
 | Data budget | **$100/month ceiling** on data subscriptions. Adding a paid source retires one or is an explicit owner decision. | Model spend was already budgeted (Spec P §6); data spend was not, and slot-filling ratchets. Verified stack: Railway Pro $20 + ~$10–20 overage, EODHD $19.99 or Tiingo $30, everything else $0 — **~$50–70/month**. |
 | Data licensing | `docs/DATA_LICENSES.md` + CI check that `research/` holds no raw vendor series and nothing news-derived (Spec K §3.3). Runs **before the first public commit** of any data-bearing file. | Verified: Tiingo — "you may not display or share the data"; Alpaca — no publishing of "any derived products or services." FNSPID is CC BY-NC and dropped. Git history is permanent. |
-| Position sizing | Agents never choose a quantity. `propose_order` carries a `risk_fraction`; code sizes from entry and stop under the caps, scaled by the cited cohort's CI lower bound (Spec L §6.6). | v0.1 had no sizing rule anywhere and sizing dominates selection in realised P&L. The engine outputs a distribution; sizing from its mean throws that away. |
+| Position sizing | Agents never choose a quantity. `propose_order` carries a `risk_fraction`; code sizes from entry and stop under the caps, scaled by the cited cohort's CI lower bound (Spec L §6.6). **Default awaiting owner confirmation:** an uncited proposal is allowed but capped at half the evidenced risk budget and labelled `unevidenced`; a cited answer whose lower bound is non-positive sizes to zero; an `insufficient` answer does not count as a citation. | v0.1 had no sizing rule anywhere and sizing dominates selection in realised P&L. The alternative — every proposal must cite a positive-evidence answer — makes the system unusable while `insufficient` is the common answer, and blocks discretionary trades entirely. |
 | Interface — **decided 2026-09-06** | **MCP + REST over HTTPS only.** Clients: Claude on the web and in cloud sessions, Claude Code local and cloud, Codex local and cloud, Cursor local and background agents. No CLI in the plan; admin operations are `scripts/`. **No Telegram surfaces in the workspace.** The existing Telegram bot is retained *only* as the out-of-band channel for order approval and pages, because approval must come from something an agent cannot call; a signed approval page under `/admin` can replace it later without touching anything else. | Owner: "just need it accessible here and Codex/Cursor locally and in cloud sessions, API/MCP based vs CLI, not too local so everything keeps working." Nothing in the workspace depends on a machine being on. |
 | Scope cuts (v0.3) | **13F deferred** from Phase 4; **sector is a labelled current-vintage covariate**, never a required stratum; **analyst-estimate surprise from vendors replaced by XBRL seasonal SUE, with consensus recovered deterministically from timestamped news where articles state it** (N §4.0); **regime is reported, not a refusal gate**; **FNSPID dropped**. | Each is a case where the honest version of the feature is unavailable at retail and the approximate version would contaminate the number in the flattering direction (verification §22–§25, §34). |
 
@@ -168,7 +168,7 @@ be verified.
 | **0b. Cutover** | Postgres provisioned on Railway, one-shot migration with parity report, Railway workspace service skeleton | Unblocks every cloud session; ends the SQLite single-host trap. Blocks Phases 1, 2, 4 (anything a remote session reads live) |
 | **1. See it** | Spec L portfolio ledger + Robinhood sync + Spec K read-only tool surface. **First checkpoint: dump the `place_equity_order` / `review_equity_order` JSON Schema from `tools/list`; second: start the 30-day unattended refresh log on Railway.** | "What do I own and what am I exposed to" answerable from anywhere — and the two facts Robinhood does not document are measured instead of assumed |
 | **2. Remember it** | Spec M dossiers/theses + Markdown mirror | Research survives the session it was done in |
-| **3. Measure it** | Spec N comparable-setups engine over the existing warmed event library | The core question gets a trustworthy answer |
+| **3. Measure it** | **3a:** minimum SEC ingestion contract — XBRL `companyfacts`, `submissions` `acceptanceDateTime`, 8-K Item 2.02 index — into `source_observations` (free, no credentials, Spec N §4.0). **3b:** Spec N comparable-setups engine, `quick` depth first, price-only setups (gap-and-go) before the earnings roster | The core question gets a trustworthy answer; the earnings roster and `market_cap_decile` have their inputs without waiting on Phase 4 |
 | **4. Widen it** | Spec O filings (13D/G, Form 4, 8-K — **13F deferred**) + macro vintages + news timestamps | Cohorts get better covariates and exact event timestamps; insider and activist views appear |
 | **5. Race it** | Spec Q Strategy Lab (its own six-PR plan) | Champion vs challengers, on evidence |
 | **6. Act on it** | Spec L §6 proposal→approval→execution path, live only per Spec Q §12 | Approved orders, with full protection lifecycle |
@@ -309,3 +309,33 @@ series exists, and knowing the answer describes one market mood is worth having.
 stays as a labelled covariate because migration is rare and the contamination is
 bounded; what changes is that it can no longer be a required stratum. Both are
 reversible by config.
+
+## 11. Changelog — v0.3 → v0.4 (2026-09-06, post-review)
+
+From the independent plan review. Eleven should-fix findings, two cuts, one question.
+
+**Taken, all eleven.** Phase 3 split into 3a (minimum SEC ingestion) and 3b, because
+the earnings roster and market cap needed Phase 4 inputs (N §4.0, §6). The headline
+quantity is now defined to the session: event clock, equal-weighted calendar-time
+portfolio, `α × h`, and a hand-calculated fixture (N §5.0). Engine self-scoring uses
+sign and cohort percentile, never CI "coverage" (N §6.5). Facts extracted from news
+carry their article's timestamp, not the cluster's earliest (O §5.1). One news
+eligibility matrix replaces two contradictory sentences (O §5.3). `shares_outstanding`
+from the XBRL cover page feeds market cap (N §4.0). Delistings with known reasons are
+resolved with a terminal return carried through every horizon; only unknown endings
+are censored (N §4.4). Replay runs on split-adjusted prices with a split-invariance
+test (N §4.3). The Markdown mirror is deliberately partial, filtered by provenance,
+with the round-trip guarantee scoped to permitted content (M §5, §8; K §3.3). Sizing
+has a formula, citation requirements, and an uncited path (L §6.6). Result status and
+evidence tier are separate axes, refusals are their own schema, and there is one floor
+configuration (N §8).
+
+**Cuts taken.** Variance ratio against a single query event was undefined; the
+query-vs-cohort diagnostic is now standardized distance plus percentile, and SMD /
+variance ratio apply to matched-cohort-vs-pool where two groups exist (N §4.5).
+Empirical-Bayes shrinkage and SPA/MCS are gated on a family having five cohorts;
+v1 ships Wilson, the bootstrap CI, and StepM (N §6.4, §7).
+
+**The question, answered as a default** (§3 sizing row): no, uncited proposals do not
+size to zero; they are capped at half the risk budget and labelled. Cited negative
+evidence sizes to zero. Owner to confirm.

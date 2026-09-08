@@ -224,9 +224,16 @@ story by URL and date, and that is all (Spec K §3.3). Three additions:
 
 ### 5.1 Timestamp fidelity
 Store publication timestamp, first-seen-by-us timestamp, and the *earliest* timestamp
-across sources for a clustered story. `known_at_utc` is the earliest defensible one. An
-article whose publication time cannot be established is stored with
-`replay_eligible=false` and is unusable in a `clean_pit` cohort.
+across sources for a clustered story. **Two different `known_at_utc` values exist and
+must not be merged:** the *story's* `known_at_utc` is the earliest defensible publisher
+timestamp in the cluster; every *fact extracted from an article* (a consensus figure,
+a guidance number, Spec N §4.0) carries the timestamp of **the article it was extracted
+from**, never the cluster's. Otherwise a number that first appeared in a reaction piece
+at 16:45 inherits the 07:00 preview's timestamp and becomes available before it
+existed. Article revisions are stored as new rows, not overwrites. An article whose
+publication time cannot be established is stored with `replay_eligible=false` and is
+unusable in a `clean_pit` cohort. `test_fact_known_at_is_article_not_cluster` covers
+the preview-then-reaction case.
 
 ### 5.2 Clustering, source tiering, novelty
 - Cluster near-duplicate coverage into one story; a story republished by twenty outlets
@@ -234,17 +241,27 @@ article whose publication time cannot be established is stored with
   deterministic: exact canonical-URL match, then MinHash/LSH over title-plus-lead
   shingles (`datasketch`, MIT) for wire pickups, with embedding cosine as an optional
   third pass for paraphrases. The cluster's `known_at_utc` is the minimum publisher
-  timestamp across members.
+  timestamp across members, and applies to the story event only (§5.1).
 - Tier sources: primary (company release, filing) > established wire/publication >
   aggregator > unattributed. The tier travels with the fact.
 - **Novelty score**: does this story contain information absent from the prior cluster,
   or is it a restatement? Computed by comparing extracted structured facts, not by asking
   a model whether it feels new.
 
-### 5.3 What news may not do
-News never supports a Spec Q promotion and is never a cohort's qualifying fact unless it
-carries a defensible timestamp and a primary-tier source. Its jobs are: precise event
-dating, dossier evidence (Spec M), and the invalidator triggers of Spec M §4.
+### 5.3 What news may and may not do — the eligibility matrix
+One matrix, enforced by Spec N and tested there (`test_news_eligibility_matrix`):
+
+| Use | Requires | Provenance class |
+|---|---|---|
+| **Date an event** (Spec N event clock) | publisher timestamp + primary tier (release, filing) | `vendor_pit` |
+| **Qualify a cohort** as a structured fact (e.g. `consensus_eps_news`) | publisher timestamp + tier ≥ established wire/publication + deterministic extraction (Spec N §4.0) | `vendor_pit` |
+| **Covariate or novelty context** | publisher timestamp | `vendor_pit` |
+| **Dossier evidence, invalidator trigger** (Spec M) | any tier, rendered with its tier | — |
+| **Spec Q promotion evidence** | **never** | — |
+
+An article missing a timestamp qualifies for nothing above the last row. The earlier
+wording "never a qualifying fact unless primary-tier" was too strict for structured
+facts and too loose about promotion; this table replaces it.
 
 ---
 
@@ -276,6 +293,8 @@ dating, dossier evidence (Spec M), and the invalidator triggers of Spec M §4.
 | `test_xbrl_alias_coverage_alert` | A tag migration in a fixture company produces a continuous series and an alert, not a gap |
 | `test_news_derivatives_stay_in_postgres` | The mirror job refuses any file containing a news body, novelty score, or news-derived feature |
 | `test_8k_202_timestamp` | An earnings event's `known_at_utc` is the Item 2.02 8-K `acceptanceDateTime` |
+| `test_fact_known_at_is_article_not_cluster` | A consensus figure first present in a later article carries that article's timestamp, not the cluster's earliest |
+| `test_news_eligibility_matrix` | Each row of §5.3 is enforced: an established-tier article qualifies a cohort fact; an aggregator-tier one does not; nothing from news reaches a promotion |
 
 ## 7. Definition of done
 
