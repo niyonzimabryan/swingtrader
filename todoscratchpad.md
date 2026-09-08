@@ -635,16 +635,19 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
       deploy** (commit `18b47a2` on this branch). Verified in a clean venv: `mcp` 2.1.1
       drops `streamablehttp_client`, so a fresh install breaks every Robinhood call and
       the broker reports "install the SDK" while the SDK is installed.
-- [ ] **Owner action — dump the Robinhood `tools/list` schema** for
-      `place_equity_order` / `review_equity_order` (README §9.1). Only source for order
-      types, attached stops, GTC. Decides `can_place_attached_stop`; blocks Phase 6.
-- [ ] **Owner action — Sharadar, 15 min logged in** (README §9.2): price, delisted
-      retention with terminal prices, TICKERS delisting reason, SF1 `datekey`, terms.
-      Everything both research passes say about Sharadar is unverified.
-- [ ] **Owner action — twenty-delisting audit** (README §9.3, Spec N §4.2) before paying
-      any vendor. EODHD $19.99 and Tiingo $30 are the verified cheap options.
-- [ ] **Bryan decision still OPEN** (`README.md` §3) — data stack: free-first default,
-      then EODHD vs Tiingo vs Sharadar per the audit.
+- [x] **Robinhood `tools/list` schema dumped 2026-09-08** — 73 tools,
+      `docs/robinhood/tool_schemas.json`. No bracket/attached stop; `stop_market` +
+      `gtc` + whole shares + regular hours; `ref_id` idempotency. Findings in `L` §5.1.
+      Idle token from June did not survive (desktop re-auth needed) — 30-day unattended
+      refresh test stays in Phase 1.
+- [ ] **Owner action — Sharadar Prices ($9 "from") at checkout** (README §9.2): what the
+      base tier gates, bulk download, terms. Pricing verified by screenshot.
+- [ ] **Owner action — twenty-delisting audit** (README §9.3, Spec N §4.2) against
+      Sharadar before paying.
+- [x] **Data stack decided 2026-09-08** — free sources + Sharadar Prices $9; Agentic
+      account is cash/no-margin; sizing advisory with a discretionary budget (README §3).
+- [ ] **Builds in flight (spawned 2026-09-08):** Phase 0a `claude/phase-0a-schema-discipline`,
+      Phase 3b-core `claude/phase-3b-comparables-core`. Next after 0a merges: 3a, 1, 2.
 - [x] **Best-in-class research folded in — v0.2, 2026-09-05** — full report at
       `specs/investment-workspace/research/2026-09-05-best-in-class-research.md`;
       README §5 slot table now carries decisions; README §8 is the v0.1→v0.2 changelog.

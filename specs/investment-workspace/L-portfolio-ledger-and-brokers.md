@@ -178,18 +178,41 @@ pages (verification §1–§5), and what they leave open:
   metadata, not receipts. So the ledger's cash and total-return accounting reconciles
   dividends from a market-data dividend feed applied to holdings, flagged
   `reconstructed`, until Robinhood exposes them.
-- **Order types, brackets, OCO, and stop persistence (GTC) are undocumented.** The
-  published surface has exactly three equity write tools and no attach-stop tool. The
-  answer lives in the `tools/list` JSON Schema for `place_equity_order` and
-  `review_equity_order`, which `_tools_cache` already fetches. **Dumping that schema is
-  the first Phase 1 checkpoint** and is what decides `can_place_attached_stop`.
-- **Unattended session survival is undocumented.** The token store persists refresh
-  tokens correctly and *may* work indefinitely on a beta product with no contract. The
-  second Phase 1 checkpoint runs the sync on Railway with no human for 30 days and logs
-  every refresh with timestamps. Until then, every read path asserts freshness and
-  **refuses rather than serves** when `as_of_utc` is older than the budget on any path
-  that feeds a proposal — a ledger that silently stops syncing is worse than one that
-  loudly breaks.
+- **Order semantics — verified from the server's own `tools/list` schema, 2026-09-08**
+  (`docs/robinhood/tool_schemas.json`, 73 tools; dumped with
+  `scripts/dump_robinhood_tool_schemas.py`):
+  - `type` is one of `market`, `limit`, `stop_market`, `stop_limit`. **There is no
+    bracket, OCO, OTO, or attach-stop parameter.** A protective stop is a separate
+    order placed after the fill. `can_place_attached_stop` is therefore **false** and
+    stays false; the capability that matters is `can_place_standalone_gtc_stop`, which
+    is **true**.
+  - `time_in_force` is `gfd` or `gtc` (default `gfd`). Protective stops are placed
+    `gtc`. How long Robinhood keeps a GTC order open is not stated anywhere; the
+    execution service re-reads open orders daily and re-places a stop that has
+    disappeared, and a position whose stop cannot be read back pages (§6).
+  - `stop_market` and `stop_limit` are **regular-hours only** (rejected in extended or
+    all-day sessions) and **whole-share only** — fractional quantities are allowed for
+    `market` + `regular_hours` and nothing else. Consequence: **every protected entry
+    is a whole-share order**; `dollar_amount` entries are never used for positions the
+    system is responsible for protecting (§6.6 rounds down).
+  - `ref_id` is a client idempotency key the upstream deduplicates on. Every order the
+    execution service places carries one generated once per logical order, so the
+    fill-to-stop race can retry safely.
+  - `tax_lots` allows specified-lot selling (up to 30 lots, from `get_equity_tax_lots`)
+    on plain sells, **not** on stop orders or `dollar_amount` or all-day sessions. So the
+    booking method for discretionary sells can be `STRICT`; protective exits sell FIFO
+    and the ledger records that.
+  - `account_number` must be `agentic_allowed=true`; the API rejects any other account.
+    The boundary in README §3 is enforced by Robinhood, not only by us.
+- **Unattended session survival — one data point so far.** The access token is issued
+  with roughly a 6.7-day lifetime and a refresh token alongside it. A token store left
+  idle from June to September **did not survive**: the refresh was rejected and a
+  desktop browser re-auth was required. Whether a *continuously refreshing* service
+  survives is still unknown, so the second Phase 1 checkpoint runs the sync on Railway
+  with no human for 30 days and logs every refresh with timestamps. Until then, every
+  read path asserts freshness and **refuses rather than serves** when `as_of_utc` is
+  older than the budget on any path that feeds a proposal — a ledger that silently
+  stops syncing is worse than one that loudly breaks.
 
 **The Agentic-account boundary — decided (README §3): use the Agentic account.** Live
 entries under §6 are placed there; the primary account is read-only to the workspace.
@@ -204,16 +227,17 @@ Work required:
 - Read paths for positions, lots (where exposed), cash, and orders → the tables in §3,
   across every account the token can see.
 - Capability probe at startup, recorded on `brokerage_accounts`, re-probed daily.
-- **Determine empirically** whether a protective exit survives our process, starting
-  from the schema dump above. Plan on the assumption that a stop is a **separate order
-  placed after the fill**, which means the execution service owns the race between fill
-  and stop placement: entry fills → stop placed → stop **read back from the broker** →
-  only then is the position `protected`; a position that is filled and not read back as
-  protected within the configured window pages immediately. If standalone stops are not
-  indefinitely good-till-cancelled, the stop is re-placed before expiry by a scheduled
-  job and a 20-session hold cannot outlive it. Record the finding in
-  `docs/ROBINHOOD_INTEGRATION_PLAN.md` with evidence. Until proven,
-  `can_place_attached_stop=False` and live entries stay closed.
+- **The protective exit is a separate `stop_market` order, `gtc`, whole shares, placed
+  after the fill** — settled by the schema above. The execution service owns the race:
+  entry fills → stop placed with its own `ref_id` → stop **read back from the broker
+  via `get_equity_orders`** → only then is the position `protected`; a position filled
+  and not read back as protected within the configured window pages immediately and
+  blocks further entries. A daily job re-reads open orders and re-places any stop that
+  is no longer open, so a 20-session hold cannot outlive its stop whatever Robinhood's
+  unstated GTC horizon is. What remains empirical, and is the live probe in Phase 6:
+  that a `gtc` `stop_market` placed through the MCP is visible in `get_equity_orders`
+  the next session and triggers when touched. Record the result in
+  `docs/ROBINHOOD_INTEGRATION_PLAN.md`. Until the probe passes, live entries stay closed.
 - Use the broker's own `review_equity_order` as the pre-trade snapshot in §6 rather than
   reimplementing its price collar.
 
@@ -270,8 +294,10 @@ Enforced invariants (in addition to every invariant in Spec Q §12):
 5. The kill switch (`/live_kill on`) blocks approval-to-placement and survives restart.
 6. **An agent never chooses a quantity.** `propose_order` carries `entry`, `stop`, and a
    `risk_fraction` of equity (bounded by config, default 0.5%, hard cap 1%); the
-   execution service computes size as `risk_dollars / (entry − stop)`, then applies the
-   concentration, sector, and daily-notional caps. **Evidence scaling, specified:**
+   execution service computes size as `risk_dollars / (entry − stop)`, **rounded down to
+   whole shares** (Robinhood accepts fractional quantities only on unprotected market
+   orders, §5.1), then applies the concentration, sector, and daily-notional caps. A
+   size that rounds to zero shares is `risk_rejected` with the reason. **Evidence scaling, specified:**
    - A proposal carries at most one `cohort_answer_id`. If present it must resolve to a
      `depth="full"` answer for the same ticker, computed within the last 5 sessions,
      with `status="ok"`; otherwise the proposal is created `risk_rejected` with the
@@ -337,7 +363,10 @@ where it already sits.
 | `test_discretionary_budget_is_separate` | An uncited proposal cannot exceed `DISCRETIONARY_RISK_CAP` or push discretionary daily notional past its cap, and never consumes the evidenced budget |
 | `test_unsettled_cash_rejected` | On the cash Agentic account a proposal needing T+1 proceeds is `risk_rejected` with the settlement date |
 | `test_percentage_input_rejected` | `risk_fraction=0.5` meaning 0.5% is refused as out of range; `0.005` is accepted |
-| `test_attached_stop_verified_at_broker` | The capability probe passes only when the stop is readable from the broker after entry |
+| `test_attached_stop_verified_at_broker` | The protection probe passes only when the `gtc` `stop_market` is readable from `get_equity_orders` after entry |
+| `test_protected_entries_are_whole_shares` | A protected entry never carries a fractional `quantity` or a `dollar_amount`; a size rounding to zero is `risk_rejected` |
+| `test_stop_orders_regular_hours_gtc` | Every protective stop is `stop_market`, `regular_hours`, `gtc`, with a `ref_id` |
+| `test_missing_stop_replaced_daily` | An open position whose stop is absent from `get_equity_orders` gets a new stop placed and a page |
 | `test_unprotected_fill_pages` | A fill whose stop is not read back within the window raises a page and blocks further entries |
 | `test_stale_ledger_refuses_proposal` | `propose_order` against holdings older than the freshness budget is refused with the age, not served |
 | `test_no_option_or_crypto_write_tools` | Import-graph: no code path references `place_option_order`, `place_crypto_order`, or their review/cancel tools |
@@ -352,7 +381,6 @@ where it already sits.
   account, correct against a hand-check of the Robinhood app on one trading day.
 - Reconciliation raises on a deliberately induced mismatch and pages.
 - Robinhood's protective-exit capability is documented with evidence either way.
-- The `place_equity_order` / `review_equity_order` JSON Schema is dumped and recorded
-  in `docs/ROBINHOOD_INTEGRATION_PLAN.md`, and the 30-day unattended refresh log has
-  started.
+- The 30-day unattended refresh log has started on Railway (the schema dump is done:
+  `docs/robinhood/tool_schemas.json`).
 - The import-graph test proves no agent path to a broker placement.
