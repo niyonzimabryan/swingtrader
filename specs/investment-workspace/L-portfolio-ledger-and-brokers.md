@@ -162,9 +162,12 @@ pages (verification §1–§5), and what they leave open:
   path for a broken connection is a human reconnect.
 - **Placement is confined to the Agentic account**, verbatim: "Your agent can only place
   trades in your Robinhood Agentic account." Reads span all accounts. No published
-  balance cap. A **cash** Agentic account settles T+1 — proceeds from a Monday close
-  are not redeployable until Tuesday — unless *limited margin* is enabled; margin
-  borrowing is not available. The simulator models the T+1 delay (Spec N §5.3).
+  balance cap. **The Agentic account is a cash account by owner decision (2026-09-08),
+  funded with a budget Bryan loads; no margin of any kind.** Cash settles T+1 —
+  proceeds from a Monday close are not redeployable until Tuesday — so the ledger
+  tracks settled versus unsettled cash separately, a proposal that would need
+  unsettled funds is created `risk_rejected` with the settlement date, and the
+  simulator models the T+1 redeploy delay (Spec N §5.3).
 - **Tools exist for** equity positions, `get_equity_tax_lots`, `get_realized_pnl`,
   `get_pnl_trade_history`, orders, quotes, tradability, `review_equity_order`,
   `place_equity_order`, `cancel_equity_order`, and the same for options and crypto.
@@ -276,15 +279,19 @@ Enforced invariants (in addition to every invariant in Spec Q §12):
    - Let `LB` and `PE` be the lower 90% bootstrap bound and point estimate of the
      **policy-simulated net return** (§5.3 of Spec N) at the horizon nearest the
      proposal's expected hold, both as fractions (a percentage input is rejected, not
-     converted). The multiplier is `m = clip(LB / PE, 0, 1)` when `PE > 0` and `LB > 0`;
-     `m = 0` when `LB ≤ 0` or `PE ≤ 0`. `risk_fraction_effective = risk_fraction × m`.
-   - **Uncited proposals are permitted but capped lower**: `risk_fraction` may not exceed
-     `UNEVIDENCED_RISK_CAP` (default 0.25%, half the evidenced default), and the card
-     is labelled `unevidenced`. Bryan trades discretionary ideas and the engine will
-     answer `insufficient` often; forcing zero would make the system unusable for
-     months. The gate that cannot be bypassed is the one that matters: **a citation
-     whose evidence says no sizes to zero, and omitting the citation costs half the
-     risk budget.** (Owner decision, README §3; the review's one question.)
+     converted). For an **evidenced** proposal (`status="ok"`, `PE > 0`, `LB > 0`) the
+     multiplier is `m = clip(LB / PE, 0, 1)` and `risk_fraction_effective =
+     risk_fraction × m`, drawn from the evidenced budget.
+   - **Two budgets, advisory mode (owner decision 2026-09-08).** Everything that is not
+     evidenced — an uncited proposal, a citation with `status="insufficient"`, or a
+     citation with `LB ≤ 0` — is re-labelled **`discretionary`**, draws from a separate
+     budget (`DISCRETIONARY_RISK_CAP` per trade, default 0.25%; `DISCRETIONARY_DAILY_NOTIONAL`),
+     and carries the evidence on the card in full, including a negative lower bound
+     when there is one. **Nothing is sized to zero on evidence alone.** The two budgets
+     are separate rows in the ledger and the journal, so "how do my judgment trades do
+     versus my evidenced trades" is a query, which is the point. `EVIDENCE_GATE_MODE`
+     is `advisory` by default; `strict` makes `LB ≤ 0` size to zero and refuses uncited
+     proposals, with no code change.
    - The card shows `risk_fraction`, `m`, `LB`, `PE`, the horizon used, and every cap
      that bound the final size. The engine outputs a distribution; sizing from its
      mean alone throws away the thing that makes it valuable. Sizing dominates selection in realised
@@ -326,8 +333,9 @@ where it already sits.
 | `test_agent_cannot_set_quantity` | `propose_order` rejects a `quantity` argument; size is derived from `risk_fraction`, entry and stop |
 | `test_risk_fraction_capped` | A `risk_fraction` above the hard cap is refused, not clamped silently |
 | `test_citation_must_be_full_ok_recent` | A `quick`, `insufficient`, `inconclusive`, stale, or other-ticker citation lands the proposal in `risk_rejected` |
-| `test_nonpositive_lower_bound_sizes_zero` | `LB ≤ 0` yields `m = 0` and the card says why |
-| `test_uncited_proposal_capped` | A proposal without `cohort_answer_id` above `UNEVIDENCED_RISK_CAP` is refused; at or below it is labelled `unevidenced` |
+| `test_nonpositive_lower_bound_goes_discretionary` | In `advisory` mode `LB ≤ 0` re-labels the proposal `discretionary`, prints the bound on the card, and draws from the discretionary budget; in `strict` mode it sizes to zero |
+| `test_discretionary_budget_is_separate` | An uncited proposal cannot exceed `DISCRETIONARY_RISK_CAP` or push discretionary daily notional past its cap, and never consumes the evidenced budget |
+| `test_unsettled_cash_rejected` | On the cash Agentic account a proposal needing T+1 proceeds is `risk_rejected` with the settlement date |
 | `test_percentage_input_rejected` | `risk_fraction=0.5` meaning 0.5% is refused as out of range; `0.005` is accepted |
 | `test_attached_stop_verified_at_broker` | The capability probe passes only when the stop is readable from the broker after entry |
 | `test_unprotected_fill_pages` | A fill whose stop is not read back within the window raises a page and blocks further entries |

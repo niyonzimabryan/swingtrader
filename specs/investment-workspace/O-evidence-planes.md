@@ -195,7 +195,7 @@ Rules:
 - The classifier is versioned exactly like a strategy (Spec Q §6): changing a threshold
   creates `regime_v2` and does not silently relabel history.
 - **No LLM in the classifier.** A model may narrate the regime; it may not assign it.
-- Regime is a covariate in Spec N §4.5 and a required stratification in §5.4.
+- Regime is a covariate in Spec N §4.5 and a *reported* split in §5.4 — context, not a gate.
 
 ### 4.3 Scope discipline
 

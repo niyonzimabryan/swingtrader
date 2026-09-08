@@ -24,6 +24,12 @@ Repeat these in each goal, or bake them into `AGENTS.md` once and reference them
 - Never write code that lets a model produce a statistic.
 - Pause and ask before changing production capital limits, feature flags in Railway, or
   anything under `execution/` that touches live placement.
+- **Alembic in parallel phases:** branch every migration from the Phase 0a baseline
+  revision, never from another phase's migration; never edit another phase's migration;
+  expect a merge migration at integration and write your own tables so that it is
+  trivial (no cross-phase foreign keys without a documented reason).
+- The Robinhood Agentic account is a **cash** account: model T+1 settlement wherever
+  turnover or buying power appears. `EVIDENCE_GATE_MODE` defaults to `advisory`.
 
 ---
 
