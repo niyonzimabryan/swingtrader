@@ -1,11 +1,13 @@
 import json
-from datetime import datetime, date, timezone
+from datetime import date
 from utils.timeutils import utcnow_naive
 from sqlalchemy import (
-    Column, Integer, String, Float, Boolean, Text, DateTime, Date,
+    Column, Integer, String, Float, Boolean, Text, Date,
     ForeignKey, Enum, UniqueConstraint, Index, create_engine
 )
 from sqlalchemy.orm import declarative_base, relationship
+
+from database.types import UtcDateTime
 
 Base = declarative_base()
 
@@ -19,8 +21,8 @@ class Ticker(Base):
     sector = Column(String(100), default="")
     market_cap = Column(Float, default=0)
     in_universe = Column(Boolean, default=True)
-    added_at = Column(DateTime, default=utcnow_naive)
-    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
+    added_at = Column(UtcDateTime, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     # Relationships
     price_data = relationship("PriceData", back_populates="ticker", cascade="all, delete-orphan")
@@ -69,7 +71,7 @@ class Catalyst(Base):
     reasoning = Column(Text, default="")
     haiku_score = Column(Integer, default=0)  # 1-5 pre-screen score
     escalated = Column(Boolean, default=False)
-    detected_at = Column(DateTime, default=utcnow_naive)
+    detected_at = Column(UtcDateTime, default=utcnow_naive)
     run_id = Column(String(50), default="")
 
     ticker = relationship("Ticker", back_populates="catalysts")
@@ -93,7 +95,7 @@ class FundamentalData(Base):
     peer_comparison = Column(Text, default="")
     flags = Column(Text, default="[]")  # JSON array
     reasoning = Column(Text, default="")
-    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
+    updated_at = Column(UtcDateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     ticker = relationship("Ticker", back_populates="fundamentals")
 
@@ -127,7 +129,7 @@ class Signal(Base):
     direction = Column(String(20), default="neutral")
     reasoning = Column(Text, default="")
     raw_output = Column(Text, default="{}")  # JSON
-    created_at = Column(DateTime, default=utcnow_naive)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
 
     ticker = relationship("Ticker", back_populates="signals")
 
@@ -145,8 +147,8 @@ class Trade(Base):
     direction = Column(String(10), default="long")  # long, short
     entry_price = Column(Float, default=0)
     exit_price = Column(Float, nullable=True)
-    entry_date = Column(DateTime, nullable=True)
-    exit_date = Column(DateTime, nullable=True)
+    entry_date = Column(UtcDateTime, nullable=True)
+    exit_date = Column(UtcDateTime, nullable=True)
     shares = Column(Integer, default=0)
     stop_loss = Column(Float, default=0)
     target_1 = Column(Float, default=0)
@@ -178,8 +180,8 @@ class Trade(Base):
     t1_approaching_sent = Column(Boolean, default=False)
     time_warning_sent = Column(Boolean, default=False)
     drawdown_alert_sent = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=utcnow_naive)
-    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     ticker = relationship("Ticker", back_populates="trades")
     memo = relationship("Memo", back_populates="trade")
@@ -191,8 +193,8 @@ class PipelineRun(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String(80), unique=True, nullable=False, index=True)
     trigger_source = Column(String(40), default="")
-    started_at = Column(DateTime, default=utcnow_naive)
-    ended_at = Column(DateTime, nullable=True)
+    started_at = Column(UtcDateTime, default=utcnow_naive)
+    ended_at = Column(UtcDateTime, nullable=True)
     status = Column(String(30), default="running")
     scanned_count = Column(Integer, default=0)
     screened_count = Column(Integer, default=0)
@@ -204,8 +206,8 @@ class PipelineRun(Base):
     degraded_stages = Column(Text, default="[]")
     errors_json = Column(Text, default="[]")
     metadata_json = Column(Text, default="{}")
-    created_at = Column(DateTime, default=utcnow_naive)
-    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
 
 class OrderEvent(Base):
@@ -225,7 +227,7 @@ class OrderEvent(Base):
     status = Column(String(40), default="")
     notional = Column(Float, nullable=True)
     raw_payload = Column(Text, default="{}")
-    created_at = Column(DateTime, default=utcnow_naive)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
 
 
 class Memo(Base):
@@ -251,8 +253,8 @@ class Memo(Base):
     status = Column(String(20), default="pending")  # pending, approved, rejected, watchlisted, expired
     operator_notes = Column(Text, default="")
     telegram_message_id = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=utcnow_naive)
-    responded_at = Column(DateTime, nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
+    responded_at = Column(UtcDateTime, nullable=True)
 
     ticker = relationship("Ticker", back_populates="memos")
     trade = relationship("Trade", back_populates="memo", uselist=False)
@@ -290,7 +292,7 @@ class MacroRegime(Base):
     max_positions = Column(Integer, default=6)
     reasoning = Column(Text, default="")
     raw_inputs = Column(Text, default="{}")  # JSON
-    created_at = Column(DateTime, default=utcnow_naive)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
 
 
 class HistoricalPattern(Base):
@@ -314,7 +316,7 @@ class HistoricalPattern(Base):
     max_drawdown = Column(Float, nullable=True)
     max_drawdown_day = Column(Integer, nullable=True)
     raw_data = Column(Text, default="{}")
-    created_at = Column(DateTime, default=utcnow_naive)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
 
 
 # --- V2 Tables ---
@@ -334,7 +336,7 @@ class DiscoveredTicker(Base):
     run_id = Column(String(50), default="")
     progressed_to_pipeline = Column(Boolean, default=False)
     pipeline_score = Column(Float, nullable=True)
-    discovered_at = Column(DateTime, default=utcnow_naive)
+    discovered_at = Column(UtcDateTime, default=utcnow_naive)
 
 
 class WebResearch(Base):
@@ -356,7 +358,7 @@ class WebResearch(Base):
     sources_summary = Column(Text, default="")
     model_used = Column(String(50), default="")
     run_id = Column(String(50), default="")
-    created_at = Column(DateTime, default=utcnow_naive)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
 
     ticker = relationship("Ticker")
 
@@ -377,9 +379,9 @@ class WebResearchCache(Base):
     provider = Column(String(30), default="")
     model_used = Column(String(80), default="")
     result_json = Column(Text, default="{}")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, default=utcnow_naive, onupdate=utcnow_naive)
+    expires_at = Column(UtcDateTime, nullable=True)
 
 
 class WatchlistTicker(Base):
@@ -395,8 +397,8 @@ class WatchlistTicker(Base):
     reason = Column(Text, default="")
     source = Column(String(30), default="")  # "opus_recommendation", "operator", "discovery"
     active = Column(Boolean, default=True)
-    added_at = Column(DateTime, default=utcnow_naive)
-    deactivated_at = Column(DateTime, nullable=True)
+    added_at = Column(UtcDateTime, default=utcnow_naive)
+    deactivated_at = Column(UtcDateTime, nullable=True)
 
 
 class HistoricalContext(Base):
@@ -413,7 +415,7 @@ class HistoricalContext(Base):
     fwd_pe_ratio = Column(Float, nullable=True)
     momentum_20d = Column(Float, nullable=True)  # 20-day price return (%)
     sp500_distance_200ma = Column(Float, nullable=True)  # S&P 500 distance from 200-day MA (%)
-    created_at = Column(DateTime, default=utcnow_naive)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
 
     pattern = relationship("HistoricalPattern")
 
@@ -435,8 +437,8 @@ class CompanyProfile(Base):
     currency = Column(String(20), default="")
     raw_json = Column(Text, default="{}")
     profile_source = Column(String(40), default="")
-    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
-    expires_at = Column(DateTime, nullable=True)
+    updated_at = Column(UtcDateTime, default=utcnow_naive, onupdate=utcnow_naive)
+    expires_at = Column(UtcDateTime, nullable=True)
 
 
 class PeerEdge(Base):
@@ -456,7 +458,7 @@ class PeerEdge(Base):
     source = Column(String(80), default="")
     reasons_json = Column(Text, default="[]")
     as_of_date = Column(Date, default=date.today)
-    expires_at = Column(DateTime, nullable=True)
+    expires_at = Column(UtcDateTime, nullable=True)
 
 
 class PatternSearchRun(Base):
@@ -479,7 +481,7 @@ class PatternSearchRun(Base):
     cost_estimate = Column(Float, nullable=True)
     duration_s = Column(Float, nullable=True)
     error = Column(Text, default="")
-    created_at = Column(DateTime, default=utcnow_naive)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
 
 
 class PatternProviderCache(Base):
@@ -496,9 +498,9 @@ class PatternProviderCache(Base):
     query = Column(Text, default="")
     filters_json = Column(Text, default="{}")
     result_json = Column(Text, default="{}")
-    created_at = Column(DateTime, default=utcnow_naive)
-    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
-    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, default=utcnow_naive, onupdate=utcnow_naive)
+    expires_at = Column(UtcDateTime, nullable=True)
 
 
 class HistoricalEvent(Base):
@@ -517,7 +519,7 @@ class HistoricalEvent(Base):
     event_type = Column(String(80), nullable=False, index=True)
     event_subtype = Column(String(120), default="")
     event_date = Column(Date, nullable=False)
-    event_timestamp = Column(DateTime, nullable=True)
+    event_timestamp = Column(UtcDateTime, nullable=True)
     event_timing = Column(String(20), default="unknown")
     polarity = Column(String(20), default="neutral")
     magnitude = Column(Float, nullable=True)
@@ -533,8 +535,8 @@ class HistoricalEvent(Base):
     dedupe_key = Column(String(64), nullable=False, unique=True, index=True)
     embedding_json = Column(Text, nullable=True)
     raw_json = Column(Text, default="{}")
-    created_at = Column(DateTime, default=utcnow_naive)
-    updated_at = Column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, default=utcnow_naive, onupdate=utcnow_naive)
 
     outcome = relationship("EventOutcome", back_populates="event", uselist=False, cascade="all, delete-orphan")
     context = relationship("EventContext", back_populates="event", uselist=False, cascade="all, delete-orphan")
@@ -569,7 +571,7 @@ class EventOutcome(Base):
     gap_pct = Column(Float, nullable=True)
     matured_horizons_json = Column(Text, default="[]")
     status = Column(String(40), default="")
-    computed_at = Column(DateTime, default=utcnow_naive)
+    computed_at = Column(UtcDateTime, default=utcnow_naive)
 
     event = relationship("HistoricalEvent", back_populates="outcome")
 
@@ -595,7 +597,7 @@ class EventContext(Base):
     valuation_source_filing_date = Column(Date, nullable=True)
     pit_quality = Column(String(20), default="unavailable")
     raw_json = Column(Text, default="{}")
-    computed_at = Column(DateTime, default=utcnow_naive)
+    computed_at = Column(UtcDateTime, default=utcnow_naive)
 
     event = relationship("HistoricalEvent", back_populates="context")
 
@@ -617,7 +619,7 @@ class ScoredCandidate(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String(80), default="")
     ticker = Column(String(10), nullable=False, index=True)
-    scored_at = Column(DateTime, default=utcnow_naive)
+    scored_at = Column(UtcDateTime, default=utcnow_naive)
     source = Column(String(30), default="")  # tier2_gemini / discovery / watchlist / ...
     final_score = Column(Float, default=0)
     catalyst_score = Column(Float, nullable=True)
@@ -639,8 +641,8 @@ class ScoredCandidate(Base):
     ret_t5 = Column(Float, nullable=True)
     ret_t10 = Column(Float, nullable=True)
     ret_t20 = Column(Float, nullable=True)
-    returns_computed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=utcnow_naive)
+    returns_computed_at = Column(UtcDateTime, nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
 
 
 class DeepResearchRequest(Base):
@@ -660,6 +662,6 @@ class DeepResearchRequest(Base):
     updated_recommendation = Column(String(30), nullable=True)
     duration_s = Column(Float, nullable=True)
     pdf_path = Column(String(500), nullable=True)
-    submitted_at = Column(DateTime, default=utcnow_naive)
-    completed_at = Column(DateTime, nullable=True)
+    submitted_at = Column(UtcDateTime, default=utcnow_naive)
+    completed_at = Column(UtcDateTime, nullable=True)
     error = Column(Text, default="")
