@@ -44,9 +44,28 @@ Run the same checks as CI:
 
 ```bash
 .venv/bin/python -m pip check
-.venv/bin/python -m compileall -q agents bot config data database execution memo orchestrator scanning scoring screening scripts tracking utils main.py
+.venv/bin/python -m compileall -q agents backtest bot config data database evals execution memo migrations orchestrator scanning scoring screening scripts tests tracking utils main.py
 .venv/bin/python -m unittest discover -s tests -p "test_*.py"
 ```
+
+CI runs the suite twice, once per database engine. If your change touches
+`database/`, models, or any query, run the Postgres entry too:
+
+```bash
+TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/swingtrader_test \
+  .venv/bin/python -m unittest discover -s tests -p "test_*.py"
+```
+
+See [docs/DATABASE_ENGINES.md](docs/DATABASE_ENGINES.md) for a local Postgres in
+one command.
+
+## Schema Changes
+
+The schema is owned by Alembic. Adding a column or a table means writing a
+revision under `migrations/versions/`, branching from the current head — never
+an inline `ALTER TABLE`, and never `Base.metadata.create_all()`.
+`tests/test_schema_discipline.py` fails the build otherwise. Read
+[migrations/README.md](migrations/README.md) before your first migration.
 
 For changes that touch provider credentials or onboarding, also run:
 

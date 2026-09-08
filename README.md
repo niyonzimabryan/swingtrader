@@ -170,7 +170,8 @@ Important code paths:
 - memo/generator.py and memo/templates/: memo assembly
 - bot/: Telegram handlers, formatting, keyboards, notifications
 - execution/: Alpaca paper order execution and monitoring
-- database/: SQLAlchemy models and SQLite session handling
+- database/: SQLAlchemy models, engine-neutral column types, and session handling
+- migrations/: Alembic revisions; the schema is Alembic-owned from `0001_baseline`
 
 ## Configuration knobs
 
@@ -190,7 +191,7 @@ Core required settings:
 | FMP_API_KEY | Fundamentals and fallback pattern data |
 | ALPHA_VANTAGE_API_KEY | Backup financial data provider |
 | FRED_API_KEY | Macro rates, yield curve, credit spreads |
-| DATABASE_URL | Local default: sqlite:///swing_trader.db |
+| DATABASE_URL | Local default: sqlite:///swing_trader.db. Postgres is supported with the same schema: postgresql+psycopg://user:pass@host:5432/db. See [docs/DATABASE_ENGINES.md](docs/DATABASE_ENGINES.md) |
 | SCHEDULER_ENABLED | Start with false; set true only after `/eval` works |
 
 Broker controls:
@@ -260,7 +261,7 @@ Run the same checks as CI:
 
 ```bash
 .venv/bin/python -m pip check
-.venv/bin/python -m compileall -q agents bot config data database execution memo orchestrator scanning scoring screening scripts tracking utils main.py
+.venv/bin/python -m compileall -q agents backtest bot config data database evals execution memo migrations orchestrator scanning scoring screening scripts tests tracking utils main.py
 .venv/bin/python -m unittest discover -s tests -p "test_*.py"
 ```
 

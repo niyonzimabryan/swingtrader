@@ -13,6 +13,7 @@ structlog before the database is touched, and re-reading ``alembic.ini``'s
 logging section would tear that down.
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -71,6 +72,12 @@ def run_migrations_online() -> None:
         with context.begin_transaction():
             context.run_migrations()
         return
+
+    # CLI mode. Nothing has configured logging here (the app configures
+    # structlog before it ever reaches this file), so `alembic upgrade` would
+    # otherwise run silently.
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    logging.getLogger("alembic").setLevel(logging.INFO)
 
     connectable = create_engine(_resolve_url(), poolclass=pool.NullPool)
     with connectable.connect() as conn:
