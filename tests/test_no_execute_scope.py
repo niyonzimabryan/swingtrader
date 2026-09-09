@@ -45,6 +45,10 @@ FIRST_PARTY = {
     "scoring",
     "screening",
     "scripts",
+    # `database.models` imports the Strategy Lab domain vocabulary (Spec Q §8),
+    # so the walker has to follow it or the closure below would silently stop
+    # at `database` and assert less than it claims.
+    "strategy_lab",
     "tools",
     "tracking",
     "utils",
