@@ -70,8 +70,14 @@ class StrategyLabMigrationTests(unittest.TestCase):
             self.assertEqual(compare_metadata(context, Base.metadata), [])
 
     def test_the_revision_is_on_the_single_head_of_the_graph(self):
+        # The graph has one head, and 0007_strategy_lab is on the path to it.
+        # Once a later merge revision joins this branch to a sibling phase the
+        # head moves past it; the revision itself must never be edited.
         script = ScriptDirectory.from_config(alembic_config())
-        self.assertEqual(list(script.get_heads()), [REVISION])
+        heads = list(script.get_heads())
+        self.assertEqual(len(heads), 1, heads)
+        ancestors = {rev.revision for rev in script.iterate_revisions(heads[0], "base")}
+        self.assertIn(REVISION, ancestors)
         self.assertEqual(
             script.get_revision(REVISION).down_revision,
             PREVIOUS_HEAD,
@@ -97,8 +103,12 @@ class StrategyLabMigrationTests(unittest.TestCase):
                     command.upgrade(alembic_config(conn), "head")
                 after = set(inspect(engine).get_table_names())
                 self.assertTrue(STRATEGY_LAB_TABLES <= after)
+                script = ScriptDirectory.from_config(alembic_config())
                 with engine.connect() as conn:
-                    self.assertEqual(current_revision(conn), REVISION)
+                    self.assertEqual(
+                        set(MigrationContext.configure(conn).get_current_heads()),
+                        set(script.get_heads()),
+                    )
                 self._assert_matches_models(engine)
 
     def test_a_rerun_is_a_no_op(self):
@@ -115,13 +125,20 @@ class StrategyLabMigrationTests(unittest.TestCase):
                 engine = self._database(base_url)
                 ensure_schema(engine)
 
+                # Downgrade to the revision 0007_strategy_lab branched from. Alembic
+                # reverts every revision descended from the target, which is
+                # 0007_strategy_lab plus any later no-DDL merge revisions above it;
+                # sibling phases' own branches stay applied, so the database may
+                # legitimately sit on more than one current head afterwards.
                 with engine.begin() as conn:
                     command.downgrade(alembic_config(conn), PREVIOUS_HEAD)
                 self.assertEqual(
                     set(inspect(engine).get_table_names()) & STRATEGY_LAB_TABLES, set()
                 )
                 with engine.connect() as conn:
-                    self.assertEqual(current_revision(conn), PREVIOUS_HEAD)
+                    self.assertIn(
+                        PREVIOUS_HEAD, MigrationContext.configure(conn).get_current_heads()
+                    )
 
                 self.assertEqual(ensure_schema(engine), "upgraded")
                 self._assert_matches_models(engine)
