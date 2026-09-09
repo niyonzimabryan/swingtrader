@@ -725,6 +725,20 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
 - [ ] **Phase 4 — evidence planes: filings (13F/13D/G/Form 4), vintage-correct macro,
       timestamped news** (`O`)
 - [ ] **Phase 5 — Strategy Lab** (`Q`) — ships on its own six-PR plan and prompts.
+      - [ ] **PR 1 — domain + experiment persistence** — in review on
+            `claude/strategy-lab-1-domain`: the eight remaining Spec Q §8 tables in
+            `0007_strategy_lab` (`source_observations` reused from Phase 3a, not
+            duplicated), `strategy_lab/domain.py` (frozen content-hashed
+            `StrategyVersion` / `ExperimentSpec` / `MarketSnapshot` /
+            `StrategyDecision`, the four lifecycles, the §12 execution vocabulary,
+            the promotion bindings) and `strategy_lab/registry.py` (immutability and
+            idempotency at the service boundary). Two partial unique indexes carry
+            the invariants the application cannot: one globally active live arm, one
+            non-terminal execution per decision — proven on SQLite and Postgres in
+            one run. No flag, no pipeline hook, no broker; `config` is not importable
+            from the package. Docs: `docs/STRATEGY_LAB.md`.
+            `STRATEGY_LAB_ENABLED` arrives with PR 4, which owns the flags and the
+            hook they gate.
 - [ ] **Phase 6 — order proposal→approval→execution** — gated on Phases 0–3 **and** on
       documenting whether Robinhood can place a protective exit that survives our
       process. Human-in-the-loop, not an autonomous goal run.

@@ -4,14 +4,26 @@ The database schema is owned by Alembic. Nothing else may change it.
 
 ```
 migrations/
-  env.py                      Alembic environment (shared by CLI and startup)
+  env.py                          Alembic environment (shared by CLI and startup)
   versions/
-    0001_baseline.py             the root revision
-    0002_workspace_tokens.py     Phase 0b: workspace owner tokens (spec K §4.1)
-    0002_source_observations.py  Phase 3a: the bitemporal source ledger (spec O §2)
-    0003_merge_heads.py          the merge of those two parallel phases
-    0004_research_workspace.py   Phase 2: dossiers, theses, invalidators, journal (spec M §3)
+    0001_baseline.py                 the root revision
+    0002_workspace_tokens.py         Phase 0b: workspace owner tokens (spec K §4.1)
+    0002_source_observations.py      Phase 3a: the bitemporal source ledger (spec O §2)
+    0002_price_plane.py              Phase 3p: securities, bars, actions, membership (spec N §4.2)
+    0003_merge_heads.py              the merge of the first two parallel phases
+    0004_research_workspace.py       Phase 2: dossiers, theses, invalidators, journal (spec M §3)
+    0004_portfolio_ledger.py         Phase 1: the portfolio ledger (spec L §3)
+    0004_merge_price_plane.py        joins the price plane to that head
+    0005_merge_portfolio_ledger.py   joins the portfolio ledger to it
+    0006_merge_research_workspace.py joins the research workspace to it
+    0007_strategy_lab.py             Phase 5: the Strategy Lab experiment tables (spec Q §8)
 ```
+
+`0007_strategy_lab` is the first revision to carry a **partial unique index**
+(`WHERE` on a unique index). Both engines support it, and it is how two Spec Q
+invariants are held by the database rather than by the application: at most one
+globally active live arm, and at most one non-terminal execution per decision.
+See [`docs/STRATEGY_LAB.md`](../docs/STRATEGY_LAB.md) §3.
 
 ## The baseline rule
 
