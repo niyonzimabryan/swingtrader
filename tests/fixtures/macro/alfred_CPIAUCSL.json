@@ -1,0 +1,185 @@
+{
+ "series_id": "CPIAUCSL",
+ "rows": [
+  {
+   "reference_date": "2024-01-01",
+   "release_date": "2024-02-13",
+   "value": 300.850977
+  },
+  {
+   "reference_date": "2024-01-01",
+   "release_date": "2024-03-12",
+   "value": 301.091657
+  },
+  {
+   "reference_date": "2024-01-01",
+   "release_date": "2025-02-11",
+   "value": 301.181913
+  },
+  {
+   "reference_date": "2024-02-01",
+   "release_date": "2024-03-15",
+   "value": 301.712529
+  },
+  {
+   "reference_date": "2024-02-01",
+   "release_date": "2024-04-12",
+   "value": 301.953899
+  },
+  {
+   "reference_date": "2024-02-01",
+   "release_date": "2025-02-11",
+   "value": 302.044413
+  },
+  {
+   "reference_date": "2024-03-01",
+   "release_date": "2024-04-13",
+   "value": 302.483842
+  },
+  {
+   "reference_date": "2024-03-01",
+   "release_date": "2024-05-11",
+   "value": 302.725829
+  },
+  {
+   "reference_date": "2024-03-01",
+   "release_date": "2025-02-11",
+   "value": 302.816574
+  },
+  {
+   "reference_date": "2024-04-01",
+   "release_date": "2024-05-14",
+   "value": 303.148483
+  },
+  {
+   "reference_date": "2024-04-01",
+   "release_date": "2024-06-11",
+   "value": 303.391002
+  },
+  {
+   "reference_date": "2024-04-01",
+   "release_date": "2025-02-11",
+   "value": 303.481946
+  },
+  {
+   "reference_date": "2024-05-01",
+   "release_date": "2024-06-13",
+   "value": 303.790076
+  },
+  {
+   "reference_date": "2024-05-01",
+   "release_date": "2024-07-11",
+   "value": 304.033108
+  },
+  {
+   "reference_date": "2024-05-01",
+   "release_date": "2025-02-11",
+   "value": 304.124245
+  },
+  {
+   "reference_date": "2024-06-01",
+   "release_date": "2024-07-14",
+   "value": 304.515597
+  },
+  {
+   "reference_date": "2024-06-01",
+   "release_date": "2024-08-11",
+   "value": 304.75921
+  },
+  {
+   "reference_date": "2024-06-01",
+   "release_date": "2025-02-11",
+   "value": 304.850564
+  },
+  {
+   "reference_date": "2024-07-01",
+   "release_date": "2024-08-13",
+   "value": 305.356911
+  },
+  {
+   "reference_date": "2024-07-01",
+   "release_date": "2024-09-10",
+   "value": 305.601197
+  },
+  {
+   "reference_date": "2024-07-01",
+   "release_date": "2025-02-11",
+   "value": 305.692804
+  },
+  {
+   "reference_date": "2024-08-01",
+   "release_date": "2024-09-13",
+   "value": 306.241147
+  },
+  {
+   "reference_date": "2024-08-01",
+   "release_date": "2024-10-11",
+   "value": 306.48614
+  },
+  {
+   "reference_date": "2024-08-01",
+   "release_date": "2025-02-11",
+   "value": 306.578012
+  },
+  {
+   "reference_date": "2024-09-01",
+   "release_date": "2024-10-14",
+   "value": 307.057233
+  },
+  {
+   "reference_date": "2024-09-01",
+   "release_date": "2024-11-11",
+   "value": 307.302878
+  },
+  {
+   "reference_date": "2024-09-01",
+   "release_date": "2025-02-11",
+   "value": 307.394995
+  },
+  {
+   "reference_date": "2024-10-01",
+   "release_date": "2024-11-13",
+   "value": 307.758057
+  },
+  {
+   "reference_date": "2024-10-01",
+   "release_date": "2024-12-11",
+   "value": 308.004264
+  },
+  {
+   "reference_date": "2024-10-01",
+   "release_date": "2025-02-11",
+   "value": 308.096591
+  },
+  {
+   "reference_date": "2024-11-01",
+   "release_date": "2024-12-14",
+   "value": 308.40435
+  },
+  {
+   "reference_date": "2024-11-01",
+   "release_date": "2025-01-11",
+   "value": 308.651074
+  },
+  {
+   "reference_date": "2024-11-01",
+   "release_date": "2025-02-11",
+   "value": 308.743595
+  },
+  {
+   "reference_date": "2024-12-01",
+   "release_date": "2025-01-13",
+   "value": 309.109169
+  },
+  {
+   "reference_date": "2024-12-01",
+   "release_date": "2025-02-10",
+   "value": 309.356456
+  },
+  {
+   "reference_date": "2024-12-01",
+   "release_date": "2025-02-11",
+   "value": 309.449189
+  }
+ ]
+}

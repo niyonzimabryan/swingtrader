@@ -1,0 +1,66 @@
+{
+ "cik": "2000004",
+ "entityType": "operating",
+ "sic": "3571",
+ "name": "Newco Under Reused Ticker Inc",
+ "tickers": [
+  "RCYC"
+ ],
+ "exchanges": [
+  "Nasdaq"
+ ],
+ "formerNames": [],
+ "filings": {
+  "recent": {
+   "accessionNumber": [
+    "0002000004-22-000001"
+   ],
+   "filingDate": [
+    "2022-07-14"
+   ],
+   "reportDate": [
+    "2022-07-14"
+   ],
+   "acceptanceDateTime": [
+    "2022-07-14T20:02:00.000Z"
+   ],
+   "act": [
+    "34"
+   ],
+   "form": [
+    "8-K"
+   ],
+   "fileNumber": [
+    "001-90002"
+   ],
+   "filmNumber": [
+    ""
+   ],
+   "items": [
+    "8.01"
+   ],
+   "core_type": [
+    "8-K"
+   ],
+   "size": [
+    45678
+   ],
+   "isXBRL": [
+    0
+   ],
+   "isInlineXBRL": [
+    0
+   ],
+   "isXBRLNumeric": [
+    0
+   ],
+   "primaryDocument": [
+    "doc.htm"
+   ],
+   "primaryDocDescription": [
+    "8-K"
+   ]
+  },
+  "files": []
+ }
+}

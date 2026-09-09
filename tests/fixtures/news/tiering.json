@@ -1,0 +1,65 @@
+{
+ "news": [
+  {
+   "id": "tier-primary",
+   "headline": "Fictional Example Corp Announces Leadership Transition",
+   "summary": "Fictional Example Corp today announced that its chief financial officer will retire.",
+   "content": "Fictional Example Corp today announced that its chief financial officer will retire.",
+   "author": "",
+   "source": "Business Wire",
+   "url": "https://example.invalid/tier-primary",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-06-02T12:30:00Z",
+   "updated_at": "2026-06-02T12:30:00Z",
+   "images": []
+  },
+  {
+   "id": "tier-established",
+   "headline": "Fictional Example Corp finance chief to retire",
+   "summary": "Fictional Example Corp's chief financial officer will retire at the end of the year, the company said. Analysts expect EPS of $1.41 for the fourth quarter.",
+   "content": "Fictional Example Corp's chief financial officer will retire at the end of the year, the company said. Analysts expect EPS of $1.41 for the fourth quarter.",
+   "author": "",
+   "source": "Reuters",
+   "url": "https://example.invalid/tier-established",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-06-02T12:41:00Z",
+   "updated_at": "2026-06-02T12:41:00Z",
+   "images": []
+  },
+  {
+   "id": "tier-aggregator",
+   "headline": "Fictional Example Corp CFO exit: what it means for the stock",
+   "summary": "With the CFO leaving, the consensus estimate of $1.41 for the fourth quarter looks harder to hit.",
+   "content": "With the CFO leaving, the consensus estimate of $1.41 for the fourth quarter looks harder to hit.",
+   "author": "",
+   "source": "Seeking Alpha",
+   "url": "https://example.invalid/tier-aggregator",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-06-02T14:02:00Z",
+   "updated_at": "2026-06-02T14:02:00Z",
+   "images": []
+  },
+  {
+   "id": "tier-undated",
+   "headline": "Fictional Example Corp shakeup continues",
+   "summary": "Sources say more departures are coming at Fictional Example Corp. Analysts expect EPS of $1.41 for the fourth quarter.",
+   "content": "Sources say more departures are coming at Fictional Example Corp. Analysts expect EPS of $1.41 for the fourth quarter.",
+   "author": "",
+   "source": "Unknown Blog",
+   "url": "https://example.invalid/tier-undated",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": null,
+   "updated_at": null,
+   "images": []
+  }
+ ],
+ "next_page_token": null
+}

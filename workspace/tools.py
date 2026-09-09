@@ -1,4 +1,4 @@
-"""The MCP tool surface. Phase 0b's ``whoami``, plus Phase 1's three read tools.
+"""The MCP tool surface: Phase 0b's ``whoami``, Phase 1's three, Phase 4's three.
 
 Spec K §4.2 fixes fifteen tools; Phases 1-4 build them. Shipping them early as
 stubs would put tools in an agent's ``tools/list`` that return nothing useful,
@@ -12,6 +12,19 @@ nothing else. **No tool here can place, review, modify, or cancel an order**,
 and no import path from this package reaches one — asserted statically in
 ``tests/test_no_execute_scope.py`` and ``tests/test_portfolio_import_graph.py``,
 not promised in this docstring.
+
+Phase 4 (Spec O) adds ``filings_recent``, ``macro_state`` and ``news_timeline``,
+also at ``read``. They answer from ``source_observations`` and the plane tables
+through ``filings.api`` / ``macro.api`` / ``news.api``, which reach a database
+and nothing else — in particular no model client, which is what keeps "a model
+may never produce a statistic" (Spec N §9) a structural property of this
+surface too.
+
+``news_timeline`` is the one tool here whose output carries a licence
+constraint: every row it returns is marked ``mirror_allowed=false``, and its
+provenance notes say so, because Alpaca's terms bar redistributing the data or
+any derived products (Spec O §5). An agent may read it and cite a story by URL
+and date; nothing may copy it into the research mirror.
 
 Every read tool returns a ``provenance`` block carrying ``as_of_utc``, a
 per-field source, ``stale``, and a ``data_quality`` tier. A tool whose ledger is
@@ -47,6 +60,9 @@ REGISTERED_TOOLS: tuple[str, ...] = (
     "portfolio_overview",
     "position_detail",
     "orders_open",
+    "filings_recent",
+    "macro_state",
+    "news_timeline",
 )
 
 
@@ -165,6 +181,86 @@ def register(mcp: FastMCP, settings=None) -> tuple[str, ...]:
         authorize_call(ctx, "orders_open", {})
         return await anyio.to_thread.run_sync(_orders_open)
 
+    @mcp.tool(
+        name="filings_recent",
+        description=(
+            "Recent SEC filings facts for a ticker or CIK, as they were "
+            "knowable at `as_of`: Form 4 insider transactions, Schedules "
+            "13D/G, and 8-K items. Read-only and side-effect free. Insider "
+            "transaction codes are never pooled — an open-market purchase (P) "
+            "and a vesting award (A) are different fact types, and a 10b5-1 "
+            "sale is flagged where the filing says so and reported as unknown "
+            "where it does not. Amendments carry "
+            "`superseded_observation_id`; the original stays in the answer "
+            "because it is what was known before the amendment landed. 13F is "
+            "not covered. Every timestamp is the filing's acceptance time, "
+            "never its filing date."
+        ),
+    )
+    async def filings_recent(
+        ctx: Context, ticker: str = "", entity_cik: str = "", limit: int = 50
+    ) -> dict:
+        authorize_call(
+            ctx,
+            "filings_recent",
+            {"ticker": ticker, "entity_cik": entity_cik, "limit": limit},
+        )
+        if not (ticker or "").strip() and not (entity_cik or "").strip():
+            raise ToolRefused("invalid_argument: ticker or entity_cik is required.")
+        return await anyio.to_thread.run_sync(
+            _filings_recent, ticker, entity_cik, limit
+        )
+
+    @mcp.tool(
+        name="macro_state",
+        description=(
+            "The macro picture as it stood on `as_of` (YYYY-MM-DD; omit for "
+            "today), plus the deterministic `regime_v1` label. Read-only. "
+            "Values are ALFRED vintages, so a past date returns what a person "
+            "could have seen then, including the release lag: a series not yet "
+            "published at `as_of` appears in `missing` and is absent, never "
+            "back-filled or zero. The regime label is assigned by a versioned "
+            "threshold rule over never-revised inputs — a model may describe "
+            "it, never assign it."
+        ),
+    )
+    async def macro_state(ctx: Context, as_of: str = "") -> dict:
+        authorize_call(ctx, "macro_state", {"as_of": as_of})
+        return await anyio.to_thread.run_sync(_macro_state, as_of)
+
+    @mcp.tool(
+        name="news_timeline",
+        description=(
+            "Timestamped, deduplicated news for a ticker as it was knowable at "
+            "`as_of`. Read-only. One row per STORY, not per republication: "
+            "twenty outlets running one wire story are one row, and its "
+            "timestamp is the earliest publisher timestamp in the cluster. A "
+            "fact extracted from an article carries that article's own "
+            "timestamp instead. Articles whose publication time could not be "
+            "established are quarantined and excluded unless "
+            "`include_quarantined` is set. LICENCE: every row is "
+            "`mirror_allowed=false` — cite a story by URL and date, and copy "
+            "nothing else out."
+        ),
+    )
+    async def news_timeline(
+        ctx: Context,
+        ticker: str = "",
+        as_of: str = "",
+        limit: int = 50,
+        include_quarantined: bool = False,
+    ) -> dict:
+        authorize_call(
+            ctx,
+            "news_timeline",
+            {"ticker": ticker, "as_of": as_of, "limit": limit},
+        )
+        if not (ticker or "").strip():
+            raise ToolRefused("invalid_argument: ticker is required.")
+        return await anyio.to_thread.run_sync(
+            _news_timeline, ticker, as_of, limit, include_quarantined
+        )
+
     names = REGISTERED_TOOLS
     if settings is not None and getattr(settings, "research_workspace_enabled", False):
         # Imported here rather than at module scope: `workspace.research_tools`
@@ -225,3 +321,78 @@ def _orders_open() -> dict:
 
     with get_session() as session:
         return ledger.orders_open(session, budget_minutes=_budget_minutes())
+
+
+# --- evidence-plane reads (Spec O) -----------------------------------------
+# Same shape as the ledger reads above, and on a worker thread for the same
+# reason. Each delegates to the plane's own stable API, so the tool layer holds
+# no query logic and the point-in-time rules stay in one place per plane.
+
+
+def _parse_as_of(raw: str):
+    """``YYYY-MM-DD`` or an ISO timestamp -> a cutoff, or ``None`` for now.
+
+    A date means the **close** of that date, which is what the planes' own
+    helpers do — so a tool call and a direct call agree about whether a print
+    released that morning is visible.
+    """
+    from datetime import date, datetime, timezone
+
+    value = (raw or "").strip()
+    if not value:
+        return None
+    try:
+        if len(value) == 10:
+            return date.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ToolRefused(
+            f"invalid_argument: as_of={raw!r} is not a date (YYYY-MM-DD) or an "
+            "ISO-8601 timestamp."
+        ) from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _filings_recent(ticker: str, entity_cik: str, limit: int) -> dict:
+    from database.db import get_session
+    from filings.api import filings_recent as read
+
+    with get_session() as session:
+        return read(
+            session,
+            ticker=(ticker or "").strip().upper() or None,
+            entity_cik=(entity_cik or "").strip() or None,
+            limit=max(1, min(int(limit), 200)),
+        )
+
+
+def _macro_state(as_of: str) -> dict:
+    from database.db import get_session
+    from macro.api import macro_state as read
+
+    cutoff = _parse_as_of(as_of)
+    with get_session() as session:
+        return read(session, as_of=cutoff)
+
+
+def _news_timeline(
+    ticker: str, as_of: str, limit: int, include_quarantined: bool
+) -> dict:
+    from datetime import date, datetime, timezone
+
+    from database.db import get_session
+    from news.api import news_timeline as read
+
+    cutoff = _parse_as_of(as_of)
+    if isinstance(cutoff, date) and not isinstance(cutoff, datetime):
+        cutoff = datetime(
+            cutoff.year, cutoff.month, cutoff.day, 23, 59, 59, 999999, tzinfo=timezone.utc
+        )
+    with get_session() as session:
+        return read(
+            session,
+            ticker=ticker.strip().upper(),
+            as_of=cutoff,
+            limit=max(1, min(int(limit), 200)),
+            include_quarantined=bool(include_quarantined),
+        )

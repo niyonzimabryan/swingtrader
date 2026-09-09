@@ -1,0 +1,95 @@
+{
+ "series_id": "USREC",
+ "rows": [
+  {
+   "reference_date": "2024-01-01",
+   "release_date": "2024-02-10",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-02-01",
+   "release_date": "2024-03-12",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-03-01",
+   "release_date": "2024-04-10",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-04-01",
+   "release_date": "2024-05-11",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-05-01",
+   "release_date": "2024-06-10",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-06-01",
+   "release_date": "2024-07-11",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-07-01",
+   "release_date": "2024-08-10",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-08-01",
+   "release_date": "2024-09-10",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-09-01",
+   "release_date": "2024-10-11",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-10-01",
+   "release_date": "2024-11-10",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-11-01",
+   "release_date": "2024-12-11",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-12-01",
+   "release_date": "2025-01-10",
+   "value": 0.0
+  },
+  {
+   "reference_date": "2024-04-01",
+   "release_date": "2025-09-15",
+   "value": 1.0
+  },
+  {
+   "reference_date": "2024-05-01",
+   "release_date": "2025-09-15",
+   "value": 1.0
+  },
+  {
+   "reference_date": "2024-06-01",
+   "release_date": "2025-09-15",
+   "value": 1.0
+  },
+  {
+   "reference_date": "2024-07-01",
+   "release_date": "2025-09-15",
+   "value": 1.0
+  },
+  {
+   "reference_date": "2024-08-01",
+   "release_date": "2025-09-15",
+   "value": 1.0
+  },
+  {
+   "reference_date": "2024-09-01",
+   "release_date": "2025-09-15",
+   "value": 1.0
+  }
+ ]
+}
