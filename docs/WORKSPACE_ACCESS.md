@@ -58,6 +58,19 @@ repo is the whole setup. Claude Code expands `${WORKSPACE_BASE_URL}` and
 `${WORKSPACE_TOKEN}` from your environment when it reads the file; approve the
 server when prompted.
 
+**Export the two variables first.** Verified by observation, 2026-09-09: with
+`WORKSPACE_BASE_URL` unset, the expansion produces the URL `/mcp` and Claude
+Code refuses it at startup with
+
+```
+swingtrader-workspace (INVALID_CONFIG): 'url' is not a valid URL.
+```
+
+That error is the variable being empty, not the config being wrong, and it
+appears in every session opened in this repo until the variable is set. It also
+settles the expansion question for Claude Code specifically: `${VAR}` *is*
+expanded — an unexpanded literal would have produced a different error.
+
 ```jsonc
 {
   "mcpServers": {
@@ -136,6 +149,7 @@ boring.
 | `403 insufficient_scope` | The token lacks the scope the tool declares. Re-issue with the scope; do not widen the tool. |
 | `429 rate_limited` | 60 read or 10 write calls in a minute on one token (spec K §4.1). `Retry-After` says how long. Usually an agent loop, not a limit that is too low. |
 | `/health` reports `"reachable": false` | The service cannot reach Postgres. Check `DATABASE_URL` on the workspace service. |
+| Claude Code: `INVALID_CONFIG: 'url' is not a valid URL` | `WORKSPACE_BASE_URL` is unset, so `.mcp.json` expands to `/mcp`. Export it. Expected until then. |
 
 ## Verifying it once, by hand
 
