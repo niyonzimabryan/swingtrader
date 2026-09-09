@@ -1,6 +1,8 @@
 anthropic>=0.79.0
 python-telegram-bot>=20.0
 sqlalchemy>=2.0
+alembic>=1.13  # schema is Alembic-owned from 0001_baseline; no inline DDL
+psycopg[binary]>=3.1  # Postgres driver for postgresql+psycopg:// DATABASE_URL
 pydantic-settings>=2.0
 alpaca-py>=0.21.0
 yfinance>=0.2.36

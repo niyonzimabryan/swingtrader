@@ -7,13 +7,13 @@ inflate the operator-facing memo count.
 import tempfile
 import unittest
 from datetime import datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from database import db as db_module
-from database.db import get_session, init_db
+from database.db import get_session
 from database.models import Memo, ScoredCandidate, Ticker, Trade
+from tests.dbfixture import init_test_db
 from bot.weekly_report import WeeklyReport
 
 ET = ZoneInfo("America/New_York")
@@ -40,7 +40,7 @@ def _mid_week_utc() -> datetime:
 class WeeklyCalibrationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        init_db(f"sqlite:///{Path(self.tmp.name) / 'weekly.db'}")
+        self.db = init_test_db("weekly")
         self.settings = SimpleNamespace(max_holding_days=20, anthropic_api_key="test-key")
         now = _mid_week_utc()
         with get_session() as s:
@@ -77,6 +77,7 @@ class WeeklyCalibrationTests(unittest.TestCase):
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.tmp.cleanup()
 
     def test_gather_data_includes_calibration_and_cohort(self):

@@ -106,7 +106,7 @@ def _build_portfolio_context(pipeline) -> str:
         from database.db import get_session
         from database.models import Trade
         with get_session() as session:
-            recent = session.query(Trade).filter(Trade.status == "closed").order_by(Trade.exit_date.desc()).limit(5).all()
+            recent = session.query(Trade).filter(Trade.status == "closed").order_by(Trade.exit_date.desc().nullslast()).limit(5).all()
             if recent:
                 trade_lines = []
                 for t in recent:

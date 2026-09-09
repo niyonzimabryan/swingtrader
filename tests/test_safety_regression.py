@@ -19,15 +19,14 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from agents.base_agent import AgentOutput
-from database.db import get_session, init_db
+from database.db import get_session
 from database.models import Ticker, Trade
+from tests.dbfixture import init_test_db
 from utils.timeutils import utcnow_naive
 from execution.order_monitor import OrderMonitor
 from execution.position_manager import PositionManager
@@ -436,13 +435,11 @@ class _FakeNotifications:
 class OrderMonitorTransitionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.TemporaryDirectory()
-        cls.db_path = Path(cls.tmp.name) / "test.db"
-        init_db(f"sqlite:///{cls.db_path}")
+        cls.db = init_test_db("order_monitor")
 
     @classmethod
     def tearDownClass(cls):
-        cls.tmp.cleanup()
+        cls.db.cleanup()
 
     def setUp(self):
         # Wipe trades + tickers between tests for isolation.

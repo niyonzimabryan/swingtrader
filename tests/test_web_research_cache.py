@@ -3,7 +3,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 from sqlalchemy.exc import OperationalError
@@ -13,6 +12,7 @@ from config.settings import Settings
 from database import db as db_module
 from database.db import get_session, init_db
 from database.models import WebResearchCache
+from tests.dbfixture import init_test_db, sqlite_url
 
 
 class _CountingWebSearch:
@@ -41,13 +41,13 @@ class _CountingWebSearch:
         }
 
 
-def _settings(db_path, **overrides):
+def _settings(database_url, **overrides):
     base = {
         "web_search_provider": "anthropic",
         "web_research_max_searches": 5,
         "web_research_cache_enabled": True,
         "web_research_cache_ttl_hours": 24,
-        "database_url": f"sqlite:///{db_path}",
+        "database_url": database_url,
         "analyst_model": "claude-sonnet-4-6",
         "scoring_model": "claude-opus-4-6",
         "filter_model": "claude-haiku-4-5-20251001",
@@ -69,10 +69,10 @@ def _agent(settings, web_search):
 class WebResearchCostControlTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.tmpdir.name) / "test.db"
-        init_db(f"sqlite:///{self.db_path}")
+        self.db = init_test_db("webresearch")
 
     def tearDown(self):
+        self.db.cleanup()
         self.tmpdir.cleanup()
 
     def test_default_web_research_search_cap_is_bry66_recommendation(self):
@@ -81,7 +81,7 @@ class WebResearchCostControlTests(unittest.TestCase):
 
     def test_same_day_web_research_cache_hits_skip_provider_call(self):
         web_search = _CountingWebSearch()
-        agent = _agent(_settings(self.db_path), web_search)
+        agent = _agent(_settings(self.db.url), web_search)
         catalyst_data = {"catalyst_summary": "earnings beat", "catalyst_type": "earnings"}
 
         first = agent.analyze(
@@ -107,7 +107,7 @@ class WebResearchCostControlTests(unittest.TestCase):
 
     def test_cache_key_includes_catalyst_hash(self):
         web_search = _CountingWebSearch()
-        agent = _agent(_settings(self.db_path), web_search)
+        agent = _agent(_settings(self.db.url), web_search)
 
         agent.analyze(ticker="AAPL", catalyst_data={"catalyst_summary": "earnings beat"})
         agent.analyze(ticker="AAPL", catalyst_data={"catalyst_summary": "analyst downgrade"})
@@ -116,7 +116,7 @@ class WebResearchCostControlTests(unittest.TestCase):
 
     def test_cache_can_be_disabled(self):
         web_search = _CountingWebSearch()
-        agent = _agent(_settings(self.db_path, web_research_cache_enabled=False), web_search)
+        agent = _agent(_settings(self.db.url, web_research_cache_enabled=False), web_search)
         catalyst_data = {"catalyst_summary": "earnings beat"}
 
         first = agent.analyze(ticker="MSFT", catalyst_data=catalyst_data)
@@ -127,7 +127,12 @@ class WebResearchCostControlTests(unittest.TestCase):
         self.assertEqual(second.raw_data["cache_status"], "disabled")
 
     def test_sqlite_wal_busy_timeout_allows_parallel_cache_writes(self):
-        agent = _agent(_settings(self.db_path), _CountingWebSearch())
+        # SQLite-specific by construction: WAL and busy_timeout have no Postgres
+        # equivalent, so this test pins itself to SQLite and keeps running on
+        # both CI matrix entries rather than being skipped on the Postgres one.
+        url = sqlite_url(self.tmpdir.name, "wal")
+        init_db(url)
+        agent = _agent(_settings(url), _CountingWebSearch())
 
         with db_module.engine.connect() as conn:
             self.assertEqual(conn.exec_driver_sql("PRAGMA journal_mode").scalar().lower(), "wal")
@@ -149,8 +154,28 @@ class WebResearchCostControlTests(unittest.TestCase):
         with get_session() as session:
             self.assertEqual(session.query(WebResearchCache).count(), 3)
 
+    def test_parallel_cache_writes_land_on_the_configured_engine(self):
+        """Same concurrency guarantee, whichever engine DATABASE_URL selects."""
+        agent = _agent(_settings(self.db.url), _CountingWebSearch())
+
+        def write_cache(i: int):
+            agent._save_cached_research(
+                cache_key=f"MSFT:2026-07-04:key-{i}",
+                ticker=f"P{i}",
+                research_date="2026-07-04",
+                catalyst_hash=f"phash-{i}",
+                result={"synthesis": f"result {i}"},
+                scraped_sources=[],
+            )
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            list(executor.map(write_cache, range(3)))
+
+        with get_session() as session:
+            self.assertEqual(session.query(WebResearchCache).count(), 3)
+
     def test_cache_write_retries_once_after_sqlite_locked_error(self):
-        agent = _agent(_settings(self.db_path), _CountingWebSearch())
+        agent = _agent(_settings(self.db.url), _CountingWebSearch())
         original = agent._write_cached_research_row
         calls = {"count": 0}
 
