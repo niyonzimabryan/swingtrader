@@ -962,3 +962,361 @@ class SourceObservation(Base):
         except (ValueError, TypeError):
             return []
         return loaded if isinstance(loaded, list) else []
+
+
+# ---------------------------------------------------------------------------
+# Portfolio ledger — Spec L §3 (Phase 1)
+#
+# Seven tables, no foreign key to any other phase's table, so the integration
+# merge revision stays a no-op join. `broker_orders.execution_id` links to
+# `strategy_trades.execution_id` (Spec Q, Phase 5) as a plain string for the
+# same reason: the column can be populated before the table it names exists.
+#
+# Every ledger table that a sync writes carries `sync_id` and is **append-only**:
+# a later sync inserts new rows and stamps `superseded_at` on the ones it
+# replaces. Nothing is updated in place and nothing is deleted, so "what did I
+# hold on date D" stays answerable (Spec L §3, `test_sync_is_append_only`).
+# ---------------------------------------------------------------------------
+
+#: `tax_lots.booking_method` / `brokerage_accounts.booking_method`. Vocabulary
+#: borrowed from beancount: STRICT means a sale must name its lots; NONE means
+#: the broker does not track lots at all.
+BOOKING_METHODS = ("STRICT", "FIFO", "LIFO", "AVERAGE", "NONE")
+
+#: `holdings.instrument_type`. Only `equity` is modelled for analysis; every
+#: other value is rendered as `unsupported_instrument_present` with its
+#: notional and is never omitted from an overview (Spec L §3).
+INSTRUMENT_TYPES = ("equity", "option", "crypto", "other")
+
+#: `brokerage_accounts.account_type`. The Robinhood Agentic account is `cash`
+#: by owner decision (Spec L §5.1), which is what makes T+1 settlement a
+#: modelled constraint rather than a footnote.
+ACCOUNT_TYPES = ("cash", "margin", "ira")
+
+
+class BrokerageAccount(Base):
+    """One account at one broker, and what the agent may do with it.
+
+    ``agent_placeable`` is the flag Spec L §5.1 requires: reads span every
+    account the Robinhood token can see, placement is confined to the Agentic
+    account, and a proposal that targets a read-only account must be created
+    ``risk_rejected`` with that reason rather than failing later at placement.
+    Nothing in this repository places an order in Phase 1; the column exists so
+    the refusal is a property of the data rather than of a code path.
+
+    ``capabilities_json`` is the adapter's declared
+    :class:`execution.brokers.capabilities.BrokerCapabilities`, recorded at the
+    daily probe. Callers check capabilities before intent (Spec L §5).
+    """
+
+    __tablename__ = "brokerage_accounts"
+    __table_args__ = (
+        UniqueConstraint("broker", "external_account_id", name="uq_brokerage_account"),
+        Index("ix_brokerage_accounts_enabled", "enabled"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    broker = Column(String(40), nullable=False)
+    # Stored masked (`****1234`). The full account number is a credential-like
+    # identifier and the ledger has no use for it: the sync matches on the
+    # masked form it also writes.
+    external_account_id = Column(String(64), nullable=False)
+    label = Column(String(100), nullable=False, default="")
+    account_type = Column(String(10), nullable=False, default="cash")
+    currency = Column(String(10), nullable=False, default="USD")
+    booking_method = Column(String(10), nullable=False, default="NONE")
+
+    agent_placeable = Column(Boolean, nullable=False, default=False)
+    enabled = Column(Boolean, nullable=False, default=False)
+
+    capabilities_json = Column(Text, nullable=False, default="{}")
+    capabilities_probed_at = Column(UtcDateTime, nullable=True)
+
+    last_sync_id = Column(String(36), nullable=True)
+    last_sync_at = Column(UtcDateTime, nullable=True)
+    last_sync_error = Column(Text, nullable=False, default="")
+    last_sync_error_at = Column(UtcDateTime, nullable=True)
+
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+    @property
+    def capabilities(self) -> dict:
+        try:
+            loaded = json.loads(self.capabilities_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+
+class Holding(Base):
+    """A position as one sync saw it. Point-in-time by append, never by update.
+
+    ``average_cost`` and ``cost_basis`` are **null when the broker does not
+    supply them**, and null means *unknown*. No consumer may read a null basis
+    as zero (`test_unknown_basis_is_null_not_zero`); the helpers in
+    ``portfolio/guards.py`` raise instead.
+
+    A non-equity position is stored here too, with ``instrument_type`` set and
+    ``notional`` carrying its exposure. A portfolio view that silently omits a
+    short put is the worst failure this table has, so options are stored and
+    surfaced as a warning rather than filtered out.
+    """
+
+    __tablename__ = "holdings"
+    __table_args__ = (
+        Index("ix_holdings_account_symbol_asof", "account_id", "symbol", "as_of_utc"),
+        Index("ix_holdings_sync", "sync_id"),
+        Index("ix_holdings_current", "account_id", "superseded_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sync_id = Column(String(36), nullable=False)
+    account_id = Column(Integer, ForeignKey("brokerage_accounts.id"), nullable=False)
+
+    symbol = Column(String(32), nullable=False)
+    instrument_type = Column(String(16), nullable=False, default="equity")
+    # Option/crypto leg detail: strike, expiry, right, multiplier. Free-form
+    # because the ledger does not model them yet and inventing columns for a
+    # model that does not exist would be worse than carrying the payload.
+    instrument_detail_json = Column(Text, nullable=False, default="{}")
+
+    quantity = Column(Float, nullable=False, default=0.0)
+    average_cost = Column(Float, nullable=True)
+    cost_basis = Column(Float, nullable=True)
+    last_price = Column(Float, nullable=True)
+    market_value = Column(Float, nullable=True)
+    # Signed exposure for anything that is not a plain long equity position.
+    notional = Column(Float, nullable=True)
+    currency = Column(String(10), nullable=False, default="USD")
+
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    source = Column(String(60), nullable=False, default="")
+    superseded_at = Column(UtcDateTime, nullable=True)
+    superseded_by_sync_id = Column(String(36), nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    @property
+    def instrument_detail(self) -> dict:
+        try:
+            loaded = json.loads(self.instrument_detail_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+
+class TaxLot(Base):
+    """An open lot as the broker reports it, where the broker reports lots.
+
+    ``cost_basis`` null means the broker did not expose it. ``booking_method``
+    records how a sale from this account books, so a ledger row says which
+    method produced a realised figure instead of leaving it to be inferred.
+    Basis here is informational: this system does not compute taxes.
+    """
+
+    __tablename__ = "tax_lots"
+    __table_args__ = (
+        Index("ix_tax_lots_account_symbol", "account_id", "symbol"),
+        Index("ix_tax_lots_sync", "sync_id"),
+        Index("ix_tax_lots_current", "account_id", "superseded_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sync_id = Column(String(36), nullable=False)
+    account_id = Column(Integer, ForeignKey("brokerage_accounts.id"), nullable=False)
+
+    symbol = Column(String(32), nullable=False)
+    broker_lot_id = Column(String(64), nullable=True)
+    open_date = Column(Date, nullable=True)
+    quantity = Column(Float, nullable=False, default=0.0)
+    cost_basis = Column(Float, nullable=True)
+    # `short` / `long` / `unknown` — never guessed from open_date when the
+    # broker is silent, because the holding-period rules have exceptions this
+    # ledger does not model.
+    term = Column(String(10), nullable=False, default="unknown")
+    booking_method = Column(String(10), nullable=False, default="NONE")
+
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    source = Column(String(60), nullable=False, default="")
+    superseded_at = Column(UtcDateTime, nullable=True)
+    superseded_by_sync_id = Column(String(36), nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class CashBalance(Base):
+    """Settled versus unsettled cash, and what is redeployable when.
+
+    The Agentic account is a cash account (Spec L §5.1): proceeds from a Monday
+    close are not redeployable until Tuesday. ``pending_settlements_json`` is a
+    list of ``{"amount": float, "settles_on": "YYYY-MM-DD", "source": str}``
+    so a proposal that would need T+1 proceeds can be refused *with the
+    settlement date*, which is the part that makes the refusal actionable.
+    """
+
+    __tablename__ = "cash_balances"
+    __table_args__ = (
+        Index("ix_cash_balances_account_asof", "account_id", "as_of_utc"),
+        Index("ix_cash_balances_sync", "sync_id"),
+        Index("ix_cash_balances_current", "account_id", "superseded_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sync_id = Column(String(36), nullable=False)
+    account_id = Column(Integer, ForeignKey("brokerage_accounts.id"), nullable=False)
+
+    settled_cash = Column(Float, nullable=True)
+    unsettled_cash = Column(Float, nullable=True)
+    buying_power = Column(Float, nullable=True)
+    currency = Column(String(10), nullable=False, default="USD")
+    pending_settlements_json = Column(Text, nullable=False, default="[]")
+
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    source = Column(String(60), nullable=False, default="")
+    superseded_at = Column(UtcDateTime, nullable=True)
+    superseded_by_sync_id = Column(String(36), nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    @property
+    def pending_settlements(self) -> list:
+        try:
+            loaded = json.loads(self.pending_settlements_json or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
+
+
+class BrokerOrder(Base):
+    """Every order at the broker, whoever placed it.
+
+    ``origin`` is ``'external'`` for an order Bryan placed in the Robinhood app
+    — it appears here with a null ``execution_id``. ``origin='system'`` orders
+    carry the ``strategy_trades.execution_id`` that produced them. Phase 1
+    writes ``external`` rows only: nothing here places an order.
+
+    Not append-only. An order has a broker-side lifecycle (queued → filled) and
+    the row tracks it; the append-only rule is about *positions*, where the
+    history is the point.
+    """
+
+    __tablename__ = "broker_orders"
+    __table_args__ = (
+        UniqueConstraint("account_id", "broker_order_id", name="uq_broker_order"),
+        Index("ix_broker_orders_account_status", "account_id", "status"),
+        Index("ix_broker_orders_symbol", "symbol"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("brokerage_accounts.id"), nullable=False)
+    broker_order_id = Column(String(80), nullable=False)
+    # The client idempotency key the upstream deduplicates on (Spec L §5.1).
+    ref_id = Column(String(80), nullable=True)
+
+    symbol = Column(String(32), nullable=False)
+    side = Column(String(10), nullable=False, default="")
+    quantity = Column(Float, nullable=True)
+    order_type = Column(String(20), nullable=False, default="")
+    time_in_force = Column(String(10), nullable=False, default="")
+    limit_price = Column(Float, nullable=True)
+    stop_price = Column(Float, nullable=True)
+    status = Column(String(30), nullable=False, default="")
+
+    submitted_at = Column(UtcDateTime, nullable=True)
+    filled_at = Column(UtcDateTime, nullable=True)
+    filled_quantity = Column(Float, nullable=True)
+    average_fill_price = Column(Float, nullable=True)
+
+    #: `external` (placed in the broker's own app) or `system`.
+    origin = Column(String(20), nullable=False, default="external")
+    #: `strategy_trades.execution_id` (Spec Q, Phase 5). Deliberately not a
+    #: foreign key: cross-phase FKs make the integration merge non-trivial.
+    execution_id = Column(String(64), nullable=True)
+
+    sync_id = Column(String(36), nullable=False, default="")
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    source = Column(String(60), nullable=False, default="")
+    raw_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+class PortfolioSnapshot(Base):
+    """The daily rollup, plus the risk figures that sector codes cannot express.
+
+    Beta, realized volatility, and the **maximum and average pairwise**
+    correlation among the largest positions are computed deterministically from
+    stored daily returns — no vendor risk model and no model call. Every figure
+    carries the lookback and the ``n`` it was computed over, because six
+    "different" names at 0.8 pairwise correlation are one position and a figure
+    without its sample size cannot say so.
+
+    A statistic whose inputs are insufficient is stored **null with a reason**
+    in ``metrics_notes_json`` rather than computed from a short window.
+    """
+
+    __tablename__ = "portfolio_snapshots"
+    __table_args__ = (
+        UniqueConstraint("snapshot_date", name="uq_portfolio_snapshot_date"),
+        Index("ix_portfolio_snapshots_date", "snapshot_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_date = Column(Date, nullable=False)
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    sync_id = Column(String(36), nullable=False, default="")
+
+    total_value = Column(Float, nullable=True)
+    cash_total = Column(Float, nullable=True)
+    settled_cash = Column(Float, nullable=True)
+    unsettled_cash = Column(Float, nullable=True)
+    gross_exposure = Column(Float, nullable=True)
+    net_exposure = Column(Float, nullable=True)
+
+    sector_weights_json = Column(Text, nullable=False, default="{}")
+    name_weights_json = Column(Text, nullable=False, default="{}")
+    largest_positions_json = Column(Text, nullable=False, default="[]")
+    largest_position_weight = Column(Float, nullable=True)
+    concentration_hhi = Column(Float, nullable=True)
+
+    beta_60 = Column(Float, nullable=True)
+    beta_60_n = Column(Integer, nullable=True)
+    beta_250 = Column(Float, nullable=True)
+    beta_250_n = Column(Integer, nullable=True)
+    realized_volatility = Column(Float, nullable=True)
+    realized_volatility_n = Column(Integer, nullable=True)
+    max_pairwise_correlation = Column(Float, nullable=True)
+    avg_pairwise_correlation = Column(Float, nullable=True)
+    correlation_lookback_sessions = Column(Integer, nullable=True)
+    correlation_names = Column(Integer, nullable=True)
+    metrics_notes_json = Column(Text, nullable=False, default="{}")
+
+    #: Hash of the inputs the row was computed from, so a snapshot is
+    #: reproducible and a changed input is visible rather than silent.
+    inputs_hash = Column(String(64), nullable=False, default="")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class ExposureTag(Base):
+    """Exposure by narrative — ``ai-infra``, ``rate-sensitive``, ``china-revenue``.
+
+    Sourced from dossiers (Spec M, Phase 2) and attached by symbol rather than
+    by holding row: holdings are re-written every sync, and a tag that had to be
+    re-attached each hour would be a tag nobody trusted. ``retired_at`` retires
+    a tag without deleting the fact that it once applied.
+    """
+
+    __tablename__ = "exposure_tags"
+    __table_args__ = (
+        UniqueConstraint("symbol", "tag", "source", name="uq_exposure_tag"),
+        Index("ix_exposure_tags_tag", "tag"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(32), nullable=False)
+    tag = Column(String(60), nullable=False)
+    source = Column(String(60), nullable=False, default="manual")
+    #: Identifier of the dossier/thesis row the tag came from, when it came
+    #: from one. A plain string for the same cross-phase reason as above.
+    source_ref = Column(String(120), nullable=True)
+    note = Column(Text, nullable=False, default="")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    retired_at = Column(UtcDateTime, nullable=True)

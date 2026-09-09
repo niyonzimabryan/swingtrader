@@ -92,7 +92,7 @@ jobs:
         run: |
           python -m compileall -q \
             agents backtest bot comparables config data database evals execution memo \
-            migrations orchestrator scanning scoring screening scripts tests \
+            migrations orchestrator portfolio scanning scoring screening scripts tests \
             tracking utils workspace main.py
 
       - name: Resolve the target database URL

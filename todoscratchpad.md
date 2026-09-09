@@ -669,7 +669,23 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
       **Needs Bryan (owner actions, not done):** provision Postgres, set
       `DATABASE_URL` + `DATA_DIR`, run the migration, create the second Railway
       service. Runbook: `docs/POSTGRES_CUTOVER_RUNBOOK.md`. Blocks Phases 1, 2, 4.
-- [ ] **Phase 1 — portfolio ledger + read-only tool surface** (`L`, `K` §4)
+- [ ] **Phase 1 — portfolio ledger + read-only tool surface** (`L`, `K` §4) — code
+      landed on `claude/phase-1-portfolio-ledger`: the seven Spec L §3 tables in
+      `0004_portfolio_ledger`, the append-only sync with its three failure
+      policies (never zero on error, fail closed above 50% deletion, reconcile
+      and page), the `BrokerCapabilities` contract + fake broker + contract
+      tests, the freshness/provenance split (reads flag, proposal paths refuse),
+      the wash-sale window flag, T+1 settlement on the cash Agentic account,
+      reconstructed-and-flagged dividends, and `portfolio_overview` /
+      `position_detail` / `orders_open` on the workspace service at scope
+      `read`. `PORTFOLIO_SYNC_ENABLED=false`. Docs: `docs/PORTFOLIO_LEDGER.md`,
+      `docs/ROBINHOOD_INTEGRATION_PLAN.md`.
+      **Needs Bryan (owner actions, not done):** run
+      `python -m scripts.record_robinhood_fixtures` on the desktop that holds the
+      token store (the committed fixtures are recorded-*shape*, not live), then
+      flip `PORTFOLIO_SYNC_ENABLED=true` on Railway to start the 30-day
+      unattended token-refresh log. The `gtc` `stop_market` protection probe
+      stays closed until Phase 6.
 - [ ] **Phase 2 — research workspace: dossiers, theses, invalidators, git mirror** (`M`)
 - [x] **Independent plan review folded in — v0.4 (2026-09-06)** — 11 should-fixes, 2 cuts
       taken; README §11 changelog. Sizing default for uncited proposals (half cap,
