@@ -43,7 +43,7 @@ MCP_INSTRUCTIONS = (
 )
 
 
-def build_mcp() -> FastMCP:
+def build_mcp(settings=None) -> FastMCP:
     """A stateless streamable-HTTP MCP server carrying the Phase 0b tools.
 
     ``stateless_http`` because nothing here holds per-session state and a
@@ -61,7 +61,7 @@ def build_mcp() -> FastMCP:
         instructions=MCP_INSTRUCTIONS,
         stateless_http=True,
     )
-    tool_module.register(mcp)
+    tool_module.register(mcp, settings)
     return mcp
 
 
@@ -169,7 +169,7 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
         session_factory=get_session,
     )
 
-    mcp = build_mcp()
+    mcp = build_mcp(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -182,7 +182,7 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
             "workspace_starting",
             enabled=bool(settings.workspace_api_enabled),
             oauth_enabled=bool(settings.workspace_oauth_enabled),
-            tools=list(tool_module.REGISTERED_TOOLS),
+            tools=list(tool_module.registered_tools(settings)),
         )
         async with mcp.session_manager.run():
             yield
@@ -220,8 +220,11 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
                 "mcp": {
                     "path": "/mcp",
                     "transport": "streamable-http",
-                    "tools": list(tool_module.REGISTERED_TOOLS),
+                    "tools": list(tool_module.registered_tools(settings)),
                 },
+                "research_workspace_enabled": bool(
+                    getattr(settings, "research_workspace_enabled", False)
+                ),
                 "portfolio_sync": portfolio_sync,
                 "pending_checks": [
                     "last_cohort_maturation_age (Spec N, Phase 3)",

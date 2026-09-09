@@ -20,6 +20,10 @@ raising (Spec K §4.2). The opposite rule applies on the proposal side, where
 ``portfolio.freshness.require_fresh`` refuses instead — see
 ``portfolio/freshness.py`` for why the two directions are not a contradiction.
 
+Phase 2 (Spec M) adds the five research tools when ``RESEARCH_WORKSPACE_ENABLED``
+is on, and *only* then: a tool that answers "disabled" still tells a client this
+workspace does research, and it does not.
+
 Every tool body starts with :func:`authorize_call`, which is where the scope
 check, the rate limit, and the Spec K §4.1 call log live. Nothing enforces that
 by construction, so ``tests/test_workspace_mcp.py`` enforces it by test: every
@@ -46,6 +50,20 @@ REGISTERED_TOOLS: tuple[str, ...] = (
 )
 
 
+def registered_tools(settings=None) -> tuple[str, ...]:
+    """What a workspace built with ``settings`` advertises.
+
+    ``/health`` and the startup log call this rather than reading
+    :data:`REGISTERED_TOOLS`, because the surface is now flag-dependent and a
+    health check that reports a fixed list would be reporting a guess.
+    """
+    from workspace.research_tools import RESEARCH_TOOLS
+
+    if settings is not None and getattr(settings, "research_workspace_enabled", False):
+        return REGISTERED_TOOLS + RESEARCH_TOOLS
+    return REGISTERED_TOOLS
+
+
 class ToolRefused(ValueError):
     """A refusal the agent can read, rather than a transport failure it cannot."""
 
@@ -68,8 +86,8 @@ def authorize_call(ctx: Context, tool: str, arguments: dict | None = None):
         raise ToolRefused(f"{exc.code}: {exc.message}") from exc
 
 
-def register(mcp: FastMCP) -> None:
-    """Attach the Phase 0b tool surface to ``mcp``."""
+def register(mcp: FastMCP, settings=None) -> tuple[str, ...]:
+    """Attach the tool surface to ``mcp``; returns the names registered."""
 
     @mcp.tool(
         name="whoami",
@@ -147,12 +165,24 @@ def register(mcp: FastMCP) -> None:
         authorize_call(ctx, "orders_open", {})
         return await anyio.to_thread.run_sync(_orders_open)
 
-    missing = [t for t in REGISTERED_TOOLS if t not in scope_module.TOOL_SCOPES]
+    names = REGISTERED_TOOLS
+    if settings is not None and getattr(settings, "research_workspace_enabled", False):
+        # Imported here rather than at module scope: `workspace.research_tools`
+        # imports `authorize_call` and `ToolRefused` from this module, and a
+        # top-level import either way would be a cycle.
+        from workspace import research_tools
+
+        names = names + research_tools.register(
+            mcp, settings, authorize_call=authorize_call, ToolRefused=ToolRefused
+        )
+
+    missing = [t for t in names if t not in scope_module.TOOL_SCOPES]
     if missing:  # pragma: no cover - guarded by test_workspace_mcp too
         raise KeyError(
             f"tools {missing} have no entry in workspace.scopes.TOOL_SCOPES. "
             "Declare the scope before registering the tool."
         )
+    return names
 
 
 # --- ledger reads ----------------------------------------------------------
