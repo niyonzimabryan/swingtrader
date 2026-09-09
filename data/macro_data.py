@@ -1,8 +1,23 @@
 """
-Macro data adapter — FRED (Federal Reserve Economic Data).
-Provides: fed funds rate, yield curve, credit spreads.
+Macro data adapter — FRED and ALFRED (Federal Reserve Economic Data).
+
+Two paths, and the difference between them is the whole of Spec O section 4:
+
+* **Current values** (``get_fed_funds_rate`` and friends) — what the series
+  says today. Correct for "what is the environment right now", and *lookahead*
+  for any historical question, because today's value is the revised value.
+* **Vintages** (``get_series_as_of_date`` / ``get_series_all_releases``) —
+  what the series said on a past date, including the release lag: a print that
+  had not been published at ``as_of`` is **absent**, not back-filled.
+
+``fredapi`` is rated inactive upstream, so it is pinned in ``requirements.txt``
+and wrapped **here** — this module is the only place that imports it, which is
+what makes a break a one-file fix (``pyfredapi`` is the runner-up). The vintage
+methods return plain rows rather than pandas objects so that callers, and the
+test suite, do not inherit that dependency either.
 """
 
+from datetime import date, datetime
 from fredapi import Fred
 from utils.logger import get_logger
 
@@ -12,6 +27,40 @@ log = get_logger("macro_data")
 class MacroDataAdapter:
     def __init__(self, api_key: str):
         self.fred = Fred(api_key=api_key) if api_key else None
+
+    # --- ALFRED vintages (Spec O section 4.1) ---------------------------
+
+    def get_series_all_releases(self, series_id: str) -> list[dict]:
+        """Every (reference period, release date, value) triple ALFRED holds.
+
+        Returned as plain dicts with ISO dates:
+        ``{"reference_date": "2024-02-01", "release_date": "2024-03-12",
+        "value": 3.2}``. A ``value`` of ``None`` is ALFRED's "." — the series
+        existed but had no observation for that period in that vintage, which
+        is a different fact from the period not existing yet.
+
+        ``fredapi`` names the release-date column ``realtime_start``. That is
+        the date the value became the current value, and it is a **date**, not
+        a timestamp — hence ``precision='day'`` on every macro observation.
+        """
+        if self.fred is None:
+            return []
+        frame = self.fred.get_series_all_releases(series_id)
+        return _rows_from_frame(frame, series_id)
+
+    def get_series_as_of_date(self, series_id: str, as_of: date) -> list[dict]:
+        """The series **as it stood** on ``as_of``.
+
+        ``fredapi.get_series_as_of_date`` returns every vintage up to the date;
+        collapsing those to one value per reference period is
+        ``macro.vintage``'s job, because the collapse rule (latest release on
+        or before ``as_of`` wins) is a point-in-time rule and belongs where the
+        other ones are.
+        """
+        if self.fred is None:
+            return []
+        frame = self.fred.get_series_as_of_date(series_id, _as_datetime(as_of))
+        return _rows_from_frame(frame, series_id)
 
     def get_fed_funds_rate(self) -> dict:
         """Current federal funds effective rate."""
@@ -78,3 +127,73 @@ class MacroDataAdapter:
             "yield_curve": self.get_yield_curve(),
             "credit_spreads": self.get_credit_spreads(),
         }
+
+
+def _as_datetime(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    return value
+
+
+def _iso(value) -> str | None:
+    """A pandas Timestamp, a datetime, a date or an ISO string -> ISO date."""
+    if value is None:
+        return None
+    for attribute in ("date",):
+        method = getattr(value, attribute, None)
+        if callable(method):
+            try:
+                return method().isoformat()
+            except TypeError:
+                pass
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)[:10]
+
+
+def _float_or_none(value):
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if number != number else number      # NaN -> None
+
+
+def _rows_from_frame(frame, series_id: str) -> list[dict]:
+    """``fredapi``'s DataFrame -> plain rows, sorted and deduplicated.
+
+    Kept defensive on purpose: the shape of what ``fredapi`` returns is the
+    one thing in this path that a pinned-but-unmaintained dependency can
+    change under us, and a silently empty result would look exactly like "the
+    series had not been released yet".
+    """
+    if frame is None:
+        return []
+    columns = {str(c).lower() for c in getattr(frame, "columns", [])}
+    required = {"date", "realtime_start", "value"}
+    if not required <= columns:
+        log.error(
+            "fred_vintage_shape_changed", series=series_id, columns=sorted(columns)
+        )
+        raise ValueError(
+            f"fredapi returned columns {sorted(columns)} for {series_id}; "
+            f"{sorted(required)} are required to build a vintage. Refusing to "
+            "guess: a wrong release date is undetectable lookahead."
+        )
+
+    rows = []
+    for record in frame.to_dict("records"):
+        rows.append(
+            {
+                "reference_date": _iso(record.get("date")),
+                "release_date": _iso(record.get("realtime_start")),
+                "value": _float_or_none(record.get("value")),
+            }
+        )
+    rows = [r for r in rows if r["reference_date"] and r["release_date"]]
+    rows.sort(key=lambda r: (r["reference_date"], r["release_date"]))
+    return rows

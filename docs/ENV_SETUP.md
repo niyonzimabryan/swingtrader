@@ -90,10 +90,34 @@ relying on any cohort, then `python -m scripts.price_backfill --source sharadar 
 `COMPARABLE_SETUPS_ENABLED=true` on the workspace service once merged; it reads
 the price plane and `source_observations` and needs nothing else.
 
-## 8. Evidence planes (Phase 4, pending)
+## 8. Evidence planes (Phase 4)
 
-`PLANE_FILINGS_ENABLED`, `PLANE_MACRO_VINTAGE_ENABLED`, `PLANE_NEWS_ENABLED`;
-`OPENFIGI_API_KEY` (free). FRED and Alpaca keys already exist.
+Three flags, all default `false`: `PLANE_FILINGS_ENABLED` (Form 4, 13D/G, the
+8-K item index, entity history), `PLANE_MACRO_VINTAGE_ENABLED` (ALFRED vintages
+and `regime_v1`), `PLANE_NEWS_ENABLED` (timestamped, clustered news). The
+filings plane also needs `SEC_USER_AGENT`, which has no default in code and
+must be a real contact address (`PLANE_SEC_MINIMAL_ENABLED` from Phase 3a uses
+the same one).
+
+`OPENFIGI_API_KEY` is free and optional — without it the CUSIP client runs at
+25 requests/minute and 10 jobs per request instead of 25 per 6 seconds and 100.
+FRED and Alpaca keys already exist: ALFRED uses `FRED_API_KEY`, and the news
+plane reuses `ALPACA_API_KEY` / `ALPACA_SECRET_KEY`.
+
+Each plane has a backfill job that prints its own coverage numbers and runs
+offline against committed fixtures, so the order is: turn the flag on, run the
+job with `--fixtures` to see the shape, then run it for real.
+
+```bash
+python -m scripts.filings_backfill --tickers AAPL MSFT --since 2020-01-01
+python -m scripts.macro_backfill --regime-inputs
+python -m scripts.news_backfill --symbols AAPL --start 2026-01-01
+```
+
+Details per plane: `docs/FILINGS_PLANE.md`, `docs/MACRO_PLANE.md`,
+`docs/NEWS_PLANE.md`. Note the news constraint before wiring anything to it:
+Alpaca's terms bar redistributing the data or any derived products, so nothing
+news-derived may leave Postgres.
 
 ## 9. Execution (Phase 6, pending)
 

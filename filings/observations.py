@@ -24,10 +24,24 @@ so ``known_at_utc <= cutoff`` needs no special case at read time and a cohort
 cutting off at 10:00 cannot inherit the rest of the day.
 
 **Nothing is written half-formed.** An observation with neither a numeric nor a
-text value, an unknown precision, an unknown provenance class, or a missing
-source URL raises. An adapter that meets an unexpected payload shape is
-expected to raise before it ever gets here (``filings.sec_minimal``); this is
-the backstop that keeps a null out of the ledger if one does not.
+text value, an unknown precision, an unknown provenance class, an unknown
+source trust, or a missing source URL raises. An adapter that meets an
+unexpected payload shape is expected to raise before it ever gets here
+(``filings.sec_minimal``); this is the backstop that keeps a null out of the
+ledger if one does not.
+
+Phase 4 adds two markers that ride on the same seam:
+
+**``mirror_allowed``** (Spec O section 5). Alpaca's terms bar sharing the data
+"or any derived products", so nothing news-derived may reach the ``research/``
+mirror. Every news-derived row carries ``mirror_allowed=False``; the guard that
+acts on it is ``news.mirror_guard``.
+
+**``supersedes_payload_hash``** (Spec O section 3.1 rule 4). An amendment — a
+``4/A``, a ``13F-HR/A`` — names the observation it replaces by hash, and
+:func:`write_observations` resolves that to ``superseded_observation_id``. The
+original is never deleted: ``known_at_utc <= t`` must still return what was
+known at ``t``, and what was known at ``t`` included the un-amended filing.
 """
 
 from __future__ import annotations
@@ -36,7 +50,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
-from typing import Any, Iterable, Sequence
+from typing import Iterable, Sequence
 
 from database.models import SourceObservation
 from filings.errors import AdapterSchemaError  # noqa: F401  (re-exported for adapters)
@@ -55,6 +69,33 @@ PROVENANCE_CLASSES = frozenset(
 )
 
 TRUST_PRIMARY_REGULATOR = "primary_regulator"
+#: A statistical agency publishing its own series (FRED/ALFRED, Treasury).
+TRUST_STATISTICAL_AGENCY = "statistical_agency"
+#: Spec O section 5.2 source tiers, as they travel on an observation.
+TRUST_PRIMARY_ISSUER = "primary_issuer"
+TRUST_ESTABLISHED_PUBLISHER = "established_publisher"
+TRUST_AGGREGATOR = "aggregator"
+TRUST_UNATTRIBUTED = "unattributed"
+
+SOURCE_TRUSTS = frozenset({
+    TRUST_PRIMARY_REGULATOR,
+    TRUST_STATISTICAL_AGENCY,
+    TRUST_PRIMARY_ISSUER,
+    TRUST_ESTABLISHED_PUBLISHER,
+    TRUST_AGGREGATOR,
+    TRUST_UNATTRIBUTED,
+})
+
+#: Payload key carrying the mirror marker (Spec O section 5).
+#:
+#: Alpaca's terms bar sharing the data "or any derived products", so nothing
+#: news-derived may reach the ``research/`` mirror. ``source_observations``
+#: predates the rule and has no column for it, and the marker cannot be added
+#: as one from a migration that branches from ``0001_baseline`` (the table does
+#: not exist there). It therefore rides in the payload, where the mirror guard
+#: — ``news.mirror_guard`` — reads it. Absent means allowed, so Phase 3a's SEC
+#: rows keep their meaning without a rewrite.
+MIRROR_ALLOWED_KEY = "mirror_allowed"
 
 #: Sources whose timestamps come from EDGAR and are therefore held to the
 #: acceptance-timestamp rule.
@@ -141,6 +182,13 @@ class Observation:
     accession: str | None = None
     payload: dict = field(default_factory=dict)
     quality_warnings: tuple[str, ...] = ()
+    #: False marks the row as un-mirrorable (Spec O section 5). It is a
+    #: *marker*, not the enforcement: ``news.mirror_guard`` is what refuses.
+    mirror_allowed: bool = True
+    #: The ``payload_hash`` of the observation this one amends. Resolved to
+    #: ``superseded_observation_id`` at write time; the original is never
+    #: deleted and stays queryable.
+    supersedes_payload_hash: str | None = None
 
     def __post_init__(self) -> None:
         _validate(self)
@@ -174,6 +222,9 @@ class Observation:
     def stored_payload(self) -> dict:
         merged = dict(self.payload)
         merged["known_at_source"] = self.known_at_source
+        merged[MIRROR_ALLOWED_KEY] = bool(self.mirror_allowed)
+        if self.supersedes_payload_hash:
+            merged["supersedes_payload_hash"] = self.supersedes_payload_hash
         return merged
 
     def to_row(self) -> SourceObservation:
@@ -211,6 +262,12 @@ def _validate(obs: Observation) -> None:
         raise LedgerWriteRejected(f"{obs.fact_type}: source_url is required")
     if not obs.source_trust:
         raise LedgerWriteRejected(f"{obs.fact_type}: source_trust is required")
+    if obs.source_trust not in SOURCE_TRUSTS:
+        raise LedgerWriteRejected(
+            f"{obs.fact_type}: source_trust must be one of {sorted(SOURCE_TRUSTS)}, "
+            f"got {obs.source_trust!r}. The tier travels with the fact "
+            "(Spec O section 5.2), so it cannot be free text."
+        )
     if obs.precision not in PRECISIONS:
         raise LedgerWriteRejected(
             f"{obs.fact_type}: precision must be one of {sorted(PRECISIONS)}, "
@@ -273,6 +330,10 @@ def _reject_filing_date_as_known_at(obs: Observation) -> None:
 class WriteResult:
     inserted: int = 0
     duplicates: int = 0
+    #: Amendments whose target was not in the ledger. Reported, never guessed
+    #: at: linking an amendment to the wrong original is worse than not
+    #: linking it, and the amendment row itself is written either way.
+    unresolved_supersessions: tuple[str, ...] = ()
 
     @property
     def total(self) -> int:
@@ -300,16 +361,70 @@ def write_observations(session, observations: Iterable[Observation]) -> WriteRes
     }
 
     result = WriteResult(duplicates=len(existing))
+    pending: list[SourceObservation] = []
     for digest, obs in hashes.items():
         if digest in existing:
             continue
-        session.add(obs.to_row())
+        row = obs.to_row()
+        session.add(row)
+        pending.append(row)
         result.inserted += 1
 
     # Two identical observations inside one batch collapse to one hash key.
     result.duplicates += len(batch) - len(hashes)
     session.flush()
+    result.unresolved_supersessions = _link_supersessions(session, hashes, pending)
     return result
+
+
+def _link_supersessions(session, hashes, pending) -> tuple[str, ...]:
+    """Point each amendment at the row it replaces, by ``payload_hash``.
+
+    Runs after the flush so an amendment can supersede an original written in
+    the same batch. A target that is not in the ledger leaves the link null and
+    is returned: the amendment is still a fact, and inventing a parent for it
+    would be worse than an honest gap.
+    """
+    wanted = {
+        obs.supersedes_payload_hash
+        for obs in hashes.values()
+        if obs.supersedes_payload_hash
+    }
+    if not wanted:
+        return ()
+
+    found = {
+        row.payload_hash: row.id
+        for row in session.query(SourceObservation)
+        .filter(SourceObservation.payload_hash.in_(sorted(wanted)))
+        .all()
+    }
+    by_hash = {row.payload_hash: row for row in pending}
+    unresolved = []
+    for digest, obs in hashes.items():
+        target = obs.supersedes_payload_hash
+        if not target:
+            continue
+        row = by_hash.get(digest)
+        if row is None:      # already present from an earlier run; link stands
+            continue
+        if target in found and found[target] != row.id:
+            row.superseded_observation_id = found[target]
+        else:
+            unresolved.append(target)
+    session.flush()
+    return tuple(sorted(set(unresolved)))
+
+
+def mirror_allowed(row: SourceObservation) -> bool:
+    """Whether a stored row may be copied into the ``research/`` mirror.
+
+    Absent means allowed: Phase 3a's SEC rows predate the marker and are
+    regulator data with no redistribution restriction. Only a row that says
+    ``False`` is barred, which is what every news-derived row says.
+    """
+    value = (row.payload or {}).get(MIRROR_ALLOWED_KEY, True)
+    return bool(value)
 
 
 # --- reading ----------------------------------------------------------------
@@ -354,6 +469,25 @@ def observations_known_at(
             SourceObservation.id.asc(),
         ).all()
     )
+
+
+def current_view(rows: Sequence[SourceObservation]) -> list[SourceObservation]:
+    """Drop rows an amendment in the same set supersedes.
+
+    :func:`observations_known_at` returns **everything** knowable at the
+    cutoff, amendments and originals alike, because that is the bitemporal
+    answer: before the ``4/A`` landed, the original was the truth. An
+    *aggregate* over that set double-counts the amended filing, so any sum
+    filters through here first.
+
+    A row superseded by an amendment that is not in the set — because the
+    cutoff predates it — correctly stays: at that cutoff it had not been
+    amended yet.
+    """
+    superseded = {
+        row.superseded_observation_id for row in rows if row.superseded_observation_id
+    }
+    return [row for row in rows if row.id not in superseded]
 
 
 def latest_observation_as_of(session, **kwargs) -> SourceObservation | None:

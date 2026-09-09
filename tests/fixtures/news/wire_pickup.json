@@ -1,0 +1,305 @@
+{
+ "news": [
+  {
+   "id": "wire-00",
+   "headline": "Fictional Example Corp to Acquire Placeholder Systems for $1.2 Billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Business Wire",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=business-wire&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:00:00Z",
+   "updated_at": "2026-05-12T11:00:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-01",
+   "headline": "Fictional Example Corp to buy Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Reuters",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=reuters&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:06:00Z",
+   "updated_at": "2026-05-12T11:06:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-02",
+   "headline": "Fictional Example Corp agrees to acquire Placeholder Systems in $1.2 billion deal",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Bloomberg",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=bloomberg&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:07:00Z",
+   "updated_at": "2026-05-12T11:07:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-03",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Dow Jones",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=dow-jones&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:09:00Z",
+   "updated_at": "2026-05-12T11:09:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-04",
+   "headline": "Fictional Example Corp buys Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "CNBC",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=cnbc&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:12:00Z",
+   "updated_at": "2026-05-12T11:12:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-05",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems for $1.2 billion cash",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "MarketWatch",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=marketwatch&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:15:00Z",
+   "updated_at": "2026-05-12T11:15:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-06",
+   "headline": "Fictional Example Corp announces $1.2 billion acquisition of Placeholder Systems",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Benzinga",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=benzinga&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:18:00Z",
+   "updated_at": "2026-05-12T11:18:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-07",
+   "headline": "Fictional Example Corp will acquire Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Barron's",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=barron's&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:21:00Z",
+   "updated_at": "2026-05-12T11:21:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-08",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems in $1.2bn deal",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Financial Times",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=financial-times&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:24:00Z",
+   "updated_at": "2026-05-12T11:24:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-09",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Yahoo Finance",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=yahoo-finance&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:31:00Z",
+   "updated_at": "2026-05-12T11:31:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-10",
+   "headline": "Fictional Example Corp to buy Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Seeking Alpha",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=seeking-alpha&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:34:00Z",
+   "updated_at": "2026-05-12T11:34:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-11",
+   "headline": "Fictional Example Corp acquires Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Zacks",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=zacks&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:38:00Z",
+   "updated_at": "2026-05-12T11:38:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-12",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "InvestorPlace",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=investorplace&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:41:00Z",
+   "updated_at": "2026-05-12T11:41:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-13",
+   "headline": "Fictional Example Corp is buying Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "The Motley Fool",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=the-motley-fool&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:44:00Z",
+   "updated_at": "2026-05-12T11:44:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-14",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "MSN",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=msn&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:47:00Z",
+   "updated_at": "2026-05-12T11:47:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-15",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "TipRanks",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=tipranks&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:52:00Z",
+   "updated_at": "2026-05-12T11:52:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-16",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "StreetInsider",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=streetinsider&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:55:00Z",
+   "updated_at": "2026-05-12T11:55:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-17",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "GuruFocus",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=gurufocus&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T11:58:00Z",
+   "updated_at": "2026-05-12T11:58:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-18",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Investing.com",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=investing.com&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T12:02:00Z",
+   "updated_at": "2026-05-12T12:02:00Z",
+   "images": []
+  },
+  {
+   "id": "wire-19",
+   "headline": "Fictional Example Corp to acquire Placeholder Systems for $1.2 billion",
+   "summary": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "content": "Fictional Example Corp said on Tuesday it will acquire privately held Placeholder Systems for $1.2 billion in cash, expanding its industrial software unit. The deal is expected to close in the fourth quarter.",
+   "author": "",
+   "source": "Insider Monkey",
+   "url": "https://example.invalid/fctx-placeholder-deal?utm_source=insider-monkey&utm_medium=syndication",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-05-12T12:07:00Z",
+   "updated_at": "2026-05-12T12:07:00Z",
+   "images": []
+  }
+ ],
+ "next_page_token": null
+}

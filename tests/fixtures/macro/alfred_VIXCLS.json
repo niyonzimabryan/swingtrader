@@ -1,0 +1,2305 @@
+{
+ "series_id": "VIXCLS",
+ "rows": [
+  {
+   "reference_date": "2024-01-02",
+   "release_date": "2024-01-02",
+   "value": 13.5
+  },
+  {
+   "reference_date": "2024-01-03",
+   "release_date": "2024-01-03",
+   "value": 13.617579
+  },
+  {
+   "reference_date": "2024-01-04",
+   "release_date": "2024-01-04",
+   "value": 13.734752
+  },
+  {
+   "reference_date": "2024-01-05",
+   "release_date": "2024-01-05",
+   "value": 13.851112
+  },
+  {
+   "reference_date": "2024-01-08",
+   "release_date": "2024-01-08",
+   "value": 13.966258
+  },
+  {
+   "reference_date": "2024-01-09",
+   "release_date": "2024-01-09",
+   "value": 14.079791
+  },
+  {
+   "reference_date": "2024-01-10",
+   "release_date": "2024-01-10",
+   "value": 14.191318
+  },
+  {
+   "reference_date": "2024-01-11",
+   "release_date": "2024-01-11",
+   "value": 14.300454
+  },
+  {
+   "reference_date": "2024-01-12",
+   "release_date": "2024-01-12",
+   "value": 14.406821
+  },
+  {
+   "reference_date": "2024-01-15",
+   "release_date": "2024-01-15",
+   "value": 14.510051
+  },
+  {
+   "reference_date": "2024-01-16",
+   "release_date": "2024-01-16",
+   "value": 14.609788
+  },
+  {
+   "reference_date": "2024-01-17",
+   "release_date": "2024-01-17",
+   "value": 14.705685
+  },
+  {
+   "reference_date": "2024-01-18",
+   "release_date": "2024-01-18",
+   "value": 14.797411
+  },
+  {
+   "reference_date": "2024-01-19",
+   "release_date": "2024-01-19",
+   "value": 14.88465
+  },
+  {
+   "reference_date": "2024-01-22",
+   "release_date": "2024-01-22",
+   "value": 14.967098
+  },
+  {
+   "reference_date": "2024-01-23",
+   "release_date": "2024-01-23",
+   "value": 15.044472
+  },
+  {
+   "reference_date": "2024-01-24",
+   "release_date": "2024-01-24",
+   "value": 15.116503
+  },
+  {
+   "reference_date": "2024-01-25",
+   "release_date": "2024-01-25",
+   "value": 15.182942
+  },
+  {
+   "reference_date": "2024-01-26",
+   "release_date": "2024-01-26",
+   "value": 15.243559
+  },
+  {
+   "reference_date": "2024-01-29",
+   "release_date": "2024-01-29",
+   "value": 15.298146
+  },
+  {
+   "reference_date": "2024-01-30",
+   "release_date": "2024-01-30",
+   "value": 15.346512
+  },
+  {
+   "reference_date": "2024-01-31",
+   "release_date": "2024-01-31",
+   "value": 15.38849
+  },
+  {
+   "reference_date": "2024-02-01",
+   "release_date": "2024-02-01",
+   "value": 15.423936
+  },
+  {
+   "reference_date": "2024-02-02",
+   "release_date": "2024-02-02",
+   "value": 15.452727
+  },
+  {
+   "reference_date": "2024-02-05",
+   "release_date": "2024-02-05",
+   "value": 15.474762
+  },
+  {
+   "reference_date": "2024-02-06",
+   "release_date": "2024-02-06",
+   "value": 15.489967
+  },
+  {
+   "reference_date": "2024-02-07",
+   "release_date": "2024-02-07",
+   "value": 15.498288
+  },
+  {
+   "reference_date": "2024-02-08",
+   "release_date": "2024-02-08",
+   "value": 15.499696
+  },
+  {
+   "reference_date": "2024-02-09",
+   "release_date": "2024-02-09",
+   "value": 15.494187
+  },
+  {
+   "reference_date": "2024-02-12",
+   "release_date": "2024-02-12",
+   "value": 15.481779
+  },
+  {
+   "reference_date": "2024-02-13",
+   "release_date": "2024-02-13",
+   "value": 15.462517
+  },
+  {
+   "reference_date": "2024-02-14",
+   "release_date": "2024-02-14",
+   "value": 15.436465
+  },
+  {
+   "reference_date": "2024-02-15",
+   "release_date": "2024-02-15",
+   "value": 15.403715
+  },
+  {
+   "reference_date": "2024-02-16",
+   "release_date": "2024-02-16",
+   "value": 15.36438
+  },
+  {
+   "reference_date": "2024-02-19",
+   "release_date": "2024-02-19",
+   "value": 15.318595
+  },
+  {
+   "reference_date": "2024-02-20",
+   "release_date": "2024-02-20",
+   "value": 15.266519
+  },
+  {
+   "reference_date": "2024-02-21",
+   "release_date": "2024-02-21",
+   "value": 15.208333
+  },
+  {
+   "reference_date": "2024-02-22",
+   "release_date": "2024-02-22",
+   "value": 15.144237
+  },
+  {
+   "reference_date": "2024-02-23",
+   "release_date": "2024-02-23",
+   "value": 15.074453
+  },
+  {
+   "reference_date": "2024-02-26",
+   "release_date": "2024-02-26",
+   "value": 14.999223
+  },
+  {
+   "reference_date": "2024-02-27",
+   "release_date": "2024-02-27",
+   "value": 14.918807
+  },
+  {
+   "reference_date": "2024-02-28",
+   "release_date": "2024-02-28",
+   "value": 14.833483
+  },
+  {
+   "reference_date": "2024-02-29",
+   "release_date": "2024-02-29",
+   "value": 14.743546
+  },
+  {
+   "reference_date": "2024-03-01",
+   "release_date": "2024-03-01",
+   "value": 14.649307
+  },
+  {
+   "reference_date": "2024-03-04",
+   "release_date": "2024-03-04",
+   "value": 14.551093
+  },
+  {
+   "reference_date": "2024-03-05",
+   "release_date": "2024-03-05",
+   "value": 14.449243
+  },
+  {
+   "reference_date": "2024-03-06",
+   "release_date": "2024-03-06",
+   "value": 14.344109
+  },
+  {
+   "reference_date": "2024-03-07",
+   "release_date": "2024-03-07",
+   "value": 14.236055
+  },
+  {
+   "reference_date": "2024-03-08",
+   "release_date": "2024-03-08",
+   "value": 14.125455
+  },
+  {
+   "reference_date": "2024-03-11",
+   "release_date": "2024-03-11",
+   "value": 14.012691
+  },
+  {
+   "reference_date": "2024-03-12",
+   "release_date": "2024-03-12",
+   "value": 13.898154
+  },
+  {
+   "reference_date": "2024-03-13",
+   "release_date": "2024-03-13",
+   "value": 13.78224
+  },
+  {
+   "reference_date": "2024-03-14",
+   "release_date": "2024-03-14",
+   "value": 13.665349
+  },
+  {
+   "reference_date": "2024-03-15",
+   "release_date": "2024-03-15",
+   "value": 13.547887
+  },
+  {
+   "reference_date": "2024-03-18",
+   "release_date": "2024-03-18",
+   "value": 13.430258
+  },
+  {
+   "reference_date": "2024-03-19",
+   "release_date": "2024-03-19",
+   "value": 13.312871
+  },
+  {
+   "reference_date": "2024-03-20",
+   "release_date": "2024-03-20",
+   "value": 13.196131
+  },
+  {
+   "reference_date": "2024-03-21",
+   "release_date": "2024-03-21",
+   "value": 13.080443
+  },
+  {
+   "reference_date": "2024-03-22",
+   "release_date": "2024-03-22",
+   "value": 12.966205
+  },
+  {
+   "reference_date": "2024-03-25",
+   "release_date": "2024-03-25",
+   "value": 12.853815
+  },
+  {
+   "reference_date": "2024-03-26",
+   "release_date": "2024-03-26",
+   "value": 12.743659
+  },
+  {
+   "reference_date": "2024-03-27",
+   "release_date": "2024-03-27",
+   "value": 12.63612
+  },
+  {
+   "reference_date": "2024-03-28",
+   "release_date": "2024-03-28",
+   "value": 12.531569
+  },
+  {
+   "reference_date": "2024-03-29",
+   "release_date": "2024-03-29",
+   "value": 12.430368
+  },
+  {
+   "reference_date": "2024-04-01",
+   "release_date": "2024-04-01",
+   "value": 12.332868
+  },
+  {
+   "reference_date": "2024-04-02",
+   "release_date": "2024-04-02",
+   "value": 12.239404
+  },
+  {
+   "reference_date": "2024-04-03",
+   "release_date": "2024-04-03",
+   "value": 12.150302
+  },
+  {
+   "reference_date": "2024-04-04",
+   "release_date": "2024-04-04",
+   "value": 12.065868
+  },
+  {
+   "reference_date": "2024-04-05",
+   "release_date": "2024-04-05",
+   "value": 11.986395
+  },
+  {
+   "reference_date": "2024-04-08",
+   "release_date": "2024-04-08",
+   "value": 11.912158
+  },
+  {
+   "reference_date": "2024-04-09",
+   "release_date": "2024-04-09",
+   "value": 11.843414
+  },
+  {
+   "reference_date": "2024-04-10",
+   "release_date": "2024-04-10",
+   "value": 11.7804
+  },
+  {
+   "reference_date": "2024-04-11",
+   "release_date": "2024-04-11",
+   "value": 11.723335
+  },
+  {
+   "reference_date": "2024-04-12",
+   "release_date": "2024-04-12",
+   "value": 11.672415
+  },
+  {
+   "reference_date": "2024-04-15",
+   "release_date": "2024-04-15",
+   "value": 11.627818
+  },
+  {
+   "reference_date": "2024-04-16",
+   "release_date": "2024-04-16",
+   "value": 11.589696
+  },
+  {
+   "reference_date": "2024-04-17",
+   "release_date": "2024-04-17",
+   "value": 11.558183
+  },
+  {
+   "reference_date": "2024-04-18",
+   "release_date": "2024-04-18",
+   "value": 11.533387
+  },
+  {
+   "reference_date": "2024-04-19",
+   "release_date": "2024-04-19",
+   "value": 11.515394
+  },
+  {
+   "reference_date": "2024-04-22",
+   "release_date": "2024-04-22",
+   "value": 11.504267
+  },
+  {
+   "reference_date": "2024-04-23",
+   "release_date": "2024-04-23",
+   "value": 11.500042
+  },
+  {
+   "reference_date": "2024-04-24",
+   "release_date": "2024-04-24",
+   "value": 11.502736
+  },
+  {
+   "reference_date": "2024-04-25",
+   "release_date": "2024-04-25",
+   "value": 11.512339
+  },
+  {
+   "reference_date": "2024-04-26",
+   "release_date": "2024-04-26",
+   "value": 11.528818
+  },
+  {
+   "reference_date": "2024-04-29",
+   "release_date": "2024-04-29",
+   "value": 11.552116
+  },
+  {
+   "reference_date": "2024-04-30",
+   "release_date": "2024-04-30",
+   "value": 11.582151
+  },
+  {
+   "reference_date": "2024-05-01",
+   "release_date": "2024-05-01",
+   "value": 11.618821
+  },
+  {
+   "reference_date": "2024-05-02",
+   "release_date": "2024-05-02",
+   "value": 11.661999
+  },
+  {
+   "reference_date": "2024-05-03",
+   "release_date": "2024-05-03",
+   "value": 11.711534
+  },
+  {
+   "reference_date": "2024-05-06",
+   "release_date": "2024-05-06",
+   "value": 11.767256
+  },
+  {
+   "reference_date": "2024-05-07",
+   "release_date": "2024-05-07",
+   "value": 11.828972
+  },
+  {
+   "reference_date": "2024-05-08",
+   "release_date": "2024-05-08",
+   "value": 11.896468
+  },
+  {
+   "reference_date": "2024-05-09",
+   "release_date": "2024-05-09",
+   "value": 11.969512
+  },
+  {
+   "reference_date": "2024-05-10",
+   "release_date": "2024-05-10",
+   "value": 12.047849
+  },
+  {
+   "reference_date": "2024-05-13",
+   "release_date": "2024-05-13",
+   "value": 12.13121
+  },
+  {
+   "reference_date": "2024-05-14",
+   "release_date": "2024-05-14",
+   "value": 12.219306
+  },
+  {
+   "reference_date": "2024-05-15",
+   "release_date": "2024-05-15",
+   "value": 12.311832
+  },
+  {
+   "reference_date": "2024-05-16",
+   "release_date": "2024-05-16",
+   "value": 12.408468
+  },
+  {
+   "reference_date": "2024-05-17",
+   "release_date": "2024-05-17",
+   "value": 12.50888
+  },
+  {
+   "reference_date": "2024-05-20",
+   "release_date": "2024-05-20",
+   "value": 12.612721
+  },
+  {
+   "reference_date": "2024-05-21",
+   "release_date": "2024-05-21",
+   "value": 12.71963
+  },
+  {
+   "reference_date": "2024-05-22",
+   "release_date": "2024-05-22",
+   "value": 12.829239
+  },
+  {
+   "reference_date": "2024-05-23",
+   "release_date": "2024-05-23",
+   "value": 12.941169
+  },
+  {
+   "reference_date": "2024-05-24",
+   "release_date": "2024-05-24",
+   "value": 13.055032
+  },
+  {
+   "reference_date": "2024-05-27",
+   "release_date": "2024-05-27",
+   "value": 13.170434
+  },
+  {
+   "reference_date": "2024-05-28",
+   "release_date": "2024-05-28",
+   "value": 13.286975
+  },
+  {
+   "reference_date": "2024-05-29",
+   "release_date": "2024-05-29",
+   "value": 13.404254
+  },
+  {
+   "reference_date": "2024-05-30",
+   "release_date": "2024-05-30",
+   "value": 13.521864
+  },
+  {
+   "reference_date": "2024-05-31",
+   "release_date": "2024-05-31",
+   "value": 13.639399
+  },
+  {
+   "reference_date": "2024-06-03",
+   "release_date": "2024-06-03",
+   "value": 13.756451
+  },
+  {
+   "reference_date": "2024-06-04",
+   "release_date": "2024-06-04",
+   "value": 13.872616
+  },
+  {
+   "reference_date": "2024-06-05",
+   "release_date": "2024-06-05",
+   "value": 13.987492
+  },
+  {
+   "reference_date": "2024-06-06",
+   "release_date": "2024-06-06",
+   "value": 14.100682
+  },
+  {
+   "reference_date": "2024-06-07",
+   "release_date": "2024-06-07",
+   "value": 14.211794
+  },
+  {
+   "reference_date": "2024-06-10",
+   "release_date": "2024-06-10",
+   "value": 14.320443
+  },
+  {
+   "reference_date": "2024-06-11",
+   "release_date": "2024-06-11",
+   "value": 14.426255
+  },
+  {
+   "reference_date": "2024-06-12",
+   "release_date": "2024-06-12",
+   "value": 14.528862
+  },
+  {
+   "reference_date": "2024-06-13",
+   "release_date": "2024-06-13",
+   "value": 14.627911
+  },
+  {
+   "reference_date": "2024-06-14",
+   "release_date": "2024-06-14",
+   "value": 14.723057
+  },
+  {
+   "reference_date": "2024-06-17",
+   "release_date": "2024-06-17",
+   "value": 14.813973
+  },
+  {
+   "reference_date": "2024-06-18",
+   "release_date": "2024-06-18",
+   "value": 14.900344
+  },
+  {
+   "reference_date": "2024-06-19",
+   "release_date": "2024-06-19",
+   "value": 14.98187
+  },
+  {
+   "reference_date": "2024-06-20",
+   "release_date": "2024-06-20",
+   "value": 15.058271
+  },
+  {
+   "reference_date": "2024-06-21",
+   "release_date": "2024-06-21",
+   "value": 15.129281
+  },
+  {
+   "reference_date": "2024-06-24",
+   "release_date": "2024-06-24",
+   "value": 15.194655
+  },
+  {
+   "reference_date": "2024-06-25",
+   "release_date": "2024-06-25",
+   "value": 15.254167
+  },
+  {
+   "reference_date": "2024-06-26",
+   "release_date": "2024-06-26",
+   "value": 15.30761
+  },
+  {
+   "reference_date": "2024-06-27",
+   "release_date": "2024-06-27",
+   "value": 15.354801
+  },
+  {
+   "reference_date": "2024-06-28",
+   "release_date": "2024-06-28",
+   "value": 15.395576
+  },
+  {
+   "reference_date": "2024-07-01",
+   "release_date": "2024-07-01",
+   "value": 15.429794
+  },
+  {
+   "reference_date": "2024-07-02",
+   "release_date": "2024-07-02",
+   "value": 15.457336
+  },
+  {
+   "reference_date": "2024-07-03",
+   "release_date": "2024-07-03",
+   "value": 15.478107
+  },
+  {
+   "reference_date": "2024-07-04",
+   "release_date": "2024-07-04",
+   "value": 15.492035
+  },
+  {
+   "reference_date": "2024-07-05",
+   "release_date": "2024-07-05",
+   "value": 15.499073
+  },
+  {
+   "reference_date": "2024-07-08",
+   "release_date": "2024-07-08",
+   "value": 15.499195
+  },
+  {
+   "reference_date": "2024-07-09",
+   "release_date": "2024-07-09",
+   "value": 15.492402
+  },
+  {
+   "reference_date": "2024-07-10",
+   "release_date": "2024-07-10",
+   "value": 15.478716
+  },
+  {
+   "reference_date": "2024-07-11",
+   "release_date": "2024-07-11",
+   "value": 15.458186
+  },
+  {
+   "reference_date": "2024-07-12",
+   "release_date": "2024-07-12",
+   "value": 15.430882
+  },
+  {
+   "reference_date": "2024-07-15",
+   "release_date": "2024-07-15",
+   "value": 15.396899
+  },
+  {
+   "reference_date": "2024-07-16",
+   "release_date": "2024-07-16",
+   "value": 15.356354
+  },
+  {
+   "reference_date": "2024-07-17",
+   "release_date": "2024-07-17",
+   "value": 15.309387
+  },
+  {
+   "reference_date": "2024-07-18",
+   "release_date": "2024-07-18",
+   "value": 15.256162
+  },
+  {
+   "reference_date": "2024-07-19",
+   "release_date": "2024-07-19",
+   "value": 15.196861
+  },
+  {
+   "reference_date": "2024-07-22",
+   "release_date": "2024-07-22",
+   "value": 15.131691
+  },
+  {
+   "reference_date": "2024-07-23",
+   "release_date": "2024-07-23",
+   "value": 15.060876
+  },
+  {
+   "reference_date": "2024-07-24",
+   "release_date": "2024-07-24",
+   "value": 14.984662
+  },
+  {
+   "reference_date": "2024-07-25",
+   "release_date": "2024-07-25",
+   "value": 14.903312
+  },
+  {
+   "reference_date": "2024-07-26",
+   "release_date": "2024-07-26",
+   "value": 14.817108
+  },
+  {
+   "reference_date": "2024-07-29",
+   "release_date": "2024-07-29",
+   "value": 14.726348
+  },
+  {
+   "reference_date": "2024-07-30",
+   "release_date": "2024-07-30",
+   "value": 14.631345
+  },
+  {
+   "reference_date": "2024-07-31",
+   "release_date": "2024-07-31",
+   "value": 14.532429
+  },
+  {
+   "reference_date": "2024-08-01",
+   "release_date": "2024-08-01",
+   "value": 14.429941
+  },
+  {
+   "reference_date": "2024-08-02",
+   "release_date": "2024-08-02",
+   "value": 14.324237
+  },
+  {
+   "reference_date": "2024-08-05",
+   "release_date": "2024-08-05",
+   "value": 14.215681
+  },
+  {
+   "reference_date": "2024-08-06",
+   "release_date": "2024-08-06",
+   "value": 14.10465
+  },
+  {
+   "reference_date": "2024-08-07",
+   "release_date": "2024-08-07",
+   "value": 13.991527
+  },
+  {
+   "reference_date": "2024-08-08",
+   "release_date": "2024-08-08",
+   "value": 13.876704
+  },
+  {
+   "reference_date": "2024-08-09",
+   "release_date": "2024-08-09",
+   "value": 13.760578
+  },
+  {
+   "reference_date": "2024-08-12",
+   "release_date": "2024-08-12",
+   "value": 13.64355
+  },
+  {
+   "reference_date": "2024-08-13",
+   "release_date": "2024-08-13",
+   "value": 13.526026
+  },
+  {
+   "reference_date": "2024-08-14",
+   "release_date": "2024-08-14",
+   "value": 13.408411
+  },
+  {
+   "reference_date": "2024-08-15",
+   "release_date": "2024-08-15",
+   "value": 13.291114
+  },
+  {
+   "reference_date": "2024-08-16",
+   "release_date": "2024-08-16",
+   "value": 13.174539
+  },
+  {
+   "reference_date": "2024-08-19",
+   "release_date": "2024-08-19",
+   "value": 13.05909
+  },
+  {
+   "reference_date": "2024-08-20",
+   "release_date": "2024-08-20",
+   "value": 12.945166
+  },
+  {
+   "reference_date": "2024-08-21",
+   "release_date": "2024-08-21",
+   "value": 12.833162
+  },
+  {
+   "reference_date": "2024-08-22",
+   "release_date": "2024-08-22",
+   "value": 12.723464
+  },
+  {
+   "reference_date": "2024-08-23",
+   "release_date": "2024-08-23",
+   "value": 12.616452
+  },
+  {
+   "reference_date": "2024-08-26",
+   "release_date": "2024-08-26",
+   "value": 12.512497
+  },
+  {
+   "reference_date": "2024-08-27",
+   "release_date": "2024-08-27",
+   "value": 12.411958
+  },
+  {
+   "reference_date": "2024-08-28",
+   "release_date": "2024-08-28",
+   "value": 12.315182
+  },
+  {
+   "reference_date": "2024-08-29",
+   "release_date": "2024-08-29",
+   "value": 12.222505
+  },
+  {
+   "reference_date": "2024-08-30",
+   "release_date": "2024-08-30",
+   "value": 12.134247
+  },
+  {
+   "reference_date": "2024-09-02",
+   "release_date": "2024-09-02",
+   "value": 12.050714
+  },
+  {
+   "reference_date": "2024-09-03",
+   "release_date": "2024-09-03",
+   "value": 11.972194
+  },
+  {
+   "reference_date": "2024-09-04",
+   "release_date": "2024-09-04",
+   "value": 11.898959
+  },
+  {
+   "reference_date": "2024-09-05",
+   "release_date": "2024-09-05",
+   "value": 11.831262
+  },
+  {
+   "reference_date": "2024-09-06",
+   "release_date": "2024-09-06",
+   "value": 11.769338
+  },
+  {
+   "reference_date": "2024-09-09",
+   "release_date": "2024-09-09",
+   "value": 11.713401
+  },
+  {
+   "reference_date": "2024-09-10",
+   "release_date": "2024-09-10",
+   "value": 11.663643
+  },
+  {
+   "reference_date": "2024-09-11",
+   "release_date": "2024-09-11",
+   "value": 11.620239
+  },
+  {
+   "reference_date": "2024-09-12",
+   "release_date": "2024-09-12",
+   "value": 11.583336
+  },
+  {
+   "reference_date": "2024-09-13",
+   "release_date": "2024-09-13",
+   "value": 11.553064
+  },
+  {
+   "reference_date": "2024-09-16",
+   "release_date": "2024-09-16",
+   "value": 11.529527
+  },
+  {
+   "reference_date": "2024-09-17",
+   "release_date": "2024-09-17",
+   "value": 11.512805
+  },
+  {
+   "reference_date": "2024-09-18",
+   "release_date": "2024-09-18",
+   "value": 11.502958
+  },
+  {
+   "reference_date": "2024-09-19",
+   "release_date": "2024-09-19",
+   "value": 11.50002
+  },
+  {
+   "reference_date": "2024-09-20",
+   "release_date": "2024-09-20",
+   "value": 11.503999
+  },
+  {
+   "reference_date": "2024-09-23",
+   "release_date": "2024-09-23",
+   "value": 11.514883
+  },
+  {
+   "reference_date": "2024-09-24",
+   "release_date": "2024-09-24",
+   "value": 11.532634
+  },
+  {
+   "reference_date": "2024-09-25",
+   "release_date": "2024-09-25",
+   "value": 11.557191
+  },
+  {
+   "reference_date": "2024-09-26",
+   "release_date": "2024-09-26",
+   "value": 11.588468
+  },
+  {
+   "reference_date": "2024-09-27",
+   "release_date": "2024-09-27",
+   "value": 11.626358
+  },
+  {
+   "reference_date": "2024-09-30",
+   "release_date": "2024-09-30",
+   "value": 11.670729
+  },
+  {
+   "reference_date": "2024-10-01",
+   "release_date": "2024-10-01",
+   "value": 11.721427
+  },
+  {
+   "reference_date": "2024-10-02",
+   "release_date": "2024-10-02",
+   "value": 11.778279
+  },
+  {
+   "reference_date": "2024-10-03",
+   "release_date": "2024-10-03",
+   "value": 11.841085
+  },
+  {
+   "reference_date": "2024-10-04",
+   "release_date": "2024-10-04",
+   "value": 11.909631
+  },
+  {
+   "reference_date": "2024-10-07",
+   "release_date": "2024-10-07",
+   "value": 11.983678
+  },
+  {
+   "reference_date": "2024-10-08",
+   "release_date": "2024-10-08",
+   "value": 12.06297
+  },
+  {
+   "reference_date": "2024-10-09",
+   "release_date": "2024-10-09",
+   "value": 12.147233
+  },
+  {
+   "reference_date": "2024-10-10",
+   "release_date": "2024-10-10",
+   "value": 12.236176
+  },
+  {
+   "reference_date": "2024-10-11",
+   "release_date": "2024-10-11",
+   "value": 12.329491
+  },
+  {
+   "reference_date": "2024-10-14",
+   "release_date": "2024-10-14",
+   "value": 12.426854
+  },
+  {
+   "reference_date": "2024-10-15",
+   "release_date": "2024-10-15",
+   "value": 12.52793
+  },
+  {
+   "reference_date": "2024-10-16",
+   "release_date": "2024-10-16",
+   "value": 12.632368
+  },
+  {
+   "reference_date": "2024-10-17",
+   "release_date": "2024-10-17",
+   "value": 12.739808
+  },
+  {
+   "reference_date": "2024-10-18",
+   "release_date": "2024-10-18",
+   "value": 12.849877
+  },
+  {
+   "reference_date": "2024-10-21",
+   "release_date": "2024-10-21",
+   "value": 12.962196
+  },
+  {
+   "reference_date": "2024-10-22",
+   "release_date": "2024-10-22",
+   "value": 13.076374
+  },
+  {
+   "reference_date": "2024-10-23",
+   "release_date": "2024-10-23",
+   "value": 13.192019
+  },
+  {
+   "reference_date": "2024-10-24",
+   "release_date": "2024-10-24",
+   "value": 13.308728
+  },
+  {
+   "reference_date": "2024-10-25",
+   "release_date": "2024-10-25",
+   "value": 13.426099
+  },
+  {
+   "reference_date": "2024-10-28",
+   "release_date": "2024-10-28",
+   "value": 13.543726
+  },
+  {
+   "reference_date": "2024-10-29",
+   "release_date": "2024-10-29",
+   "value": 13.661201
+  },
+  {
+   "reference_date": "2024-10-30",
+   "release_date": "2024-10-30",
+   "value": 13.778119
+  },
+  {
+   "reference_date": "2024-10-31",
+   "release_date": "2024-10-31",
+   "value": 13.894075
+  },
+  {
+   "reference_date": "2024-11-01",
+   "release_date": "2024-11-01",
+   "value": 14.008668
+  },
+  {
+   "reference_date": "2024-11-04",
+   "release_date": "2024-11-04",
+   "value": 14.121501
+  },
+  {
+   "reference_date": "2024-11-05",
+   "release_date": "2024-11-05",
+   "value": 14.232184
+  },
+  {
+   "reference_date": "2024-11-06",
+   "release_date": "2024-11-06",
+   "value": 14.340334
+  },
+  {
+   "reference_date": "2024-11-07",
+   "release_date": "2024-11-07",
+   "value": 14.445578
+  },
+  {
+   "reference_date": "2024-11-08",
+   "release_date": "2024-11-08",
+   "value": 14.54755
+  },
+  {
+   "reference_date": "2024-11-11",
+   "release_date": "2024-11-11",
+   "value": 14.645899
+  },
+  {
+   "reference_date": "2024-11-12",
+   "release_date": "2024-11-12",
+   "value": 14.740284
+  },
+  {
+   "reference_date": "2024-11-13",
+   "release_date": "2024-11-13",
+   "value": 14.830378
+  },
+  {
+   "reference_date": "2024-11-14",
+   "release_date": "2024-11-14",
+   "value": 14.915871
+  },
+  {
+   "reference_date": "2024-11-15",
+   "release_date": "2024-11-15",
+   "value": 14.996465
+  },
+  {
+   "reference_date": "2024-11-18",
+   "release_date": "2024-11-18",
+   "value": 15.071883
+  },
+  {
+   "reference_date": "2024-11-19",
+   "release_date": "2024-11-19",
+   "value": 15.141864
+  },
+  {
+   "reference_date": "2024-11-20",
+   "release_date": "2024-11-20",
+   "value": 15.206165
+  },
+  {
+   "reference_date": "2024-11-21",
+   "release_date": "2024-11-21",
+   "value": 15.264564
+  },
+  {
+   "reference_date": "2024-11-22",
+   "release_date": "2024-11-22",
+   "value": 15.316859
+  },
+  {
+   "reference_date": "2024-11-25",
+   "release_date": "2024-11-25",
+   "value": 15.362869
+  },
+  {
+   "reference_date": "2024-11-26",
+   "release_date": "2024-11-26",
+   "value": 15.402435
+  },
+  {
+   "reference_date": "2024-11-27",
+   "release_date": "2024-11-27",
+   "value": 15.43542
+  },
+  {
+   "reference_date": "2024-11-28",
+   "release_date": "2024-11-28",
+   "value": 15.461711
+  },
+  {
+   "reference_date": "2024-11-29",
+   "release_date": "2024-11-29",
+   "value": 15.481215
+  },
+  {
+   "reference_date": "2024-12-02",
+   "release_date": "2024-12-02",
+   "value": 15.493865
+  },
+  {
+   "reference_date": "2024-12-03",
+   "release_date": "2024-12-03",
+   "value": 15.499619
+  },
+  {
+   "reference_date": "2024-12-04",
+   "release_date": "2024-12-04",
+   "value": 15.498455
+  },
+  {
+   "reference_date": "2024-12-05",
+   "release_date": "2024-12-05",
+   "value": 15.490379
+  },
+  {
+   "reference_date": "2024-12-06",
+   "release_date": "2024-12-06",
+   "value": 15.475417
+  },
+  {
+   "reference_date": "2024-12-09",
+   "release_date": "2024-12-09",
+   "value": 15.453622
+  },
+  {
+   "reference_date": "2024-12-10",
+   "release_date": "2024-12-10",
+   "value": 15.425069
+  },
+  {
+   "reference_date": "2024-12-11",
+   "release_date": "2024-12-11",
+   "value": 15.389856
+  },
+  {
+   "reference_date": "2024-12-12",
+   "release_date": "2024-12-12",
+   "value": 15.348107
+  },
+  {
+   "reference_date": "2024-12-13",
+   "release_date": "2024-12-13",
+   "value": 15.299964
+  },
+  {
+   "reference_date": "2024-12-16",
+   "release_date": "2024-12-16",
+   "value": 15.245595
+  },
+  {
+   "reference_date": "2024-12-17",
+   "release_date": "2024-12-17",
+   "value": 15.185187
+  },
+  {
+   "reference_date": "2024-12-18",
+   "release_date": "2024-12-18",
+   "value": 15.11895
+  },
+  {
+   "reference_date": "2024-12-19",
+   "release_date": "2024-12-19",
+   "value": 15.047113
+  },
+  {
+   "reference_date": "2024-12-20",
+   "release_date": "2024-12-20",
+   "value": 14.969924
+  },
+  {
+   "reference_date": "2024-12-23",
+   "release_date": "2024-12-23",
+   "value": 14.88765
+  },
+  {
+   "reference_date": "2024-12-24",
+   "release_date": "2024-12-24",
+   "value": 14.800576
+  },
+  {
+   "reference_date": "2024-12-25",
+   "release_date": "2024-12-25",
+   "value": 14.709003
+  },
+  {
+   "reference_date": "2024-12-26",
+   "release_date": "2024-12-26",
+   "value": 14.613247
+  },
+  {
+   "reference_date": "2024-12-27",
+   "release_date": "2024-12-27",
+   "value": 14.513641
+  },
+  {
+   "reference_date": "2024-12-30",
+   "release_date": "2024-12-30",
+   "value": 14.410529
+  },
+  {
+   "reference_date": "2024-12-31",
+   "release_date": "2024-12-31",
+   "value": 14.304267
+  },
+  {
+   "reference_date": "2025-01-01",
+   "release_date": "2025-01-01",
+   "value": 14.195222
+  },
+  {
+   "reference_date": "2025-01-02",
+   "release_date": "2025-01-02",
+   "value": 14.083773
+  },
+  {
+   "reference_date": "2025-01-03",
+   "release_date": "2025-01-03",
+   "value": 13.970304
+  },
+  {
+   "reference_date": "2025-01-06",
+   "release_date": "2025-01-06",
+   "value": 13.855209
+  },
+  {
+   "reference_date": "2025-01-07",
+   "release_date": "2025-01-07",
+   "value": 13.738884
+  },
+  {
+   "reference_date": "2025-01-08",
+   "release_date": "2025-01-08",
+   "value": 13.621734
+  },
+  {
+   "reference_date": "2025-01-09",
+   "release_date": "2025-01-09",
+   "value": 13.504162
+  },
+  {
+   "reference_date": "2025-01-10",
+   "release_date": "2025-01-10",
+   "value": 13.386576
+  },
+  {
+   "reference_date": "2025-01-13",
+   "release_date": "2025-01-13",
+   "value": 13.269382
+  },
+  {
+   "reference_date": "2025-01-14",
+   "release_date": "2025-01-14",
+   "value": 13.152986
+  },
+  {
+   "reference_date": "2025-01-15",
+   "release_date": "2025-01-15",
+   "value": 13.03779
+  },
+  {
+   "reference_date": "2025-01-16",
+   "release_date": "2025-01-16",
+   "value": 12.924193
+  },
+  {
+   "reference_date": "2025-01-17",
+   "release_date": "2025-01-17",
+   "value": 12.812588
+  },
+  {
+   "reference_date": "2025-01-20",
+   "release_date": "2025-01-20",
+   "value": 12.703361
+  },
+  {
+   "reference_date": "2025-01-21",
+   "release_date": "2025-01-21",
+   "value": 12.59689
+  },
+  {
+   "reference_date": "2025-01-22",
+   "release_date": "2025-01-22",
+   "value": 12.493543
+  },
+  {
+   "reference_date": "2025-01-23",
+   "release_date": "2025-01-23",
+   "value": 12.393677
+  },
+  {
+   "reference_date": "2025-01-24",
+   "release_date": "2025-01-24",
+   "value": 12.297638
+  },
+  {
+   "reference_date": "2025-01-27",
+   "release_date": "2025-01-27",
+   "value": 12.205759
+  },
+  {
+   "reference_date": "2025-01-28",
+   "release_date": "2025-01-28",
+   "value": 12.118357
+  },
+  {
+   "reference_date": "2025-01-29",
+   "release_date": "2025-01-29",
+   "value": 12.035733
+  },
+  {
+   "reference_date": "2025-01-30",
+   "release_date": "2025-01-30",
+   "value": 11.958176
+  },
+  {
+   "reference_date": "2025-01-31",
+   "release_date": "2025-01-31",
+   "value": 11.885951
+  },
+  {
+   "reference_date": "2025-02-03",
+   "release_date": "2025-02-03",
+   "value": 11.81931
+  },
+  {
+   "reference_date": "2025-02-04",
+   "release_date": "2025-02-04",
+   "value": 11.758483
+  },
+  {
+   "reference_date": "2025-02-05",
+   "release_date": "2025-02-05",
+   "value": 11.70368
+  },
+  {
+   "reference_date": "2025-02-06",
+   "release_date": "2025-02-06",
+   "value": 11.655091
+  },
+  {
+   "reference_date": "2025-02-07",
+   "release_date": "2025-02-07",
+   "value": 11.612884
+  },
+  {
+   "reference_date": "2025-02-10",
+   "release_date": "2025-02-10",
+   "value": 11.577205
+  },
+  {
+   "reference_date": "2025-02-11",
+   "release_date": "2025-02-11",
+   "value": 11.548177
+  },
+  {
+   "reference_date": "2025-02-12",
+   "release_date": "2025-02-12",
+   "value": 11.525901
+  },
+  {
+   "reference_date": "2025-02-13",
+   "release_date": "2025-02-13",
+   "value": 11.510454
+  },
+  {
+   "reference_date": "2025-02-14",
+   "release_date": "2025-02-14",
+   "value": 11.501889
+  },
+  {
+   "reference_date": "2025-02-17",
+   "release_date": "2025-02-17",
+   "value": 11.500236
+  },
+  {
+   "reference_date": "2025-02-18",
+   "release_date": "2025-02-18",
+   "value": 11.5055
+  },
+  {
+   "reference_date": "2025-02-19",
+   "release_date": "2025-02-19",
+   "value": 11.517664
+  },
+  {
+   "reference_date": "2025-02-20",
+   "release_date": "2025-02-20",
+   "value": 11.536686
+  },
+  {
+   "reference_date": "2025-02-21",
+   "release_date": "2025-02-21",
+   "value": 11.562498
+  },
+  {
+   "reference_date": "2025-02-24",
+   "release_date": "2025-02-24",
+   "value": 11.595013
+  },
+  {
+   "reference_date": "2025-02-25",
+   "release_date": "2025-02-25",
+   "value": 11.634118
+  },
+  {
+   "reference_date": "2025-02-26",
+   "release_date": "2025-02-26",
+   "value": 11.679677
+  },
+  {
+   "reference_date": "2025-02-27",
+   "release_date": "2025-02-27",
+   "value": 11.731533
+  },
+  {
+   "reference_date": "2025-02-28",
+   "release_date": "2025-02-28",
+   "value": 11.789507
+  },
+  {
+   "reference_date": "2025-03-03",
+   "release_date": "2025-03-03",
+   "value": 11.853397
+  },
+  {
+   "reference_date": "2025-03-04",
+   "release_date": "2025-03-04",
+   "value": 11.922984
+  },
+  {
+   "reference_date": "2025-03-05",
+   "release_date": "2025-03-05",
+   "value": 11.998026
+  },
+  {
+   "reference_date": "2025-03-06",
+   "release_date": "2025-03-06",
+   "value": 12.078263
+  },
+  {
+   "reference_date": "2025-03-07",
+   "release_date": "2025-03-07",
+   "value": 12.163418
+  },
+  {
+   "reference_date": "2025-03-10",
+   "release_date": "2025-03-10",
+   "value": 12.253197
+  },
+  {
+   "reference_date": "2025-03-11",
+   "release_date": "2025-03-11",
+   "value": 12.347289
+  },
+  {
+   "reference_date": "2025-03-12",
+   "release_date": "2025-03-12",
+   "value": 12.445369
+  },
+  {
+   "reference_date": "2025-03-13",
+   "release_date": "2025-03-13",
+   "value": 12.547096
+  },
+  {
+   "reference_date": "2025-03-14",
+   "release_date": "2025-03-14",
+   "value": 12.65212
+  },
+  {
+   "reference_date": "2025-03-17",
+   "release_date": "2025-03-17",
+   "value": 12.760077
+  },
+  {
+   "reference_date": "2025-03-18",
+   "release_date": "2025-03-18",
+   "value": 12.870593
+  },
+  {
+   "reference_date": "2025-03-19",
+   "release_date": "2025-03-19",
+   "value": 12.983287
+  },
+  {
+   "reference_date": "2025-03-20",
+   "release_date": "2025-03-20",
+   "value": 13.097768
+  },
+  {
+   "reference_date": "2025-03-21",
+   "release_date": "2025-03-21",
+   "value": 13.21364
+  },
+  {
+   "reference_date": "2025-03-24",
+   "release_date": "2025-03-24",
+   "value": 13.330503
+  },
+  {
+   "reference_date": "2025-03-25",
+   "release_date": "2025-03-25",
+   "value": 13.447953
+  },
+  {
+   "reference_date": "2025-03-26",
+   "release_date": "2025-03-26",
+   "value": 13.565582
+  },
+  {
+   "reference_date": "2025-03-27",
+   "release_date": "2025-03-27",
+   "value": 13.682985
+  },
+  {
+   "reference_date": "2025-03-28",
+   "release_date": "2025-03-28",
+   "value": 13.799754
+  },
+  {
+   "reference_date": "2025-03-31",
+   "release_date": "2025-03-31",
+   "value": 13.915487
+  },
+  {
+   "reference_date": "2025-04-01",
+   "release_date": "2025-04-01",
+   "value": 14.029782
+  },
+  {
+   "reference_date": "2025-04-02",
+   "release_date": "2025-04-02",
+   "value": 14.142245
+  },
+  {
+   "reference_date": "2025-04-03",
+   "release_date": "2025-04-03",
+   "value": 14.252486
+  },
+  {
+   "reference_date": "2025-04-04",
+   "release_date": "2025-04-04",
+   "value": 14.360124
+  },
+  {
+   "reference_date": "2025-04-07",
+   "release_date": "2025-04-07",
+   "value": 14.464787
+  },
+  {
+   "reference_date": "2025-04-08",
+   "release_date": "2025-04-08",
+   "value": 14.566113
+  },
+  {
+   "reference_date": "2025-04-09",
+   "release_date": "2025-04-09",
+   "value": 14.66375
+  },
+  {
+   "reference_date": "2025-04-10",
+   "release_date": "2025-04-10",
+   "value": 14.757362
+  },
+  {
+   "reference_date": "2025-04-11",
+   "release_date": "2025-04-11",
+   "value": 14.846624
+  },
+  {
+   "reference_date": "2025-04-14",
+   "release_date": "2025-04-14",
+   "value": 14.931228
+  },
+  {
+   "reference_date": "2025-04-15",
+   "release_date": "2025-04-15",
+   "value": 15.010881
+  },
+  {
+   "reference_date": "2025-04-16",
+   "release_date": "2025-04-16",
+   "value": 15.085308
+  },
+  {
+   "reference_date": "2025-04-17",
+   "release_date": "2025-04-17",
+   "value": 15.154251
+  },
+  {
+   "reference_date": "2025-04-18",
+   "release_date": "2025-04-18",
+   "value": 15.217471
+  },
+  {
+   "reference_date": "2025-04-21",
+   "release_date": "2025-04-21",
+   "value": 15.27475
+  },
+  {
+   "reference_date": "2025-04-22",
+   "release_date": "2025-04-22",
+   "value": 15.325891
+  },
+  {
+   "reference_date": "2025-04-23",
+   "release_date": "2025-04-23",
+   "value": 15.370714
+  },
+  {
+   "reference_date": "2025-04-24",
+   "release_date": "2025-04-24",
+   "value": 15.409067
+  },
+  {
+   "reference_date": "2025-04-25",
+   "release_date": "2025-04-25",
+   "value": 15.440816
+  },
+  {
+   "reference_date": "2025-04-28",
+   "release_date": "2025-04-28",
+   "value": 15.465851
+  },
+  {
+   "reference_date": "2025-04-29",
+   "release_date": "2025-04-29",
+   "value": 15.484086
+  },
+  {
+   "reference_date": "2025-04-30",
+   "release_date": "2025-04-30",
+   "value": 15.495457
+  },
+  {
+   "reference_date": "2025-05-01",
+   "release_date": "2025-05-01",
+   "value": 15.499926
+  },
+  {
+   "reference_date": "2025-05-02",
+   "release_date": "2025-05-02",
+   "value": 15.497477
+  },
+  {
+   "reference_date": "2025-05-05",
+   "release_date": "2025-05-05",
+   "value": 15.488118
+  },
+  {
+   "reference_date": "2025-05-06",
+   "release_date": "2025-05-06",
+   "value": 15.471881
+  },
+  {
+   "reference_date": "2025-05-07",
+   "release_date": "2025-05-07",
+   "value": 15.448824
+  },
+  {
+   "reference_date": "2025-05-08",
+   "release_date": "2025-05-08",
+   "value": 15.419025
+  },
+  {
+   "reference_date": "2025-05-09",
+   "release_date": "2025-05-09",
+   "value": 15.382588
+  },
+  {
+   "reference_date": "2025-05-12",
+   "release_date": "2025-05-12",
+   "value": 15.339638
+  },
+  {
+   "reference_date": "2025-05-13",
+   "release_date": "2025-05-13",
+   "value": 15.290325
+  },
+  {
+   "reference_date": "2025-05-14",
+   "release_date": "2025-05-14",
+   "value": 15.234819
+  },
+  {
+   "reference_date": "2025-05-15",
+   "release_date": "2025-05-15",
+   "value": 15.173311
+  },
+  {
+   "reference_date": "2025-05-16",
+   "release_date": "2025-05-16",
+   "value": 15.106016
+  },
+  {
+   "reference_date": "2025-05-19",
+   "release_date": "2025-05-19",
+   "value": 15.033164
+  },
+  {
+   "reference_date": "2025-05-20",
+   "release_date": "2025-05-20",
+   "value": 14.955009
+  },
+  {
+   "reference_date": "2025-05-21",
+   "release_date": "2025-05-21",
+   "value": 14.871821
+  },
+  {
+   "reference_date": "2025-05-22",
+   "release_date": "2025-05-22",
+   "value": 14.783888
+  },
+  {
+   "reference_date": "2025-05-23",
+   "release_date": "2025-05-23",
+   "value": 14.691513
+  },
+  {
+   "reference_date": "2025-05-26",
+   "release_date": "2025-05-26",
+   "value": 14.595017
+  },
+  {
+   "reference_date": "2025-05-27",
+   "release_date": "2025-05-27",
+   "value": 14.494733
+  },
+  {
+   "reference_date": "2025-05-28",
+   "release_date": "2025-05-28",
+   "value": 14.391007
+  },
+  {
+   "reference_date": "2025-05-29",
+   "release_date": "2025-05-29",
+   "value": 14.2842
+  },
+  {
+   "reference_date": "2025-05-30",
+   "release_date": "2025-05-30",
+   "value": 14.17468
+  },
+  {
+   "reference_date": "2025-06-02",
+   "release_date": "2025-06-02",
+   "value": 14.062826
+  },
+  {
+   "reference_date": "2025-06-03",
+   "release_date": "2025-06-03",
+   "value": 13.949025
+  },
+  {
+   "reference_date": "2025-06-04",
+   "release_date": "2025-06-04",
+   "value": 13.833671
+  },
+  {
+   "reference_date": "2025-06-05",
+   "release_date": "2025-06-05",
+   "value": 13.717162
+  },
+  {
+   "reference_date": "2025-06-06",
+   "release_date": "2025-06-06",
+   "value": 13.599903
+  },
+  {
+   "reference_date": "2025-06-09",
+   "release_date": "2025-06-09",
+   "value": 13.482297
+  },
+  {
+   "reference_date": "2025-06-10",
+   "release_date": "2025-06-10",
+   "value": 13.364753
+  },
+  {
+   "reference_date": "2025-06-11",
+   "release_date": "2025-06-11",
+   "value": 13.247677
+  },
+  {
+   "reference_date": "2025-06-12",
+   "release_date": "2025-06-12",
+   "value": 13.131474
+  },
+  {
+   "reference_date": "2025-06-13",
+   "release_date": "2025-06-13",
+   "value": 13.016545
+  },
+  {
+   "reference_date": "2025-06-16",
+   "release_date": "2025-06-16",
+   "value": 12.903289
+  },
+  {
+   "reference_date": "2025-06-17",
+   "release_date": "2025-06-17",
+   "value": 18.0
+  },
+  {
+   "reference_date": "2025-06-18",
+   "release_date": "2025-06-18",
+   "value": 18.32
+  },
+  {
+   "reference_date": "2025-06-19",
+   "release_date": "2025-06-19",
+   "value": 18.64
+  },
+  {
+   "reference_date": "2025-06-20",
+   "release_date": "2025-06-20",
+   "value": 18.96
+  },
+  {
+   "reference_date": "2025-06-23",
+   "release_date": "2025-06-23",
+   "value": 19.28
+  },
+  {
+   "reference_date": "2025-06-24",
+   "release_date": "2025-06-24",
+   "value": 19.6
+  },
+  {
+   "reference_date": "2025-06-25",
+   "release_date": "2025-06-25",
+   "value": 19.92
+  },
+  {
+   "reference_date": "2025-06-26",
+   "release_date": "2025-06-26",
+   "value": 20.24
+  },
+  {
+   "reference_date": "2025-06-27",
+   "release_date": "2025-06-27",
+   "value": 20.56
+  },
+  {
+   "reference_date": "2025-06-30",
+   "release_date": "2025-06-30",
+   "value": 20.88
+  },
+  {
+   "reference_date": "2025-07-01",
+   "release_date": "2025-07-01",
+   "value": 21.2
+  },
+  {
+   "reference_date": "2025-07-02",
+   "release_date": "2025-07-02",
+   "value": 21.52
+  },
+  {
+   "reference_date": "2025-07-03",
+   "release_date": "2025-07-03",
+   "value": 21.84
+  },
+  {
+   "reference_date": "2025-07-04",
+   "release_date": "2025-07-04",
+   "value": 22.16
+  },
+  {
+   "reference_date": "2025-07-07",
+   "release_date": "2025-07-07",
+   "value": 22.48
+  },
+  {
+   "reference_date": "2025-07-08",
+   "release_date": "2025-07-08",
+   "value": 22.8
+  },
+  {
+   "reference_date": "2025-07-09",
+   "release_date": "2025-07-09",
+   "value": 23.12
+  },
+  {
+   "reference_date": "2025-07-10",
+   "release_date": "2025-07-10",
+   "value": 23.44
+  },
+  {
+   "reference_date": "2025-07-11",
+   "release_date": "2025-07-11",
+   "value": 23.76
+  },
+  {
+   "reference_date": "2025-07-14",
+   "release_date": "2025-07-14",
+   "value": 24.08
+  },
+  {
+   "reference_date": "2025-07-15",
+   "release_date": "2025-07-15",
+   "value": 24.4
+  },
+  {
+   "reference_date": "2025-07-16",
+   "release_date": "2025-07-16",
+   "value": 24.72
+  },
+  {
+   "reference_date": "2025-07-17",
+   "release_date": "2025-07-17",
+   "value": 25.04
+  },
+  {
+   "reference_date": "2025-07-18",
+   "release_date": "2025-07-18",
+   "value": 25.36
+  },
+  {
+   "reference_date": "2025-07-21",
+   "release_date": "2025-07-21",
+   "value": 25.68
+  },
+  {
+   "reference_date": "2025-07-22",
+   "release_date": "2025-07-22",
+   "value": 26.0
+  },
+  {
+   "reference_date": "2025-07-23",
+   "release_date": "2025-07-23",
+   "value": 26.32
+  },
+  {
+   "reference_date": "2025-07-24",
+   "release_date": "2025-07-24",
+   "value": 26.64
+  },
+  {
+   "reference_date": "2025-07-25",
+   "release_date": "2025-07-25",
+   "value": 26.96
+  },
+  {
+   "reference_date": "2025-07-28",
+   "release_date": "2025-07-28",
+   "value": 27.28
+  },
+  {
+   "reference_date": "2025-07-29",
+   "release_date": "2025-07-29",
+   "value": 27.6
+  },
+  {
+   "reference_date": "2025-07-30",
+   "release_date": "2025-07-30",
+   "value": 27.92
+  },
+  {
+   "reference_date": "2025-07-31",
+   "release_date": "2025-07-31",
+   "value": 28.24
+  },
+  {
+   "reference_date": "2025-08-01",
+   "release_date": "2025-08-01",
+   "value": 28.56
+  },
+  {
+   "reference_date": "2025-08-04",
+   "release_date": "2025-08-04",
+   "value": 28.88
+  },
+  {
+   "reference_date": "2025-08-05",
+   "release_date": "2025-08-05",
+   "value": 29.2
+  },
+  {
+   "reference_date": "2025-08-06",
+   "release_date": "2025-08-06",
+   "value": 29.52
+  },
+  {
+   "reference_date": "2025-08-07",
+   "release_date": "2025-08-07",
+   "value": 29.84
+  },
+  {
+   "reference_date": "2025-08-08",
+   "release_date": "2025-08-08",
+   "value": 30.16
+  },
+  {
+   "reference_date": "2025-08-11",
+   "release_date": "2025-08-11",
+   "value": 30.48
+  },
+  {
+   "reference_date": "2025-08-12",
+   "release_date": "2025-08-12",
+   "value": 30.8
+  },
+  {
+   "reference_date": "2025-08-13",
+   "release_date": "2025-08-13",
+   "value": 31.12
+  },
+  {
+   "reference_date": "2025-08-14",
+   "release_date": "2025-08-14",
+   "value": 31.44
+  },
+  {
+   "reference_date": "2025-08-15",
+   "release_date": "2025-08-15",
+   "value": 31.76
+  },
+  {
+   "reference_date": "2025-08-18",
+   "release_date": "2025-08-18",
+   "value": 32.08
+  },
+  {
+   "reference_date": "2025-08-19",
+   "release_date": "2025-08-19",
+   "value": 32.4
+  },
+  {
+   "reference_date": "2025-08-20",
+   "release_date": "2025-08-20",
+   "value": 32.72
+  },
+  {
+   "reference_date": "2025-08-21",
+   "release_date": "2025-08-21",
+   "value": 33.04
+  },
+  {
+   "reference_date": "2025-08-22",
+   "release_date": "2025-08-22",
+   "value": 33.36
+  },
+  {
+   "reference_date": "2025-08-25",
+   "release_date": "2025-08-25",
+   "value": 33.68
+  },
+  {
+   "reference_date": "2025-08-26",
+   "release_date": "2025-08-26",
+   "value": 34.0
+  },
+  {
+   "reference_date": "2025-08-27",
+   "release_date": "2025-08-27",
+   "value": 34.32
+  },
+  {
+   "reference_date": "2025-08-28",
+   "release_date": "2025-08-28",
+   "value": 34.64
+  },
+  {
+   "reference_date": "2025-08-29",
+   "release_date": "2025-08-29",
+   "value": 34.96
+  },
+  {
+   "reference_date": "2025-09-01",
+   "release_date": "2025-09-01",
+   "value": 35.28
+  },
+  {
+   "reference_date": "2025-09-02",
+   "release_date": "2025-09-02",
+   "value": 35.6
+  },
+  {
+   "reference_date": "2025-09-03",
+   "release_date": "2025-09-03",
+   "value": 35.92
+  },
+  {
+   "reference_date": "2025-09-04",
+   "release_date": "2025-09-04",
+   "value": 36.24
+  },
+  {
+   "reference_date": "2025-09-05",
+   "release_date": "2025-09-05",
+   "value": 36.56
+  },
+  {
+   "reference_date": "2025-09-08",
+   "release_date": "2025-09-08",
+   "value": 36.88
+  },
+  {
+   "reference_date": "2025-09-09",
+   "release_date": "2025-09-09",
+   "value": 37.2
+  },
+  {
+   "reference_date": "2025-09-10",
+   "release_date": "2025-09-10",
+   "value": 37.52
+  },
+  {
+   "reference_date": "2025-09-11",
+   "release_date": "2025-09-11",
+   "value": 37.84
+  },
+  {
+   "reference_date": "2025-09-12",
+   "release_date": "2025-09-12",
+   "value": 38.16
+  },
+  {
+   "reference_date": "2025-09-15",
+   "release_date": "2025-09-15",
+   "value": 38.48
+  },
+  {
+   "reference_date": "2025-09-16",
+   "release_date": "2025-09-16",
+   "value": 38.8
+  },
+  {
+   "reference_date": "2025-09-17",
+   "release_date": "2025-09-17",
+   "value": 39.12
+  },
+  {
+   "reference_date": "2025-09-18",
+   "release_date": "2025-09-18",
+   "value": 39.44
+  },
+  {
+   "reference_date": "2025-09-19",
+   "release_date": "2025-09-19",
+   "value": 39.76
+  },
+  {
+   "reference_date": "2025-09-22",
+   "release_date": "2025-09-22",
+   "value": 40.08
+  },
+  {
+   "reference_date": "2025-09-23",
+   "release_date": "2025-09-23",
+   "value": 40.4
+  },
+  {
+   "reference_date": "2025-09-24",
+   "release_date": "2025-09-24",
+   "value": 40.72
+  },
+  {
+   "reference_date": "2025-09-25",
+   "release_date": "2025-09-25",
+   "value": 41.04
+  },
+  {
+   "reference_date": "2025-09-26",
+   "release_date": "2025-09-26",
+   "value": 41.36
+  },
+  {
+   "reference_date": "2025-09-29",
+   "release_date": "2025-09-29",
+   "value": 41.68
+  },
+  {
+   "reference_date": "2025-09-30",
+   "release_date": "2025-09-30",
+   "value": 42.0
+  },
+  {
+   "reference_date": "2025-10-01",
+   "release_date": "2025-10-01",
+   "value": 42.0
+  },
+  {
+   "reference_date": "2025-10-02",
+   "release_date": "2025-10-02",
+   "value": 42.0
+  },
+  {
+   "reference_date": "2025-10-03",
+   "release_date": "2025-10-03",
+   "value": 42.0
+  },
+  {
+   "reference_date": "2025-10-06",
+   "release_date": "2025-10-06",
+   "value": 42.0
+  }
+ ]
+}

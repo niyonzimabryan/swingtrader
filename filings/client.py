@@ -82,6 +82,26 @@ def filing_index_url(cik: str, accession: str) -> str:
     )
 
 
+def filing_document_url(cik: str, accession: str, primary_document: str) -> str:
+    """The raw document inside a filing's archive folder.
+
+    ``submissions`` gives ``primaryDocument`` as the *rendered* path for
+    ownership forms — ``xslF345X05/wk-form4_1234.xml`` is EDGAR's XSL-styled
+    HTML view of the same file. The machine-readable XML sits at the same path
+    with the ``xsl*/`` prefix removed, so the prefix is stripped here rather
+    than in each parser.
+    """
+    bare = accession.replace("-", "")
+    document = (primary_document or "").strip().lstrip("/")
+    head, _, tail = document.partition("/")
+    if head.lower().startswith("xsl") and tail:
+        document = tail
+    return (
+        f"{WWW_SEC_BASE}/Archives/edgar/data/"
+        f"{int(normalise_cik(cik))}/{bare}/{document}"
+    )
+
+
 def fixture_name_for_url(url: str) -> str:
     """The file name a recorded response for ``url`` is stored under.
 
@@ -241,6 +261,59 @@ class SECClient:
         if isinstance(last_error, SECClientError):
             raise last_error
         raise SECClientError(f"giving up on {url}: {last_error}") from last_error
+
+    def get_text(self, url: str) -> str:
+        """Fetch one document as text — the ownership and ownership-schedule XML.
+
+        Same throttle, same User-Agent, same retry ladder as :meth:`get_json`:
+        the point of one client module is that a second document type cannot
+        acquire a second rate limit.
+        """
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            self._throttle.wait()
+            try:
+                response = self._client.get(url, headers={"Accept": "*/*"})
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    self._backoff(attempt)
+                continue
+
+            self.request_count += 1
+
+            if response.status_code in RETRYABLE_STATUS:
+                last_error = SECRateLimitError(
+                    f"{response.status_code} from {url} (attempt {attempt + 1})",
+                    status_code=response.status_code,
+                )
+                if attempt < self.max_retries:
+                    self._backoff(attempt, response.headers.get("Retry-After"))
+                continue
+
+            if response.status_code >= 400:
+                raise SECClientError(
+                    f"{response.status_code} from {url}", status_code=response.status_code
+                )
+            return response.text
+
+        log.warning("sec_fetch_exhausted", url=url, attempts=self.max_retries + 1)
+        if isinstance(last_error, SECClientError):
+            raise last_error
+        raise SECClientError(f"giving up on {url}: {last_error}") from last_error
+
+    def get_text_or_none(self, url: str) -> str | None:
+        """As :meth:`get_text`, but a 404 is an answer.
+
+        A 13D/G filed before EDGAR required structured data has no
+        ``primary_doc.xml``; that is missing coverage to report, not a failure.
+        """
+        try:
+            return self.get_text(url)
+        except SECClientError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
 
     def get_json_or_none(self, url: str) -> Any | None:
         """As :meth:`get_json`, but a 404 is an answer, not a failure.
