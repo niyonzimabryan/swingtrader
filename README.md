@@ -176,6 +176,11 @@ Important code paths:
   the bot, off by default (`WORKSPACE_API_ENABLED=false`), and structurally
   unable to reach a broker (`tests/test_no_execute_scope.py`).
   See [docs/WORKSPACE_ACCESS.md](docs/WORKSPACE_ACCESS.md).
+- research_workspace/: dossiers, theses, invalidators, the decision journal, and
+  the `research/` Markdown mirror — off by default
+  (`RESEARCH_WORKSPACE_ENABLED=false`). A triggered invalidator pages and moves
+  a thesis to `weakened`; it never creates an order or a proposal.
+  See [docs/RESEARCH_WORKSPACE.md](docs/RESEARCH_WORKSPACE.md).
 
 ## Configuration knobs
 

@@ -16,9 +16,15 @@ redistribution (verification claim 11). Spec K §3.3 draws the line: **a dossier
 may cite a story by URL and date, and that is all.** No article text, no
 novelty score, no news-derived feature reaches the `research/` mirror.
 
-The mirror does not exist yet — it is Spec M's — so the rule ships now, as code
-with a test, because the alternative is a rule in a document that whoever builds
-the mirror has to remember. Two ways in are closed:
+**Phase 2's mirror now exists** (`research_workspace/mirror.py`) and enforces
+the same rule from the other side: it withholds any dossier section whose
+sources include the `news` tier, writing a `<!-- withheld: news-derived -->`
+marker with the Postgres id instead of the body. Two mechanisms enforcing one
+rule is only safe while they agree, so
+`test_the_real_mirror_and_this_plane_agree_about_news` asserts the agreement —
+the tier filter decides what a *section* may export, and the guard below is the
+content-level net for anything exporting ledger rows or staged files, which the
+tier filter never sees. Two ways in are closed:
 
 - **The marker.** Every ledger row this plane writes carries
   `mirror_allowed=false` in its payload. `filings.observations.mirror_allowed`

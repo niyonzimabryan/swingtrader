@@ -589,6 +589,41 @@ class MirrorTests(unittest.TestCase):
         row = self.session.query(SourceObservation).one()
         self.assertTrue(mirror_allowed(row))
 
+    def test_the_real_mirror_and_this_plane_agree_about_news(self):
+        """Phase 2's mirror now exists, and it withholds the same thing.
+
+        When this plane was written the ``research/`` mirror was still Spec M's
+        to build, so the rule shipped as a marker plus a guard. Phase 2 landed
+        the mirror while this branch was in flight, and it filters on **source
+        tier** from the other side.
+
+        Two mechanisms enforcing one rule is only safe while they agree, so the
+        agreement is asserted rather than assumed: a change to either side that
+        opened a gap fails here. ``research_workspace.trust`` decides what a
+        dossier section may export; ``news.mirror_guard`` is the content-level
+        net for anything exporting ledger rows or staged files, which the tier
+        filter does not see.
+        """
+        from research_workspace import trust
+
+        self.assertIn(trust.NEWS, trust.MIRROR_WITHHELD_TIERS)
+
+        news_sourced = [{"tier": trust.NEWS, "url": "https://example.invalid/x"}]
+        self.assertTrue(trust.is_mirror_withheld(news_sourced))
+        self.assertEqual(trust.withheld_reason(news_sourced), "news-derived")
+
+        # A section that also cites a filing is still withheld: the prose may
+        # have taken anything from either source.
+        mixed = news_sourced + [{"tier": trust.PRIMARY_REGULATOR, "url": "https://sec.gov/x"}]
+        self.assertTrue(trust.is_mirror_withheld(mixed))
+
+        # And the same content, offered to this plane's guard as a payload
+        # rather than as a dossier section, is refused too.
+        with self.assertRaises(mirror_guard.MirrorRefused):
+            mirror_guard.require_mirrorable(
+                {"source": "alpaca_news", "headline": "x", "novelty_score": 0.4}
+            )
+
     def test_a_staged_file_is_scanned_as_text_too(self):
         """A CSV header row leaks as surely as a JSON key."""
         import tempfile
