@@ -329,7 +329,11 @@ every implementation must reproduce to the cent.
   regression is `p_t − r_f,t = α + β (r_m,t − r_f,t) + ε_t` over the cohort's span; the
   horizon estimate reported as the headline is **`α × h`** (daily alpha scaled to the
   horizon), with the CI from the §6.1 block bootstrap of `{p_t − r_m,t}` scaled the
-  same way. Cross-sectional CAR (the mean of `CAR_i(h)`) is the cross-check, and both
+  same way. **When β is not identified** (fewer than three sessions in the series, or
+  zero benchmark variance) the engine sets **β := 1** so α degrades to the mean daily
+  abnormal return, reports `beta_estimated=False`, and warns. β := 0 would silently
+  turn the abnormal headline into the raw return, which is failure mode 4. (Ruling
+  2026-09-09, from the Phase 3b build.) Cross-sectional CAR (the mean of `CAR_i(h)`) is the cross-check, and both
   are printed in the same units: percent over `h` sessions.
 - **Policy return** (§5.3) is the simulator's net P&L over entry, in percent of entry
   notional, on the same event clock.
@@ -503,7 +507,7 @@ family-wise error while accounting for the heavy dependence between overlapping 
 variants; a Šidák correction on the effective number of independent trials is the cheap
 fallback. Both the raw empirical p-value and the adjusted one are printed with the trial
 count, and the reader sees all three. The response also prints **the number of cells
-examined** — regime × horizon × any conditioning split — because the recent
+examined**, defined as `n_horizons × (1 + n_regime_cells + n_stability_cells)` — because the recent
 post-earnings-drift literature finds drift surviving mainly in conditional subsets, and
 an engine that can slice on all of them will find significance somewhere. StepM is the one
 multiplicity correction in v1; `arch`'s SPA and MCS over a family's cells are deferred
@@ -613,7 +617,7 @@ failing test attached (§10).
 | `test_methods_disagree_downgrades` | Divergent bootstrap and calendar-time results yield `inconclusive` |
 | `test_placebo_null_effect` | Random-date placebo on real data produces no significant effect |
 | `test_policy_matches_simulator` | Policy-simulated outcomes equal `backtest/simulator.py` on the same events, bit for bit |
-| `test_single_regime_refuses_generalization` | A one-regime cohort is flagged and not pooled |
+| `test_single_regime_warned_not_refused` | A one-regime cohort carries the `single_regime` warning and is still answered (§5.4) |
 | `test_insufficient_is_returned_not_hedged` | Below the floor, `tier="insufficient"` and no point estimate is emitted |
 | `test_trial_count_increments` | The twelfth variant reports `trials_against_this_pattern=12` |
 | `test_no_model_number_in_output` | Response construction from an LLM string raises |
