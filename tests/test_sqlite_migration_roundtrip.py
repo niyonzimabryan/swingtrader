@@ -38,6 +38,7 @@ POPULATED_TABLES = [
     "macro_regime",
     "watchlist_tickers",
     "workspace_tokens",
+    "source_observations",
 ]
 
 
@@ -51,6 +52,7 @@ def _populate(url: str) -> None:
         Memo,
         OrderEvent,
         ScoredCandidate,
+        SourceObservation,
         Ticker,
         Trade,
         WatchlistTicker,
@@ -188,6 +190,45 @@ def _populate(url: str) -> None:
                     token_prefix="swt_abcd",
                     scopes="read,research:write",
                     created_at=datetime(2026, 2, 3, 8, 0, 0),
+                ),
+            ]
+        )
+    with get_session() as session:
+        session.add_all(
+            [
+                # Phase 3a's table. Booleans, a nullable self-referencing FK,
+                # and a Date beside two UtcDateTimes — the canonicaliser has to
+                # render all four identically on both engines.
+                SourceObservation(
+                    source="sec_xbrl",
+                    source_trust="regulator",
+                    entity_cik="0000320193",
+                    fact_type="Revenues",
+                    value_numeric=94_836_000_000.0,
+                    unit="USD",
+                    period_start=date(2025, 10, 1),
+                    valid_at=datetime(2025, 12, 28, 0, 0, 0),
+                    known_at_utc=datetime(2026, 1, 30, 22, 30, 5),
+                    precision="second",
+                    provenance_class="observed",
+                    replay_eligible=True,
+                    payload_hash="b" * 64,
+                    ingested_at=datetime(2026, 1, 31, 1, 0, 0),
+                ),
+                SourceObservation(
+                    source="sec_xbrl",
+                    source_trust="regulator",
+                    entity_cik="0000320193",
+                    fact_type="EntityCommonStockSharesOutstanding",
+                    value_numeric=None,
+                    value_text="unavailable",
+                    valid_at=datetime(2025, 12, 28, 0, 0, 0),
+                    known_at_utc=datetime(2026, 1, 30, 22, 30, 5),
+                    precision="day",
+                    provenance_class="archival_reconstructed",
+                    replay_eligible=False,
+                    payload_hash="c" * 64,
+                    ingested_at=datetime(2026, 1, 31, 1, 0, 0),
                 ),
             ]
         )
