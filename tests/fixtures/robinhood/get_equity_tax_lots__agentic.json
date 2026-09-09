@@ -1,0 +1,20 @@
+{
+  "tax_lots": [
+    {
+      "id": "lot-9f2c",
+      "symbol": "AMD",
+      "quantity": "6.00000000",
+      "cost_basis": "852.90",
+      "open_date": "2026-08-18",
+      "term": "short_term"
+    },
+    {
+      "id": "lot-4b71",
+      "symbol": "TDW",
+      "quantity": "9.00000000",
+      "cost_basis": null,
+      "open_date": "2026-07-02",
+      "term": null
+    }
+  ]
+}

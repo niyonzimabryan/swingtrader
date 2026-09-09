@@ -1,0 +1,11 @@
+{
+  "portfolio": {
+    "account_number": "****7788",
+    "equity": "18420.10",
+    "portfolio_value": "19420.10",
+    "cash": "1000.00",
+    "settled_cash": "1000.00",
+    "unsettled_funds": "0.00",
+    "buying_power": "2000.00"
+  }
+}

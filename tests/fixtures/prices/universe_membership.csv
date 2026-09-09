@@ -1,0 +1,5 @@
+universe_slug,security_uid,ticker,member_from,member_to,known_at_utc
+sp500_fixture_v1,fx-0001,ALPH,2023-01-03,,2023-01-03T21:00:00+00:00
+sp500_fixture_v1,fx-0002,BETA,2023-01-03,2023-03-14,2023-01-03T21:00:00+00:00
+sp500_fixture_v1,fx-0003,GAMM,2023-02-28,,2023-02-28T21:00:00+00:00
+sp500_fixture_v1,fx-0006,BBBY,2023-01-03,2023-03-31,2023-01-03T21:00:00+00:00

@@ -669,7 +669,23 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
       **Needs Bryan (owner actions, not done):** provision Postgres, set
       `DATABASE_URL` + `DATA_DIR`, run the migration, create the second Railway
       service. Runbook: `docs/POSTGRES_CUTOVER_RUNBOOK.md`. Blocks Phases 1, 2, 4.
-- [ ] **Phase 1 — portfolio ledger + read-only tool surface** (`L`, `K` §4)
+- [ ] **Phase 1 — portfolio ledger + read-only tool surface** (`L`, `K` §4) — code
+      landed on `claude/phase-1-portfolio-ledger`: the seven Spec L §3 tables in
+      `0004_portfolio_ledger`, the append-only sync with its three failure
+      policies (never zero on error, fail closed above 50% deletion, reconcile
+      and page), the `BrokerCapabilities` contract + fake broker + contract
+      tests, the freshness/provenance split (reads flag, proposal paths refuse),
+      the wash-sale window flag, T+1 settlement on the cash Agentic account,
+      reconstructed-and-flagged dividends, and `portfolio_overview` /
+      `position_detail` / `orders_open` on the workspace service at scope
+      `read`. `PORTFOLIO_SYNC_ENABLED=false`. Docs: `docs/PORTFOLIO_LEDGER.md`,
+      `docs/ROBINHOOD_INTEGRATION_PLAN.md`.
+      **Needs Bryan (owner actions, not done):** run
+      `python -m scripts.record_robinhood_fixtures` on the desktop that holds the
+      token store (the committed fixtures are recorded-*shape*, not live), then
+      flip `PORTFOLIO_SYNC_ENABLED=true` on Railway to start the 30-day
+      unattended token-refresh log. The `gtc` `stop_market` protection probe
+      stays closed until Phase 6.
 - [ ] **Phase 2 — research workspace: dossiers, theses, invalidators, git mirror** (`M`)
 - [x] **Independent plan review folded in — v0.4 (2026-09-06)** — 11 should-fixes, 2 cuts
       taken; README §11 changelog. Sizing default for uncited proposals (half cap,
@@ -682,6 +698,30 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
       overlap-aware uncertainty, regime splits, null tests, and a real `insufficient`
       answer. Parallelizable with Phase 5. Fixture first, `depth="quick"` first,
       price-only setup before earnings. Deps: `arch` + `statsmodels`; never `mlfinlab`.
+- [ ] **Phase 3p — price plane** (`N` §4.2/§4.3/§4.5) — in review on
+      `claude/phase-3p-price-plane`. Five tables (`securities`, `price_bars`,
+      `corporate_actions`, `universe_membership`, `price_snapshots`) on migration
+      `0002_price_plane`, branched from `0001_baseline` and joined to the 0b/3a
+      head by `0004_merge_price_plane`; `PricePlane` interface with a
+      fixture-backed and a Sharadar implementation; `sp500_wikipedia_v1` (MIT
+      `fja05680/sp500`, committed) and `liquid_us_equity_v1` (computed from `price_bars`
+      alone); the twenty-delisting audit recorded on the snapshot. Behind
+      `PRICE_PLANE_ENABLED`, default off. Docs: `docs/PRICE_PLANE.md`,
+      `docs/DATA_LICENSES.md`. Open items carried out of the build:
+      - [ ] **Verify the twenty delisting facts against their Form 25 filings.** The
+            build session's egress proxy blocks `www.sec.gov`, so each row cites an
+            EDGAR *lookup* rather than an accession number and dates are
+            month-reliable / session-approximate. The audit blob says so
+            (`sources_verified_against_primary_filing: false`).
+      - [ ] **Confirm Sharadar's column names and redistribution terms at checkout.**
+            `data.nasdaq.com`, `sharadar.com` and `quantrocket.com` are all blocked;
+            the adapter's column list is verified from search extracts only and is
+            treated as a hypothesis it checks at runtime. Verification Claim 7 is still
+            `UNVERIFIED` across the board.
+      - [ ] **Run the delisting audit against Sharadar before paying** (`N` §4.2), and
+            cross-check our derived total-return series against Sharadar's `closeadj`.
+      - [ ] **Market-cap ranking for `liquid_us_equity_v1` waits for Phase 3a's share
+            counts.** v1 is liquidity-only, versioned so the cap leg is a new slug.
 - [ ] **Phase 4 — evidence planes: filings (13F/13D/G/Form 4), vintage-correct macro,
       timestamped news** (`O`)
 - [ ] **Phase 5 — Strategy Lab** (`Q`) — ships on its own six-PR plan and prompts.

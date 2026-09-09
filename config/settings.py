@@ -169,6 +169,22 @@ class Settings(BaseSettings):
     research_brier_min_resolved: int = 10
     research_calibration_min_resolved: int = 40
     research_calibration_coarse_below: int = 100
+    # --- Portfolio ledger and broker sync (Spec L) ---
+    # Off by default, like every new capability. With the flag false the tables
+    # exist, the read tools answer from whatever is in them (nothing, at first,
+    # and they say so through `provenance.stale`), and no scheduled job runs.
+    portfolio_sync_enabled: bool = False
+    # Spec L section 4: 60 minutes intraday. Past it every tool response carries
+    # stale=true, and any path feeding a proposal refuses rather than serves.
+    portfolio_freshness_budget_minutes: int = 60
+    # Hourly during market hours, plus one pre-market and one after the close.
+    portfolio_sync_interval_minutes: int = 60
+    portfolio_sync_pre_market_hour: int = 8
+    portfolio_sync_post_close_hour: int = 16
+    portfolio_sync_post_close_minute: int = 30
+    # Spec L section 4 failure policy: a sync that would drop more than this
+    # fraction of an account's known holdings writes nothing and pages.
+    portfolio_mass_deletion_threshold: float = 0.5
 
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
@@ -265,6 +281,25 @@ class Settings(BaseSettings):
     parallel_cooldown_runs: int = 20
     parallel_recovery_good_runs: int = 8
     parallel_alert_on_state_change: bool = True
+
+    # --- Price plane (Spec N §4.2/§4.3, Phase 3p) ---
+    # Off by default. Nothing in the price plane runs, and no vendor is called,
+    # until this is true; `data/market_data.py` (yfinance) is untouched either way.
+    price_plane_enabled: bool = False
+    # fixture | sharadar. `fixture` reads the committed CSVs and needs no key.
+    price_plane_source: str = "fixture"
+    # Nasdaq Data Link key for the Sharadar tables. Never hardcoded, never logged.
+    nasdaq_data_link_api_key: str = ""
+    # Named vintage of the price file that backfills and audits write against.
+    price_plane_snapshot: str = "dev"
+    # `liquid_us_equity_v1`: top N by 20-session median dollar volume at each
+    # month-end. Market-cap ranking waits for the Phase 3a share-count feed.
+    liquid_universe_top_n: int = 500
+    liquid_universe_window_sessions: int = 20
+    # Delisting audit (Spec N §4.2): terminal return over this many sessions,
+    # below this threshold, is a collapse rather than a stop.
+    delisting_audit_window_sessions: int = 10
+    delisting_audit_collapse_threshold: float = -0.60
 
     # --- Spec O Phase 3a: minimum SEC ingestion plane ---
     # Off by default. When false, filings.sec_minimal refuses to ingest; the

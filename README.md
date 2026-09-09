@@ -202,6 +202,7 @@ Core required settings:
 | FRED_API_KEY | Macro rates, yield curve, credit spreads |
 | DATABASE_URL | Local default: sqlite:///swing_trader.db. Postgres is supported with the same schema: postgresql+psycopg://user:pass@host:5432/db. See [docs/DATABASE_ENGINES.md](docs/DATABASE_ENGINES.md) |
 | SCHEDULER_ENABLED | Start with false; set true only after `/eval` works |
+| PRICE_PLANE_ENABLED | Off by default. The Spec N price backbone (three price series, point-in-time universes, the delisting audit). See [docs/PRICE_PLANE.md](docs/PRICE_PLANE.md) |
 
 Broker controls:
 
