@@ -682,6 +682,30 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
       overlap-aware uncertainty, regime splits, null tests, and a real `insufficient`
       answer. Parallelizable with Phase 5. Fixture first, `depth="quick"` first,
       price-only setup before earnings. Deps: `arch` + `statsmodels`; never `mlfinlab`.
+- [ ] **Phase 3p — price plane** (`N` §4.2/§4.3/§4.5) — in review on
+      `claude/phase-3p-price-plane`. Five tables (`securities`, `price_bars`,
+      `corporate_actions`, `universe_membership`, `price_snapshots`) on migration
+      `0002_price_plane`, branched from `0001_baseline` and joined to the 0b/3a
+      head by `0004_merge_price_plane`; `PricePlane` interface with a
+      fixture-backed and a Sharadar implementation; `sp500_wikipedia_v1` (MIT
+      `fja05680/sp500`, committed) and `liquid_us_equity_v1` (computed from `price_bars`
+      alone); the twenty-delisting audit recorded on the snapshot. Behind
+      `PRICE_PLANE_ENABLED`, default off. Docs: `docs/PRICE_PLANE.md`,
+      `docs/DATA_LICENSES.md`. Open items carried out of the build:
+      - [ ] **Verify the twenty delisting facts against their Form 25 filings.** The
+            build session's egress proxy blocks `www.sec.gov`, so each row cites an
+            EDGAR *lookup* rather than an accession number and dates are
+            month-reliable / session-approximate. The audit blob says so
+            (`sources_verified_against_primary_filing: false`).
+      - [ ] **Confirm Sharadar's column names and redistribution terms at checkout.**
+            `data.nasdaq.com`, `sharadar.com` and `quantrocket.com` are all blocked;
+            the adapter's column list is verified from search extracts only and is
+            treated as a hypothesis it checks at runtime. Verification Claim 7 is still
+            `UNVERIFIED` across the board.
+      - [ ] **Run the delisting audit against Sharadar before paying** (`N` §4.2), and
+            cross-check our derived total-return series against Sharadar's `closeadj`.
+      - [ ] **Market-cap ranking for `liquid_us_equity_v1` waits for Phase 3a's share
+            counts.** v1 is liquidity-only, versioned so the cap leg is a new slug.
 - [ ] **Phase 4 — evidence planes: filings (13F/13D/G/Form 4), vintage-correct macro,
       timestamped news** (`O`)
 - [ ] **Phase 5 — Strategy Lab** (`Q`) — ships on its own six-PR plan and prompts.

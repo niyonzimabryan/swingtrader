@@ -23,8 +23,13 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
-data/
-/data/
+# `data/` is both a source package (the vendor adapters) and, historically, a
+# runtime scratch directory. Ignore its contents by default and re-include the
+# source that lives there: without this, new modules under data/ are silently
+# untracked (the existing ones predate the rule and are tracked already).
+/data/*
+!/data/*.py
+!/data/prices/
 sessions/
 /sessions/
 cache/
