@@ -6,11 +6,8 @@ The database schema is owned by Alembic. Nothing else may change it.
 migrations/
   env.py                      Alembic environment (shared by CLI and startup)
   versions/
-    0001_baseline.py            the root revision
-    0002_workspace_tokens.py    Phase 0b: workspace owner tokens (spec K §4.1)
-    0002_source_observations.py Phase 3a: the bitemporal source ledger (spec Q §8)
-    0003_merge_heads.py         the merge of the two 0002 branches
-    0004_portfolio_ledger.py    Phase 1: the portfolio ledger (spec L §3)
+    0001_baseline.py          the root revision
+    0002_workspace_tokens.py  Phase 0b: workspace owner tokens (spec K §4.1)
 ```
 
 ## The baseline rule
@@ -35,20 +32,21 @@ a second head, or contains a revision that does not descend from the baseline.
 
 ## Adding a table: nothing extra to do
 
-An earlier draft of this file asked contributors to append every new table to a
-`POST_BASELINE_TABLES` list in `database/schema.py`. That constant no longer
-exists, and the instruction has been wrong since Phase 0b replaced it.
+`database/schema.py` adopts an unversioned pre-Alembic database by comparing its
+table and column names against **each revision in the graph**, so a database
+built before your migration existed is adopted at the revision it does match and
+your table is created by the `upgrade head` that follows the stamp. You do not
+have to register the table anywhere.
 
-`database/schema.py` now computes each revision's table-and-column signature by
-replaying the migration graph into a throwaway in-memory SQLite database, and
-matches an unversioned database against **every** revision rather than against
-the models. So a database built before your migration existed matches the
-revision it actually has, gets stamped there, and upgrades. A phase that adds a
-table needs to do nothing for that to keep working — which is the property that
-mattered, because a hand-maintained list would have been a merge conflict
-between every parallel phase.
-
-See "Startup behaviour" below for what each classification does.
+Phase 3a shipped this as an explicit `POST_BASELINE_TABLES` list, on the
+reasoning that a hand-maintained line per phase is a one-line merge conflict and
+therefore cheap. Phase 0b replaced it at integration with the derived version:
+the failure mode of forgetting the line is every un-adopted production database
+becoming `SchemaMismatch` at startup, which is a bad thing to leave to whether
+someone remembered. The signatures are computed by replaying the migrations into
+a throwaway in-memory SQLite database, once per process, and only when a
+database has tables but no `alembic_version` — so the cost lands on the one path
+that needs it and nowhere else.
 
 ## Adding a migration
 

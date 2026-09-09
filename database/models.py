@@ -667,6 +667,180 @@ class DeepResearchRequest(Base):
     error = Column(Text, default="")
 
 
+# --------------------------------------------------------------------------- #
+# Price plane (Spec N §4.2/§4.3, Phase 3p)
+#
+# Five tables, no foreign keys to anything outside this block. Phases 0b and 3a
+# are adding their own tables from the same baseline; a cross-phase FK would
+# make the integration merge revision order-dependent for no gain
+# (migrations/README.md). Securities are joined on `security_uid`, a stable
+# string id that survives ticker changes, which is also why it is not an FK
+# target: `securities` carries one row per ticker validity interval, so the
+# column is deliberately non-unique there.
+# --------------------------------------------------------------------------- #
+
+#: The four delisting reason categories. `performance` is the one that carries a
+#: Shumway terminal return (Spec N §4.2); `unknown` is what an unaudited vendor
+#: file gets, and it censors rather than matures the outcome (§4.4).
+DELISTING_REASONS = ("performance", "merger_acquisition", "other", "unknown")
+
+#: Venue as the Shumway convention needs it: the -30% / -55% split is
+#: NYSE/AMEX versus Nasdaq, not exchange-by-exchange.
+VENUES = ("nyse_amex", "nasdaq", "other", "unknown")
+
+
+class Security(Base):
+    """Security master: one row per (security, ticker validity interval).
+
+    A ticker rename adds a row with the same ``security_uid`` and a closed
+    ``ticker_valid_to``; the bars and actions keep pointing at the uid, so a
+    cohort built across a rename does not silently split into two names.
+    """
+
+    __tablename__ = "securities"
+    __table_args__ = (
+        UniqueConstraint(
+            "security_uid", "ticker", "ticker_valid_from", name="uq_securities_uid_ticker_from"
+        ),
+        Index("ix_securities_uid", "security_uid"),
+        Index("ix_securities_ticker_valid", "ticker", "ticker_valid_from", "ticker_valid_to"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    security_uid = Column(String(64), nullable=False)
+    ticker = Column(String(20), nullable=False)
+    ticker_valid_from = Column(Date, nullable=True)
+    ticker_valid_to = Column(Date, nullable=True)      # NULL = still the current ticker
+    name = Column(String(200), nullable=True)
+    exchange = Column(String(40), nullable=True)       # as the vendor spells it
+    venue = Column(String(20), nullable=False, default="unknown")
+    listing_date = Column(Date, nullable=True)
+    delisting_date = Column(Date, nullable=True)
+    delisting_reason = Column(String(32), nullable=False, default="unknown")
+    source = Column(String(40), nullable=False)
+    ingested_at = Column(UtcDateTime, default=utcnow_naive)
+
+
+class PriceBar(Base):
+    """One daily session, with the three series and the factors between them.
+
+    Spec N §4.3 stores raw OHLCV (what fills happened at), the split-adjusted
+    close (what signals and replay run on) and the total-return close (what the
+    benchmark comparison uses), plus the split factor and dividend cash whose
+    ex-date is this session — so any one series reconstructs from the other two.
+    """
+
+    __tablename__ = "price_bars"
+    __table_args__ = (
+        UniqueConstraint("security_uid", "session_date", name="uq_price_bars_uid_date"),
+        Index("ix_price_bars_uid_date", "security_uid", "session_date"),
+        Index("ix_price_bars_date", "session_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    security_uid = Column(String(64), nullable=False)
+    ticker = Column(String(20), nullable=False)
+    session_date = Column(Date, nullable=False)
+
+    raw_open = Column(Float, nullable=False)
+    raw_high = Column(Float, nullable=False)
+    raw_low = Column(Float, nullable=False)
+    raw_close = Column(Float, nullable=False)
+    volume = Column(Float, nullable=False)
+
+    #: Share multiplier whose ex-date is this session; 1.0 on an ordinary day.
+    split_factor = Column(Float, nullable=False, default=1.0)
+    #: Cash per share whose ex-date is this session; 0.0 on an ordinary day.
+    dividend_cash = Column(Float, nullable=False, default=0.0)
+
+    split_adjusted_close = Column(Float, nullable=False)
+    total_return_close = Column(Float, nullable=False)
+
+    source = Column(String(40), nullable=False)
+    ingested_at = Column(UtcDateTime, default=utcnow_naive)
+
+
+class CorporateActionRow(Base):
+    """A split, dividend or delisting event stored with its ex-date."""
+
+    __tablename__ = "corporate_actions"
+    __table_args__ = (
+        UniqueConstraint(
+            "security_uid", "ex_date", "action_type", "source",
+            name="uq_corporate_actions_uid_date_type_source",
+        ),
+        Index("ix_corporate_actions_uid_date", "security_uid", "ex_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    security_uid = Column(String(64), nullable=False)
+    ticker = Column(String(20), nullable=False)
+    ex_date = Column(Date, nullable=False)
+    action_type = Column(String(32), nullable=False)   # split | dividend | delisting | ...
+    value = Column(Float, nullable=True)
+    source = Column(String(40), nullable=False)
+    ingested_at = Column(UtcDateTime, default=utcnow_naive)
+
+
+class UniverseMembership(Base):
+    """Point-in-time index or rule membership (Spec N §4.2).
+
+    Half-open intervals: a name is a member as of ``d`` when
+    ``member_from <= d < member_to``, with a NULL ``member_to`` meaning "still a
+    member". ``known_at_utc`` is when the membership fact could first have been
+    acted on, so a cohort's bitemporal filter (§4.1) applies to membership too.
+    """
+
+    __tablename__ = "universe_membership"
+    __table_args__ = (
+        UniqueConstraint(
+            "universe_slug", "security_uid", "member_from",
+            name="uq_universe_membership_slug_uid_from",
+        ),
+        Index("ix_universe_membership_slug_window", "universe_slug", "member_from", "member_to"),
+        Index("ix_universe_membership_slug_uid", "universe_slug", "security_uid"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    universe_slug = Column(String(64), nullable=False)
+    security_uid = Column(String(64), nullable=False)
+    ticker = Column(String(20), nullable=False)
+    member_from = Column(Date, nullable=False)
+    member_to = Column(Date, nullable=True)
+    source = Column(String(64), nullable=False)
+    known_at_utc = Column(UtcDateTime, nullable=False)
+
+
+class PriceSnapshot(Base):
+    """A named vintage of the price file, so a cohort can say what it ran on.
+
+    ``delisting_audit_json`` carries the Spec N §4.2 twenty-delisting audit for
+    this snapshot: a snapshot whose audit says the series merely *stop* is one
+    whose terminal returns have to be synthesised, and the cohort renderer needs
+    to be able to read that back.
+    """
+
+    __tablename__ = "price_snapshots"
+    __table_args__ = (
+        UniqueConstraint("snapshot_slug", name="uq_price_snapshots_slug"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_slug = Column(String(64), nullable=False)
+    source = Column(String(40), nullable=False)
+    coverage_summary_json = Column(Text, nullable=False, default="{}")
+    delisting_audit_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(UtcDateTime, default=utcnow_naive)
+
+    @property
+    def coverage_summary(self) -> dict:
+        return json.loads(self.coverage_summary_json or "{}")
+
+    @property
+    def delisting_audit(self) -> dict:
+        return json.loads(self.delisting_audit_json or "{}")
+
+
 class WorkspaceToken(Base):
     """An owner token for the workspace API and MCP endpoint (Spec K §4.1).
 
