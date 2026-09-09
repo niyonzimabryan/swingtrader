@@ -324,3 +324,29 @@ facts and too loose about promotion; this table replaces it.
   revised series, verified by hand on one example and recorded in the docs.
 - Regime labels are deterministic, versioned, and reproducible from stored vintages.
 - News stories carry timestamps and cluster ids; the untimestamped ones are quarantined.
+
+---
+
+## 8. Rulings log (post-build)
+
+Ratified 2026-09-09 from the Phase 4 build (PR #51):
+
+- **`regime_v1` thresholds**: VIX 22 / 30, drawdown −10% / −20%, realized vol 25%,
+  10y−3m curve at zero. Deliberately untuned; frozen by fingerprint; any change is
+  `regime_v2`.
+- **`DFF` is classified as revised** (fail-closed) until someone verifies the FRED
+  series carries no methodology revisions; it stays out of `regime_v1`.
+- **An unrecognised publisher is `unattributed`**, never `established`: it can be
+  dossier evidence but cannot qualify a cohort. Add names to `news/articles.py` as
+  they are met.
+- **Rule 10b5-1: unknown is not false.** The parser accepts four candidate elements
+  plus footnote text and records which fired; when none does, `plan_10b5_1=None`
+  with a warning. Owner action: confirm the element name against one real post-2023
+  Form 4.
+- **LSH proposes, exact Jaccard decides** at threshold 0.5 for news clustering.
+- `filings/tracked_investors.py` ships empty on purpose; the owner names the
+  watchlist.
+- Every fixture in Phases 3a and 4 is synthetic: `sec.gov`, `api.stlouisfed.org`,
+  `data.alpaca.markets`, `api.openfigi.com` and `finnhub.io` are all blocked from the
+  build environment. The `scripts/record_*_fixtures.py` scripts turn each plane's
+  numbers from structural to verified when run where the host is reachable.
