@@ -221,6 +221,25 @@ class Settings(BaseSettings):
     parallel_recovery_good_runs: int = 8
     parallel_alert_on_state_change: bool = True
 
+    # --- Price plane (Spec N §4.2/§4.3, Phase 3p) ---
+    # Off by default. Nothing in the price plane runs, and no vendor is called,
+    # until this is true; `data/market_data.py` (yfinance) is untouched either way.
+    price_plane_enabled: bool = False
+    # fixture | sharadar. `fixture` reads the committed CSVs and needs no key.
+    price_plane_source: str = "fixture"
+    # Nasdaq Data Link key for the Sharadar tables. Never hardcoded, never logged.
+    nasdaq_data_link_api_key: str = ""
+    # Named vintage of the price file that backfills and audits write against.
+    price_plane_snapshot: str = "dev"
+    # `liquid_us_equity_v1`: top N by 20-session median dollar volume at each
+    # month-end. Market-cap ranking waits for the Phase 3a share-count feed.
+    liquid_universe_top_n: int = 500
+    liquid_universe_window_sessions: int = 20
+    # Delisting audit (Spec N §4.2): terminal return over this many sessions,
+    # below this threshold, is a collapse rather than a stop.
+    delisting_audit_window_sessions: int = 10
+    delisting_audit_collapse_threshold: float = -0.60
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @field_validator("robinhood_order_type")

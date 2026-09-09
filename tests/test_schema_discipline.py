@@ -23,10 +23,11 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import MetaData, Table, create_engine, inspect
 
 from database.models import Base
 from database.schema import (
+    ALEMBIC_VERSION_TABLE,
     BASELINE_REVISION,
     SchemaMismatch,
     alembic_config,
@@ -260,7 +261,11 @@ class LegacyAdoptionTests(unittest.TestCase):
         self.assertEqual(ensure_schema(self.engine), "created")
 
     def test_unversioned_pre_alembic_schema_is_adopted(self):
-        create_all_for_tests(self.engine)
+        # The pre-Alembic schema is the baseline's tables with no
+        # alembic_version. Build exactly that: `create_all_for_tests` stopped
+        # being a faithful stand-in once a phase added a table of its own, since
+        # it also creates the tables that phase's migration is still due to add.
+        _build_pre_alembic_schema(self.engine)
         with self.engine.connect() as conn:
             self.assertEqual(classify(conn), "legacy")
 
@@ -288,6 +293,13 @@ class LegacyAdoptionTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("missing tables", message)
         self.assertIn(f"alembic stamp {BASELINE_REVISION}", message)
+
+
+def _build_pre_alembic_schema(engine) -> None:
+    """The baseline's tables, with no ``alembic_version`` — a legacy database."""
+    with engine.begin() as conn:
+        command.upgrade(alembic_config(conn), BASELINE_REVISION)
+    Table(ALEMBIC_VERSION_TABLE, MetaData()).drop(engine)
 
 
 def _reflect(engine) -> dict:

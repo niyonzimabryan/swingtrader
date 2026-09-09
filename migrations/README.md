@@ -7,7 +7,12 @@ migrations/
   env.py                      Alembic environment (shared by CLI and startup)
   versions/
     0001_baseline.py          the root revision
+    3p01_price_plane.py       phase 3p: the price plane (Spec N §4.2/§4.3)
 ```
+
+Revision ids carry a phase prefix rather than a global sequence number
+(`3p01_price_plane`, not `0002_...`): three phases developed in parallel would
+each reach for `0002` and collide in the same directory.
 
 ## The baseline rule
 
@@ -69,11 +74,16 @@ session exists. `ensure_schema` classifies the database and acts:
 | --- | --- | --- |
 | `versioned` | `alembic_version` exists | `upgrade head` |
 | `empty` | no ORM tables exist | `upgrade head` |
-| `legacy` | every ORM table exists with the expected columns, no `alembic_version` | stamp `0001_baseline`, then `upgrade head` |
+| `legacy` | exactly the baseline's tables exist with the expected columns, no `alembic_version` | stamp `0001_baseline`, then `upgrade head` |
 | `unknown` | anything else | raise `SchemaMismatch` with recovery instructions |
 
 The `legacy` path is how the existing unversioned Railway SQLite file is
-adopted without being rebuilt. The signature it checks is table and column
+adopted without being rebuilt. It compares against `database.schema.BASELINE_TABLES`
+— the tables `0001_baseline` creates — and not against `Base.metadata`, because the
+moment a phase adds a table those two sets differ: a production database would be
+missing the new tables (and classify `unknown`), while a database that matched the
+models would be stamped at the baseline and then have the phase's migration try to
+create tables it already has. The signature it checks is table and column
 *names*: the old inline `ALTER TABLE` statements attached server defaults that
 `create_all()` never emitted, so a byte-exact DDL comparison would reject the
 very databases this path exists to adopt.

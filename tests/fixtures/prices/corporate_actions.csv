@@ -1,0 +1,7 @@
+security_uid,ticker,ex_date,action_type,value
+fx-0001,ALPH,2023-02-28,split,2.0
+fx-0001,ALPH,2023-01-31,dividend,0.5
+fx-0001,ALPH,2023-03-28,dividend,0.55
+fx-0003,GAMM,2023-02-21,dividend,0.2
+fx-0006,BBBY,2023-03-31,delisting,
+fx-0007,RAD,2023-03-23,delisting,

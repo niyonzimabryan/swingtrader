@@ -18,10 +18,13 @@ Startup classification
     ``reddit_sentiment`` table) do not make a database non-empty; the baseline
     drops them.
 ``legacy``
-    Every ORM table exists with the expected column names but there is no
-    ``alembic_version``. This is a database built by the pre-Alembic
+    Exactly the baseline's tables exist, with the expected column names, but
+    there is no ``alembic_version``. This is a database built by the pre-Alembic
     ``create_all()`` + inline-``ALTER TABLE`` path. Stamp the baseline, then
-    ``upgrade head``.
+    ``upgrade head``. The comparison is against ``BASELINE_TABLES``, not against
+    ``Base.metadata``: once a phase adds a table the two differ, and a database
+    matching the *models* must not be stamped at the baseline — the migrations
+    it skipped would then try to create tables it already has.
 ``unknown``
     Anything else — a partial schema, a missing column, an unexpected extra
     column on an ORM table. Fail closed with recovery instructions rather than
@@ -49,6 +52,31 @@ from database.models import Base
 
 #: The revision every later phase branches its migrations from.
 BASELINE_REVISION = "0001_baseline"
+
+#: Exactly the tables ``0001_baseline`` creates.
+#:
+#: The ``legacy`` classification means "this is the pre-Alembic schema", and the
+#: pre-Alembic schema is the baseline — not whatever the ORM declares today. The
+#: two were the same set until the first phase added a table; from then on,
+#: comparing a production database against ``Base.metadata`` would classify it
+#: ``unknown`` (it is missing the new phase's tables) and, worse, a database that
+#: *did* match the models would be stamped at the baseline and then have every
+#: later migration re-create tables that already exist.
+#:
+#: Kept in sync by ``tests/test_price_plane_schema.py::test_baseline_table_set_matches_the_migration``,
+#: which parses ``0001_baseline`` rather than trusting this list.
+#:
+#: Known limitation: the column check below still reads the *ORM* declaration for
+#: these tables, which is correct only while no phase alters a baseline table. A
+#: phase that does must extend this to carry the baseline's columns too.
+BASELINE_TABLES = frozenset({
+    "catalysts", "company_profiles", "deep_research_requests", "discovered_tickers",
+    "event_contexts", "event_outcomes", "fundamentals", "historical_contexts",
+    "historical_events", "historical_patterns", "macro_regime", "memos",
+    "order_events", "pattern_provider_cache", "pattern_search_runs", "peer_edges",
+    "pipeline_runs", "price_data", "scored_candidates", "signals", "tickers",
+    "trades", "watchlist_tickers", "web_research", "web_research_cache",
+})
 
 ALEMBIC_VERSION_TABLE = "alembic_version"
 
@@ -117,17 +145,24 @@ def classify(connection) -> str:
     if not observed:
         return "empty"
 
+    # `legacy` is the pre-Alembic schema, which is the baseline's table set —
+    # see BASELINE_TABLES. A database carrying a later phase's tables but no
+    # alembic_version is not a database this branch knows how to adopt.
     expected = expected_signature()
-    if set(observed) != set(expected):
+    if set(observed) != BASELINE_TABLES:
         return "unknown"
-    for table, columns in expected.items():
-        if observed[table] != columns:
+    for table in BASELINE_TABLES:
+        if observed[table] != expected[table]:
             return "unknown"
     return "legacy"
 
 
 def recovery_message(connection) -> str:
-    expected = expected_signature()
+    expected = {
+        table: columns
+        for table, columns in expected_signature().items()
+        if table in BASELINE_TABLES
+    }
     observed = observed_signature(connection)
     missing_tables = sorted(set(expected) - set(observed))
     extra = sorted(set(observed) - set(expected))
