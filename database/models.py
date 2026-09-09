@@ -665,3 +665,92 @@ class DeepResearchRequest(Base):
     submitted_at = Column(UtcDateTime, default=utcnow_naive)
     completed_at = Column(UtcDateTime, nullable=True)
     error = Column(Text, default="")
+
+
+class SourceObservation(Base):
+    """Bitemporal source ledger — Spec Q section 8, extended by Spec O section 2.
+
+    One row is one fact from one provider, carrying both of its times:
+
+    ``valid_at``
+        when the fact applies (period end for a duration fact, the instant for
+        a point fact, the announcement time for an event).
+    ``known_at_utc``
+        when we could first have known it. For SEC filings this is the
+        submissions ``acceptanceDateTime``, never ``filingDate`` — see
+        ``filings/observations.py``, which refuses the latter.
+
+    ``precision`` records whether ``known_at_utc`` is real to the second or is
+    a date normalised to the end of its day; ``provenance_class`` records how
+    the timestamp was obtained. Both travel with every row so a downstream
+    cohort can tell an observed instant from a reconstructed one instead of
+    inferring it from the source name.
+
+    Restatements are new rows: ``known_at_utc <= t`` therefore returns the
+    as-reported figure without any deletion. ``superseded_observation_id``
+    points at the row an amendment replaces; the original stays queryable.
+    """
+
+    __tablename__ = "source_observations"
+    __table_args__ = (
+        # Idempotency: the natural key of an observation is the hash of its
+        # identity plus its value, so re-running an ingest writes nothing new
+        # while a restatement (new accession, new value) is a new row.
+        UniqueConstraint("payload_hash", name="uq_source_obs_payload_hash"),
+        # The `known_at_utc <= t` filter every cohort runs, narrowed first by
+        # the entity and fact type it asks about.
+        Index("ix_source_obs_entity_fact_known", "entity_cik", "fact_type", "known_at_utc"),
+        Index("ix_source_obs_ticker_fact_known", "ticker_at_time", "fact_type", "known_at_utc"),
+        Index("ix_source_obs_known_at", "known_at_utc"),
+        Index("ix_source_obs_source_accession", "source", "accession"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # --- where it came from ---
+    source = Column(String(60), nullable=False)
+    source_url = Column(Text, nullable=False, default="")
+    source_trust = Column(String(30), nullable=False)
+    accession = Column(String(40), nullable=True)
+
+    # --- what it is about ---
+    entity_cik = Column(String(10), nullable=False)
+    ticker_at_time = Column(String(20), nullable=True)
+    fact_type = Column(String(80), nullable=False)
+
+    # --- the value ---
+    value_numeric = Column(Float, nullable=True)
+    value_text = Column(Text, nullable=True)
+    unit = Column(String(40), nullable=True)
+
+    # --- the two times ---
+    period_start = Column(Date, nullable=True)
+    valid_at = Column(UtcDateTime, nullable=False)
+    known_at_utc = Column(UtcDateTime, nullable=False)
+    precision = Column(String(10), nullable=False)
+    provenance_class = Column(String(30), nullable=False)
+    replay_eligible = Column(Boolean, nullable=False, default=False)
+
+    # --- bookkeeping ---
+    payload_json = Column(Text, nullable=False, default="{}")
+    payload_hash = Column(String(64), nullable=False)
+    quality_warnings = Column(Text, nullable=False, default="[]")
+    superseded_observation_id = Column(
+        Integer, ForeignKey("source_observations.id"), nullable=True
+    )
+    ingested_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    @property
+    def payload(self) -> dict:
+        try:
+            return json.loads(self.payload_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+
+    @property
+    def warnings(self) -> list:
+        try:
+            loaded = json.loads(self.quality_warnings or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
