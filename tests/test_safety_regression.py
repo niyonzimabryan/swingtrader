@@ -25,8 +25,8 @@ from unittest.mock import patch
 
 from agents.base_agent import AgentOutput
 from database.db import get_session
-from tests.dbfixture import init_test_db
 from database.models import Ticker, Trade
+from tests.dbfixture import init_test_db
 from utils.timeutils import utcnow_naive
 from execution.order_monitor import OrderMonitor
 from execution.position_manager import PositionManager

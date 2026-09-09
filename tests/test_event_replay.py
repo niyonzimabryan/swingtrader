@@ -28,8 +28,8 @@ from backtest.event_replay import (
 from config.settings import Settings
 from data.event_extractor import make_dedupe_key
 from database.db import get_session
-from tests.dbfixture import init_test_db
 from database.models import HistoricalEvent, ScoredCandidate
+from tests.dbfixture import init_test_db
 
 FakeBar = namedtuple("FakeBar", "date open high low close volume")
 EVENT_DATE = date(2025, 1, 15)

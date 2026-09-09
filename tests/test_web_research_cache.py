@@ -11,8 +11,8 @@ from agents.web_research_agent import WebResearchAgent
 from config.settings import Settings
 from database import db as db_module
 from database.db import get_session, init_db
-from tests.dbfixture import init_test_db, sqlite_url
 from database.models import WebResearchCache
+from tests.dbfixture import init_test_db, sqlite_url
 
 
 class _CountingWebSearch:

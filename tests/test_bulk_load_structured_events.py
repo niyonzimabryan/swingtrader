@@ -3,7 +3,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 from datetime import date, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
 from data.analog_ranker import (
@@ -18,8 +17,8 @@ from data.event_discovery import (
 )
 from data.event_extractor import make_dedupe_key
 from database.db import get_session
-from tests.dbfixture import init_test_db
 from database.models import EventOutcome, HistoricalEvent
+from tests.dbfixture import init_test_db
 from scripts.bulk_load_structured_events import (
     StructuredEventLoader,
     build_earnings_candidate,

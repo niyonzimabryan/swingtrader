@@ -19,6 +19,7 @@ import re
 import unittest
 from pathlib import Path
 
+from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
@@ -215,6 +216,25 @@ class SchemaParityTests(unittest.TestCase):
             _reflect(create_all_engine),
             "The baseline has drifted from Base.metadata.create_all().",
         )
+
+    def test_baseline_round_trips_down_to_base_and_back(self):
+        """migrations/README.md claims the baseline is reversible; prove it."""
+        engine = create_engine(self.db.url)
+        self.addCleanup(engine.dispose)
+        ensure_schema(engine)
+
+        with engine.begin() as conn:
+            command.downgrade(alembic_config(conn), "base")
+        remaining = set(inspect(engine).get_table_names()) & set(Base.metadata.tables)
+        self.assertEqual(remaining, set())
+
+        self.assertEqual(ensure_schema(engine), "upgraded")
+        with engine.connect() as conn:
+            context = MigrationContext.configure(
+                conn,
+                opts={"compare_type": True, "compare_server_default": True},
+            )
+            self.assertEqual(compare_metadata(context, Base.metadata), [])
 
     def test_head_revision_is_recorded(self):
         engine = create_engine(self.db.url)

@@ -72,7 +72,7 @@ class TestDatabase:
             ).render_as_string(hide_password=False)
 
     def _run_admin(self, *statements: str) -> None:
-        engine = create_engine(self._admin_url, poolclass=None)
+        engine = create_engine(self._admin_url)
         try:
             with engine.begin() as conn:
                 for statement in statements:

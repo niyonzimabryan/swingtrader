@@ -7,14 +7,13 @@ inflate the operator-facing memo count.
 import tempfile
 import unittest
 from datetime import datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from database import db as db_module
 from database.db import get_session
-from tests.dbfixture import init_test_db
 from database.models import Memo, ScoredCandidate, Ticker, Trade
+from tests.dbfixture import init_test_db
 from bot.weekly_report import WeeklyReport
 
 ET = ZoneInfo("America/New_York")

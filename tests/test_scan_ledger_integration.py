@@ -7,13 +7,12 @@ and that the catalyst gate short-circuits before scoring (no ledger row).
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
 from database import db as db_module
 from database.db import get_session
-from tests.dbfixture import init_test_db
 from database.models import ScoredCandidate
+from tests.dbfixture import init_test_db
 from data.event_outcomes import PriceBar
 from orchestrator.pipeline import ScanTickerItem, TradingPipeline
 

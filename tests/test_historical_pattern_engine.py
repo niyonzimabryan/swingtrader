@@ -17,8 +17,8 @@ from data.event_extractor import EventExtractor, EventValidationError, make_dedu
 from data.event_outcomes import EventOutcomeEngine, HistoricalMarketCapUnavailable, PriceBar, is_event_mature
 from data.peer_resolver import PeerResolver
 from database.db import get_session
-from tests.dbfixture import init_test_db
 from database.models import EventContext, EventOutcome, HistoricalEvent, PatternProviderCache, PatternSearchRun
+from tests.dbfixture import init_test_db
 from memo.templates.ic_memo import format_memo_plain
 from scoring.engine import ScoringEngine
 from scripts.backfill_historical_events import drain_queue

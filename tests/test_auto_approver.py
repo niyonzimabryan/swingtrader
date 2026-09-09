@@ -9,13 +9,12 @@ exploration path that reuses the human order flow.
 import asyncio
 import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 from database import db as db_module
 from database.db import get_session
-from tests.dbfixture import init_test_db
 from database.models import Memo, ScoredCandidate, Ticker, Trade
+from tests.dbfixture import init_test_db
 from execution.auto_approver import AutoApprover
 
 
