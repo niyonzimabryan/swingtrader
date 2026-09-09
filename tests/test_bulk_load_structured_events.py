@@ -3,7 +3,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 from datetime import date, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
 from data.analog_ranker import (
@@ -17,8 +16,9 @@ from data.event_discovery import (
     EVENT_SUPPORTED_TYPES,
 )
 from data.event_extractor import make_dedupe_key
-from database.db import get_session, init_db
+from database.db import get_session
 from database.models import EventOutcome, HistoricalEvent
+from tests.dbfixture import init_test_db
 from scripts.bulk_load_structured_events import (
     StructuredEventLoader,
     build_earnings_candidate,
@@ -177,9 +177,10 @@ class UpgradeClusteringTests(unittest.TestCase):
 class LoaderStorageTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        init_db(f"sqlite:///{Path(self.tmp.name) / 'test.db'}")
+        self.db = init_test_db("bulkload")
 
     def tearDown(self):
+        self.db.cleanup()
         self.tmp.cleanup()
 
     def _loader(self, earnings=None, grades=None, outcome_engine=None):
@@ -251,9 +252,10 @@ class LoaderStorageTests(unittest.TestCase):
 class TaxonomyFallbackTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        init_db(f"sqlite:///{Path(self.tmp.name) / 'test.db'}")
+        self.db = init_test_db("bulkload")
 
     def tearDown(self):
+        self.db.cleanup()
         self.tmp.cleanup()
 
     def test_structured_types_are_supported(self):

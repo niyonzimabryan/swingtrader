@@ -331,7 +331,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ticker_filter = context.args[0].upper() if context.args else None
 
         with get_session() as session:
-            query = session.query(Trade).filter(Trade.status == "closed").order_by(Trade.exit_date.desc())
+            query = session.query(Trade).filter(Trade.status == "closed").order_by(Trade.exit_date.desc().nullslast())
             if ticker_filter:
                 ticker_obj = session.query(Ticker).filter_by(symbol=ticker_filter).first()
                 if ticker_obj:

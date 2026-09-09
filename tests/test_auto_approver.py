@@ -9,12 +9,12 @@ exploration path that reuses the human order flow.
 import asyncio
 import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 from database import db as db_module
-from database.db import get_session, init_db
+from database.db import get_session
 from database.models import Memo, ScoredCandidate, Ticker, Trade
+from tests.dbfixture import init_test_db
 from execution.auto_approver import AutoApprover
 
 
@@ -105,7 +105,7 @@ class _Cand:
 class AutoApproverTestBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        init_db(f"sqlite:///{Path(self.tmp.name) / 'auto.db'}")
+        self.db = init_test_db("auto")
         with get_session() as s:
             t = Ticker(symbol="AAA", sector="Tech", in_universe=True)
             s.add(t)
@@ -119,6 +119,7 @@ class AutoApproverTestBase(unittest.TestCase):
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.tmp.cleanup()
 
     def _approver(self, settings, broker=None):

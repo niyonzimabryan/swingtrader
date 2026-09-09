@@ -4,7 +4,6 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from utils.timeutils import utcnow_naive
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -13,8 +12,9 @@ from bot.daily_digest import DailyDigest
 from bot.handlers.performance import _build_performance_text
 from bot.weekly_report import WeeklyReport
 from database import db as db_module
-from database.db import get_session, init_db
+from database.db import get_session
 from database.models import Memo, OrderEvent, Ticker, Trade
+from tests.dbfixture import init_test_db
 from execution.brokers.base import BrokerOrderRequest, BrokerOrderResult, BrokerOrderReview
 from execution.order_manager import OrderManager
 from execution.order_monitor import OrderMonitor
@@ -104,8 +104,7 @@ class _FakeAlpaca:
 class ReportingSchemaTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "test.db"
-        init_db(f"sqlite:///{self.db_path}")
+        self.db = init_test_db("reporting")
         self.settings = SimpleNamespace(max_holding_days=20, anthropic_api_key="test-key")
 
         et_now = datetime.now(ZoneInfo("America/New_York"))
@@ -183,6 +182,7 @@ class ReportingSchemaTests(unittest.TestCase):
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.temp_dir.cleanup()
 
     def test_daily_digest_uses_current_memo_timestamp_field(self):
@@ -377,8 +377,7 @@ class _FakeProtectedEntryAlpaca:
 class OrderExecutionFlowTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "orders.db"
-        init_db(f"sqlite:///{self.db_path}")
+        self.db = init_test_db("orders")
         with get_session() as session:
             ticker = Ticker(symbol="MSFT", sector="Technology", in_universe=True)
             session.add(ticker)
@@ -419,6 +418,7 @@ class OrderExecutionFlowTests(unittest.TestCase):
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.temp_dir.cleanup()
 
     def test_execute_approved_trade_records_pending_fill_until_entry_fills(self):
@@ -481,8 +481,7 @@ class _FakeRobinhoodBroker:
 class RobinhoodOrderExecutionTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "robinhood.db"
-        init_db(f"sqlite:///{self.db_path}")
+        self.db = init_test_db("robinhood")
         with get_session() as session:
             ticker = Ticker(symbol="NVDA", sector="Technology", in_universe=True)
             session.add(ticker)
@@ -514,6 +513,7 @@ class RobinhoodOrderExecutionTests(unittest.TestCase):
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.temp_dir.cleanup()
 
     def _settings(self, **overrides):
@@ -589,8 +589,7 @@ class _MissingPositionAlpaca:
 class OrderMonitorReconciliationTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "monitor.db"
-        init_db(f"sqlite:///{self.db_path}")
+        self.db = init_test_db("monitor")
         with get_session() as session:
             ticker = Ticker(symbol="ORCL", sector="Technology", in_universe=True)
             session.add(ticker)
@@ -621,6 +620,7 @@ class OrderMonitorReconciliationTests(unittest.TestCase):
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.temp_dir.cleanup()
 
     def test_time_exit_reconciles_trade_when_alpaca_position_is_missing(self):
@@ -718,8 +718,7 @@ class RobinhoodLiveSafetyRegressionTests(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temp_dir.name) / "rh_safety.db"
-        init_db(f"sqlite:///{self.db_path}")
+        self.db = init_test_db("rh_safety")
         with get_session() as session:
             ticker = Ticker(symbol="NVDA", sector="Technology", in_universe=True)
             session.add(ticker)
@@ -747,6 +746,7 @@ class RobinhoodLiveSafetyRegressionTests(unittest.TestCase):
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.temp_dir.cleanup()
 
     def _settings(self, **overrides):
