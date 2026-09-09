@@ -237,6 +237,42 @@ class Settings(BaseSettings):
     sec_request_timeout_s: float = 30.0
     sec_max_retries: int = 4
 
+    # --- Spec O Phase 4: the three evidence planes ---
+    # All off by default. When false the plane's ingest refuses to run; reads
+    # of whatever is already stored are unaffected, because a table is not a
+    # capability.
+    plane_filings_enabled: bool = False
+    plane_macro_vintage_enabled: bool = False
+    plane_news_enabled: bool = False
+
+    # OpenFIGI — CUSIP -> FIGI -> ticker for ownership tables (Spec O section
+    # 3.2). Free. Without a key: 25 requests/minute, 10 jobs per request; with
+    # one: 25 requests per 6 seconds, 100 jobs (verification claim 15). The
+    # client picks the right pair from whether the key is set.
+    openfigi_api_key: str = ""
+    openfigi_timeout_s: float = 30.0
+
+    # Alpaca News (Benzinga-sourced) — the primary timestamped news source.
+    # Credentials are the existing ALPACA_API_KEY / ALPACA_SECRET_KEY.
+    # 200 requests/minute on the free market-data plan (verification claim 11,
+    # strong secondary); lower it if Alpaca starts returning 429.
+    alpaca_news_base_url: str = "https://data.alpaca.markets"
+    alpaca_news_requests_per_minute: int = 200
+    alpaca_news_timeout_s: float = 30.0
+
+    # Finnhub is the cross-check for the earliest-timestamp rule, not a
+    # primary. 60 requests/minute on the free tier.
+    finnhub_news_requests_per_minute: int = 60
+
+    # MinHash/LSH near-duplicate clustering (Spec O section 5.2). 128
+    # permutations at a Jaccard threshold of 0.6 over 5-word shingles of
+    # title-plus-lead. Changing any of these changes which stories merge, so
+    # they are settings rather than literals — but they are *not* per-run
+    # knobs: a cluster id is only comparable across runs at fixed parameters.
+    news_minhash_permutations: int = 128
+    news_cluster_jaccard_threshold: float = 0.5
+    news_shingle_size: int = 5
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @field_validator("sec_max_requests_per_second")

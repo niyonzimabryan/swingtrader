@@ -1,0 +1,35 @@
+{
+ "news": [
+  {
+   "id": "consensus-a",
+   "headline": "Fictional Example Corp third-quarter preview: what the Street expects",
+   "summary": "Fictional Example Corp reports third-quarter results after the close on Tuesday, the first period to include a full quarter of Placeholder Systems. Analysts expect EPS of $1.23 for the quarter.",
+   "content": "Fictional Example Corp reports third-quarter results after the close on Tuesday, the first period to include a full quarter of Placeholder Systems. Analysts expect EPS of $1.23 for the quarter.",
+   "author": "",
+   "source": "Reuters",
+   "url": "https://example.invalid/consensus-a",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-07-27T12:00:00Z",
+   "updated_at": "2026-07-27T12:00:00Z",
+   "images": []
+  },
+  {
+   "id": "consensus-b",
+   "headline": "Fictional Example Corp third-quarter preview: what the Street expects",
+   "summary": "Fictional Example Corp reports third-quarter results after the close on Tuesday, the first period to include a full quarter of Placeholder Systems. The consensus estimate of $1.18 excludes two smaller contributors from the panel.",
+   "content": "Fictional Example Corp reports third-quarter results after the close on Tuesday, the first period to include a full quarter of Placeholder Systems. The consensus estimate of $1.18 excludes two smaller contributors from the panel.",
+   "author": "",
+   "source": "CNBC",
+   "url": "https://example.invalid/consensus-b",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-07-27T13:30:00Z",
+   "updated_at": "2026-07-27T13:30:00Z",
+   "images": []
+  }
+ ],
+ "next_page_token": null
+}

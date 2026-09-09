@@ -66,6 +66,9 @@ BASELINE_REVISION = "0001_baseline"
 #: rather than deriving it by replaying migrations at startup.
 POST_BASELINE_TABLES = frozenset({
     "source_observations",  # 0002, Phase 3a (Spec O / Spec Q section 8)
+    "entity_history",       # 0003, Phase 4 (Spec O section 3.2)
+    "news_clusters",        # 0003, Phase 4 (Spec O section 5.2)
+    "news_articles",        # 0003, Phase 4 (Spec O section 5.1)
 })
 
 ALEMBIC_VERSION_TABLE = "alembic_version"

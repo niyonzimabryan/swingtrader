@@ -91,9 +91,9 @@ jobs:
       - name: Compile Python sources
         run: |
           python -m compileall -q \
-            agents backtest bot comparables config data database evals execution memo \
-            migrations orchestrator scanning scoring screening scripts tests \
-            tracking utils main.py
+            agents backtest bot comparables config data database evals execution \
+            filings macro memo migrations news orchestrator scanning scoring \
+            screening scripts tests tracking utils main.py
 
       - name: Resolve the target database URL
         id: db

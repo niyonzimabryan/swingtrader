@@ -1,0 +1,88 @@
+{
+ "cik": "2000003",
+ "entityType": "operating",
+ "sic": "3571",
+ "name": "Recycled Ticker Holdings Inc",
+ "tickers": [
+  "OLDR"
+ ],
+ "exchanges": [
+  "Nasdaq"
+ ],
+ "formerNames": [
+  {
+   "name": "Recycled Ticker Corp",
+   "from": "2012-01-04T00:00:00.000Z",
+   "to": "2019-06-28T00:00:00.000Z"
+  }
+ ],
+ "filings": {
+  "recent": {
+   "accessionNumber": [
+    "0002000003-21-000002",
+    "0002000003-18-000001"
+   ],
+   "filingDate": [
+    "2021-05-10",
+    "2018-05-09"
+   ],
+   "reportDate": [
+    "2021-05-10",
+    "2018-05-09"
+   ],
+   "acceptanceDateTime": [
+    "2021-05-10T20:02:00.000Z",
+    "2018-05-09T20:02:00.000Z"
+   ],
+   "act": [
+    "34",
+    "34"
+   ],
+   "form": [
+    "8-K",
+    "8-K"
+   ],
+   "fileNumber": [
+    "001-90002",
+    "001-90002"
+   ],
+   "filmNumber": [
+    "",
+    ""
+   ],
+   "items": [
+    "8.01",
+    "8.01"
+   ],
+   "core_type": [
+    "8-K",
+    "8-K"
+   ],
+   "size": [
+    45678,
+    45678
+   ],
+   "isXBRL": [
+    0,
+    0
+   ],
+   "isInlineXBRL": [
+    0,
+    0
+   ],
+   "isXBRLNumeric": [
+    0,
+    0
+   ],
+   "primaryDocument": [
+    "doc.htm",
+    "doc.htm"
+   ],
+   "primaryDocDescription": [
+    "8-K",
+    "8-K"
+   ]
+  },
+  "files": []
+ }
+}

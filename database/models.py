@@ -754,3 +754,148 @@ class SourceObservation(Base):
         except (ValueError, TypeError):
             return []
         return loaded if isinstance(loaded, list) else []
+
+
+class EntityHistory(Base):
+    """CIK ↔ ticker ↔ name, **with the date range each mapping applied to**.
+
+    Spec O section 3.2. EDGAR's ``company_tickers.json`` and the ``tickers``
+    array on a ``submissions`` document are *current* snapshots. Tickers get
+    reused and companies rename, so a snapshot joined to a 2019 event resolves
+    to whoever holds the symbol today — silently, and in whichever direction
+    the reuse happened.
+
+    This table is not foldable into ``source_observations``: an observation
+    carries one ``valid_at`` instant, and what resolution needs is a half-open
+    *interval* (``valid_from`` <= t < ``valid_to``) that can be closed later
+    when a change is observed. A range is a different shape from a point, and
+    faking it with two rows makes every read a self-join.
+
+    ``basis`` records how the interval was obtained, because the two sources
+    are not equally good:
+
+    ``submissions_former_names``
+        EDGAR states the ``from``/``to`` dates itself. A real dated range.
+    ``snapshot_observed``
+        We saw this value in a snapshot on this date and a different one in a
+        later snapshot. The range is bounded by *our observations*, so its
+        ``valid_from`` is an upper bound on when the mapping actually started.
+        ``valid_from_is_first_observation`` says so, and a resolver asked about
+        a date before it answers ``None`` rather than guessing.
+    """
+
+    __tablename__ = "entity_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "entity_cik", "attribute", "value", "valid_from",
+            name="uq_entity_history_interval",
+        ),
+        Index("ix_entity_history_cik_attr", "entity_cik", "attribute", "valid_from"),
+        Index("ix_entity_history_value", "attribute", "value", "valid_from"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_cik = Column(String(10), nullable=False)
+    #: ``ticker`` | ``name``
+    attribute = Column(String(20), nullable=False)
+    value = Column(String(200), nullable=False)
+    #: Half-open: valid_from <= t < valid_to. ``valid_to`` NULL means "still".
+    valid_from = Column(Date, nullable=False)
+    valid_to = Column(Date, nullable=True)
+    valid_from_is_first_observation = Column(Boolean, nullable=False, default=False)
+    basis = Column(String(40), nullable=False)
+    exchange = Column(String(40), nullable=True)
+    source = Column(String(60), nullable=False)
+    source_url = Column(Text, nullable=False, default="")
+    known_at_utc = Column(UtcDateTime, nullable=False)
+    first_observed_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    last_observed_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    ingested_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class NewsCluster(Base):
+    """One *story*, however many outlets ran it — Spec O section 5.2.
+
+    The cluster's ``known_at_utc`` is the minimum publisher timestamp across
+    its members and applies to **the story event only**. A fact extracted from
+    one member carries that member's own timestamp (section 5.1); conflating
+    the two is how a number that first appeared in a 16:45 reaction piece
+    becomes available at the 07:00 preview's time.
+    """
+
+    __tablename__ = "news_clusters"
+    __table_args__ = (
+        UniqueConstraint("cluster_id", name="uq_news_cluster_id"),
+        Index("ix_news_cluster_known_at", "known_at_utc"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    #: Deterministic: the ``article_uid`` of the earliest-published member.
+    cluster_id = Column(String(64), nullable=False)
+    headline = Column(Text, nullable=False, default="")
+    #: Minimum publisher timestamp across members. NULL when no member has one.
+    known_at_utc = Column(UtcDateTime, nullable=True)
+    member_count = Column(Integer, nullable=False, default=0)
+    #: Fraction of this story's structured facts absent from the prior story
+    #: for the same symbols. Computed from extracted facts, never from a model.
+    novelty_score = Column(Float, nullable=True)
+    novelty_basis = Column(Text, nullable=False, default="{}")
+    symbols = Column(Text, nullable=False, default="[]")
+    replay_eligible = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+class NewsArticle(Base):
+    """One article, with its publisher timestamp and the tier it was found at.
+
+    **This table is the licence boundary.** Alpaca's market-data terms bar
+    sharing or publishing the data "or any derived products" (verification
+    claim 11), so article text and everything computed from it stays in
+    Postgres and never reaches the ``research/`` mirror. Keeping bodies in
+    their own table makes that rule checkable at the table level instead of by
+    filtering payloads out of a ledger that is otherwise mirror-eligible.
+
+    An article whose publication time cannot be established is stored with
+    ``replay_eligible=False`` — it is quarantined, not discarded, because
+    "we saw this and could not date it" is a fact worth keeping.
+    """
+
+    __tablename__ = "news_articles"
+    __table_args__ = (
+        UniqueConstraint("article_uid", name="uq_news_article_uid"),
+        Index("ix_news_article_cluster", "cluster_id"),
+        Index("ix_news_article_published", "published_at_utc"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    #: sha256 over (source, provider id | canonical url, revision hash).
+    article_uid = Column(String(64), nullable=False)
+    cluster_id = Column(String(64), nullable=True)
+    source = Column(String(40), nullable=False)
+    provider_id = Column(String(80), nullable=True)
+    publisher = Column(String(120), nullable=False, default="")
+    #: ``primary`` | ``established`` | ``aggregator`` | ``unattributed``
+    tier = Column(String(20), nullable=False)
+    canonical_url = Column(Text, nullable=False, default="")
+    url = Column(Text, nullable=False, default="")
+    headline = Column(Text, nullable=False, default="")
+    lead = Column(Text, nullable=False, default="")
+    body = Column(Text, nullable=False, default="")
+    symbols = Column(Text, nullable=False, default="[]")
+    published_at_utc = Column(UtcDateTime, nullable=True)
+    first_seen_at_utc = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    #: sha256 of the normalised body — a revision is a new row, not an update.
+    content_hash = Column(String(64), nullable=False)
+    revision_of_uid = Column(String(64), nullable=True)
+    replay_eligible = Column(Boolean, nullable=False, default=False)
+    provenance_class = Column(String(30), nullable=False)
+    quality_warnings = Column(Text, nullable=False, default="[]")
+    ingested_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    @property
+    def symbol_list(self) -> list:
+        try:
+            loaded = json.loads(self.symbols or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
