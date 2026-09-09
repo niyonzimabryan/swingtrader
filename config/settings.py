@@ -150,6 +150,26 @@ class Settings(BaseSettings):
     # resource metadata and nothing else changes.
     workspace_oauth_enabled: bool = False
 
+    # --- Research workspace (Spec M) ---
+    # Dossiers, theses, invalidators, the decision journal, and the Markdown
+    # mirror. Off by default: with the flag false the five research tools are
+    # not registered on the MCP surface at all (advertising a tool that
+    # refuses is worse than not advertising it), the daily invalidator check
+    # is a no-op, and the mirror script refuses to write.
+    research_workspace_enabled: bool = False
+    # Spec M §6: a dossier section older than this is marked `stale` in every
+    # response that includes it. Marked, never hidden.
+    research_section_stale_days: int = 90
+    # Spec M §5: where `scripts/sync_research_mirror.py` writes. Relative
+    # paths resolve against the repository root.
+    research_mirror_dir: str = "research"
+    # Spec M §6 small-n floors. A Brier score needs ten resolved theses; the
+    # calibration table needs forty, and uses three coarse buckets below a
+    # hundred. Below the floor the answer is `insufficient`, not a number.
+    research_brier_min_resolved: int = 10
+    research_calibration_min_resolved: int = 40
+    research_calibration_coarse_below: int = 100
+
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
     scoring_model: str = "claude-opus-4-6"
