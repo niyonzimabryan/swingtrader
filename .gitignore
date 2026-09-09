@@ -17,7 +17,11 @@ venv/
 .vscode/
 *.log
 .DS_Store
-.claude/
+# `.claude/` is local session state, except the subagent briefs, which are
+# repo files on purpose: Spec P §4 defines them once so Codex and Cursor can
+# mirror them, and tests/test_agent_layer.py parses the committed copies.
+.claude/*
+!.claude/agents/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
