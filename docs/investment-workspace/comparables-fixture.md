@@ -565,7 +565,12 @@ than derived by hand, and the tests assert reproducibility rather than a literal
 
 - **`block_length`** — `arch.bootstrap.optimal_block_length` on the calendar-time
   abnormal series, then `max(that, h)` so overlapping windows resample together
-  (§6.1). The value used is printed in every response.
+  (§6.1). The value used is printed in every response. On a series shorter than
+  eight sessions the estimator has nothing to work with, so the horizon floor is
+  the whole answer and `block_length.method` says
+  `horizon_floor_only_series_too_short` rather than pretending otherwise — which
+  is what happens at `h = 1` on this fixture, where the calendar-time series is
+  two sessions long.
 - **Bootstrap percentile CIs** — 10,000 stationary-bootstrap resamples at
   `seed = 20260908`. `test_determinism` asserts the same inputs and seed give a
   byte-identical response.
