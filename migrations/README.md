@@ -78,6 +78,16 @@ adopted without being rebuilt. The signature it checks is table and column
 `create_all()` never emitted, so a byte-exact DDL comparison would reject the
 very databases this path exists to adopt.
 
+Check how a given database will be classified before deploying — read-only,
+writes nothing:
+
+```bash
+python -m scripts.schema_status sqlite:///copy-of-prod.db
+```
+
+Run it against a **copy** of the production file before the first deploy that
+runs Alembic. It should report `legacy`.
+
 `unknown` fails closed on purpose. Stamping a schema you have not inspected
 makes every later migration a silent no-op, and the damage only surfaces much
 later. Recovery is manual: back the database up, reconcile it, then

@@ -10,6 +10,7 @@ import sys
 
 from config.settings import Settings
 from database.db import init_db
+from database.schema import SchemaMismatch
 from orchestrator.pipeline import TradingPipeline
 from orchestrator.scheduler import PipelineScheduler
 from orchestrator.universe import seed_universe
@@ -136,8 +137,15 @@ async def main():
         print("See .env.example for registration links.\n")
         sys.exit(1)
 
-    # Initialize database
-    init_db(settings.database_url)
+    # Initialize database. Migrations run here, before any ORM session exists;
+    # a schema Alembic cannot safely adopt stops the process with instructions
+    # rather than crash-looping on a stack trace under the restart policy.
+    try:
+        init_db(settings.database_url)
+    except SchemaMismatch as exc:
+        log.error("schema_mismatch", detail=str(exc))
+        print(f"\n❌ Database schema cannot be adopted automatically.\n\n{exc}\n")
+        sys.exit(1)
     log.info("database_initialized")
 
     # Seed ticker universe

@@ -126,7 +126,7 @@ def classify(connection) -> str:
     return "legacy"
 
 
-def _recovery_message(connection) -> str:
+def recovery_message(connection) -> str:
     expected = expected_signature()
     observed = observed_signature(connection)
     missing_tables = sorted(set(expected) - set(observed))
@@ -163,7 +163,7 @@ def ensure_schema(engine: Engine) -> str:
     with engine.begin() as connection:
         state = classify(connection)
         if state == "unknown":
-            raise SchemaMismatch(_recovery_message(connection))
+            raise SchemaMismatch(recovery_message(connection))
         cfg = alembic_config(connection)
         if state == "legacy":
             command.stamp(cfg, BASELINE_REVISION)

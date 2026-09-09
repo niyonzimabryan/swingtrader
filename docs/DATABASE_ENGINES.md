@@ -18,6 +18,9 @@ The schema is Alembic-owned from `0001_baseline`; see
 before any ORM session exists, and `Base.metadata.create_all()` is no longer a
 production path.
 
+`python -m scripts.schema_status [DATABASE_URL]` reports, without writing
+anything, how `ensure_schema` would classify a given database.
+
 ## SQLite-isms that were removed
 
 | # | Where | What it was | Why it broke on Postgres | Fix |
