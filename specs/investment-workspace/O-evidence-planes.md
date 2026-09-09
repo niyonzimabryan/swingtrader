@@ -138,6 +138,23 @@ that is ours. Two things to confirm in a REPL before relying on them: that the p
 Form 4 object exposes the transaction code and the 10b5-1 flag as fields, and how
 13F-HR/A amendments are represented (a naive union of HR and HR/A double-counts).
 
+**Rulings from the Phase 3a build (PR #44, ratified 2026-09-09).** Plain `httpx` against
+`data.sec.gov` with one throttled client module; `edgartools` is not adopted for the
+minimal feeds and may be adopted in Phase 4 for Form 4 / 13D parsing if it earns its
+place. Three normalisation defaults stand, each with its failure mode recorded on the
+row: (1) **share classes are summed by distinct value** — `companyfacts` drops the class
+axis, so two classes with identical counts collapse and undercount; rows carry
+`share_class_count` and `share_class_values` and warn when more than one value was
+summed; recovering the axis needs inline XBRL and is deferred. (2) **Alias chains are
+ordered by economic preference** (revenue excluding assessed tax first; continuing-ops
+EPS last; `NetIncomeLoss` over `ProfitLoss`) and every merge across tags raises a
+`tag_migration` alert for a human to confirm. (3) **Gap thresholds** are 130 days
+quarterly, 500 annual, 200 for instant facts, with cadence classified by duration to
+absorb 52/53-week calendars; configurable in one place. Every Phase 3a row also carries
+`ticker_from_current_snapshot` until ticker history lands in Phase 4 — join on CIK.
+The real 50-ticker coverage run is an owner action (README §9): SEC hosts are blocked
+from the build environment, so the committed fixtures are synthetic by design.
+
 Access must respect the source's published rate limits and identification requirements;
 `filings/client.py` owns throttling and retry in one place.
 

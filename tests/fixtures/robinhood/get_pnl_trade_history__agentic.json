@@ -1,0 +1,20 @@
+{
+  "trades": [
+    {
+      "account_number": "****4021",
+      "symbol": "NVDA",
+      "side": "sell",
+      "quantity": "1.00000000",
+      "date": "2026-09-08",
+      "net_amount": "145.00"
+    },
+    {
+      "account_number": "****4021",
+      "symbol": "TDW",
+      "side": "buy",
+      "quantity": "9.00000000",
+      "date": "2026-07-02",
+      "net_amount": "-354.96"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "results": [
+    {
+      "id": "ord-7731",
+      "account_number": "****4021",
+      "symbol": "AMD",
+      "side": "buy",
+      "quantity": "2.00000000",
+      "type": "limit",
+      "limit_price": "148.00",
+      "time_in_force": "gtc",
+      "state": "queued",
+      "created_at": "2026-09-09T13:31:04.220000Z",
+      "ref_id": "d2f1c0a4-7f31-4a19-9c62-9a6a1e0f4c11"
+    },
+    {
+      "id": "ord-7702",
+      "account_number": "****4021",
+      "symbol": "TDW",
+      "side": "buy",
+      "quantity": "9.00000000",
+      "type": "market",
+      "time_in_force": "gfd",
+      "state": "filled",
+      "created_at": "2026-07-02T14:02:11.000000Z",
+      "last_transaction_at": "2026-07-02T14:02:14.000000Z",
+      "cumulative_quantity": "9.00000000",
+      "average_price": "39.44"
+    }
+  ]
+}

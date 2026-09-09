@@ -133,19 +133,11 @@ may narrate the regime; it may not assign it" is only true if it is structural.
 
 ## Reading it
 
-`macro/api.py` ships the stable Python API. **There is no `workspace/` service
-package on `main` at the time of writing** (Phase 0b has not merged), so Spec K
-§4.2's `macro_state` MCP tool is a ten-line follow-up:
-
-```python
-from database.db import get_session
-from macro.api import macro_state
-
-@server.tool()   # register on the workspace service when it exists
-def macro_state_tool(as_of=None) -> dict:
-    with get_session() as session:
-        return macro_state(session, as_of=as_of)
-```
+`macro/api.py` ships the stable Python API, and **`macro_state` is registered
+as an MCP read tool** on the workspace service (`workspace/tools.py`, scope
+`read`). `as_of` arrives as `YYYY-MM-DD` and means the **close** of that date,
+so a tool call and a direct call agree about whether a print released that
+morning is visible.
 
 The response carries `series`, `missing`, `regime` and a `provenance` block.
 

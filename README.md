@@ -172,6 +172,10 @@ Important code paths:
 - execution/: Alpaca paper order execution and monitoring
 - database/: SQLAlchemy models, engine-neutral column types, and session handling
 - migrations/: Alembic revisions; the schema is Alembic-owned from `0001_baseline`
+- workspace/: the workspace API and MCP endpoint — a **separate** process from
+  the bot, off by default (`WORKSPACE_API_ENABLED=false`), and structurally
+  unable to reach a broker (`tests/test_no_execute_scope.py`).
+  See [docs/WORKSPACE_ACCESS.md](docs/WORKSPACE_ACCESS.md).
 
 ## Configuration knobs
 
@@ -193,6 +197,7 @@ Core required settings:
 | FRED_API_KEY | Macro rates, yield curve, credit spreads |
 | DATABASE_URL | Local default: sqlite:///swing_trader.db. Postgres is supported with the same schema: postgresql+psycopg://user:pass@host:5432/db. See [docs/DATABASE_ENGINES.md](docs/DATABASE_ENGINES.md) |
 | SCHEDULER_ENABLED | Start with false; set true only after `/eval` works |
+| PRICE_PLANE_ENABLED | Off by default. The Spec N price backbone (three price series, point-in-time universes, the delisting audit). See [docs/PRICE_PLANE.md](docs/PRICE_PLANE.md) |
 
 Broker controls:
 
@@ -261,9 +266,14 @@ Run the same checks as CI:
 
 ```bash
 .venv/bin/python -m pip check
-.venv/bin/python -m compileall -q agents backtest bot config data database evals execution memo migrations orchestrator scanning scoring screening scripts tests tracking utils main.py
+.venv/bin/python -m compileall -q agents backtest bot config data database evals execution memo migrations orchestrator scanning scoring screening scripts tests tracking utils workspace main.py
 .venv/bin/python -m unittest discover -s tests -p "test_*.py"
 ```
+
+The suite runs on SQLite by default and on Postgres when `TEST_DATABASE_URL`
+points at one. A few cutover tests need a Postgres whichever engine is
+selected — set `TEST_POSTGRES_URL` for those, or they skip. See
+[docs/DATABASE_ENGINES.md](docs/DATABASE_ENGINES.md).
 
 For onboarding or credential changes, also run:
 

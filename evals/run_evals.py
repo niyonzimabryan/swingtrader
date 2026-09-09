@@ -4,7 +4,9 @@
     python -m evals.run_evals scoring --corpus evals/corpus/scoring.jsonl \
         --candidate claude-sonnet-5 --candidate-out evals/corpus/sonnet5.jsonl
 
-    # P&L rollback monitor around a swap date (reads the SQLite outcomes DB)
+    # P&L rollback monitor around a swap date (reads the outcomes database:
+    # a SQLAlchemy URL, or a path meaning a SQLite file)
+    python -m evals.run_evals pnl --db "$DATABASE_URL" --swap-date 2026-08-01
     python -m evals.run_evals pnl --db /data/swing_trader.db --swap-date 2026-08-01
 
 Scoring is UNDERPOWERED until the corpus clears N_min=150 (design §3) — expected
@@ -75,7 +77,11 @@ def main(argv=None) -> int:
     s.add_argument("--candidate-out", help="JSONL of candidate decisions; else sanity mode")
     s.set_defaults(func=_scoring)
     m = sub.add_parser("pnl")
-    m.add_argument("--db", required=True)
+    m.add_argument(
+        "--db",
+        required=True,
+        help="SQLAlchemy URL (postgresql+psycopg://...) or a SQLite file path.",
+    )
     m.add_argument("--swap-date", required=True)
     m.set_defaults(func=_pnl)
     args = p.parse_args(argv)

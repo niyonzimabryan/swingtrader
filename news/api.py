@@ -23,10 +23,32 @@ from typing import Sequence
 from database.models import NewsArticle
 from filings import provenance
 from filings.observations import observations_known_at
-from news.eligibility import USES, eligible_for
+from news.eligibility import (
+    USE_COVARIATE,
+    USE_DATE_EVENT,
+    USE_DOSSIER,
+    USE_PROMOTION,
+    USE_QUALIFY_COHORT,
+    USES,
+    eligible_for,
+)
 from news.ingest import FACT_TYPE_CONSENSUS_EPS, FACT_TYPE_STORY, SOURCE_NEWS_PLANE
 
 NEWS_FACT_TYPES: tuple[str, ...] = (FACT_TYPE_STORY, FACT_TYPE_CONSENSUS_EPS)
+
+#: Spec O section 5.3, restated in the response so a caller reading a timeline
+#: knows what it may do with a row without going to the spec. It is a
+#: description of the rule, not the rule: :func:`news.eligibility.eligible_for`
+#: is what decides, per article.
+ELIGIBILITY_REQUIREMENTS: dict[str, str] = {
+    USE_DATE_EVENT: "publisher timestamp + primary tier (company release, filing)",
+    USE_QUALIFY_COHORT: (
+        "publisher timestamp + tier >= established + deterministic extraction"
+    ),
+    USE_COVARIATE: "publisher timestamp",
+    USE_DOSSIER: "any tier, rendered with its tier",
+    USE_PROMOTION: "never — news is not evidence for a Spec Q promotion",
+}
 
 
 def _aware(value: datetime) -> datetime:
@@ -115,7 +137,7 @@ def news_timeline(
         "ticker": symbol,
         "stories": stories,
         "quarantined_articles": quarantined,
-        "eligibility_matrix": {use: None for use in USES},
+        "eligibility_matrix": ELIGIBILITY_REQUIREMENTS,
         "provenance": provenance.build(
             as_of=cutoff,
             rows=rows,

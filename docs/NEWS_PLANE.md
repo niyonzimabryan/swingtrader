@@ -175,19 +175,10 @@ the facts on each side. It is a covariate, not a signal.
 
 ## Reading it
 
-`news/api.py` ships the stable Python API. **There is no `workspace/` service
-package on `main` at the time of writing** (Phase 0b has not merged), so Spec K
-§4.2's `news_timeline` MCP tool is a ten-line follow-up:
-
-```python
-from database.db import get_session
-from news.api import news_timeline
-
-@server.tool()   # register on the workspace service when it exists
-def news_timeline_tool(ticker: str, as_of=None, limit: int = 50) -> dict:
-    with get_session() as session:
-        return news_timeline(session, ticker=ticker, as_of=as_of, limit=limit)
-```
+`news/api.py` ships the stable Python API, and **`news_timeline` is registered
+as an MCP read tool** on the workspace service (`workspace/tools.py`, scope
+`read`). Its tool description states the licence constraint in the text an
+agent actually reads, not only in this file.
 
 It returns one row per **story**, a `provenance` block, and — with
 `include_quarantined=True` — the undated articles, for a human to look at.

@@ -124,6 +124,48 @@ class Settings(BaseSettings):
 
     # --- Database ---
     database_url: str = "sqlite:///swing_trader.db"
+    # Directory for sidecar files that must live beside the data, not on the
+    # ephemeral container FS: the pattern-backfill queue, the encrypted
+    # Robinhood token blob. It used to be derived from a `sqlite:///` path,
+    # which silently became the working directory the moment DATABASE_URL
+    # pointed at Postgres. Set it explicitly (Railway: /data); left empty it
+    # still falls back to the SQLite file's directory. See `data_dir()`.
+    data_dir: str = ""
+
+    # --- Workspace API / MCP service (Spec K) ---
+    # Separate process from the bot. Off by default: with the flag false the
+    # service still answers /health so a deploy is observable, and refuses
+    # every authenticated call with 503.
+    workspace_api_enabled: bool = False
+    workspace_host: str = "0.0.0.0"
+    workspace_port: int = 8000
+    # Read by clients (scripts, docs, .mcp.json), not by the server itself.
+    workspace_base_url: str = ""
+    workspace_token: str = ""
+    # Spec K section 4.1: 60 read and 10 write calls per minute per token.
+    workspace_read_rate_limit_per_minute: int = 60
+    workspace_write_rate_limit_per_minute: int = 10
+    # OAuth 2.1 + dynamic client registration is designed but not implemented;
+    # see workspace/oauth.py. With this true the service advertises protected
+    # resource metadata and nothing else changes.
+    workspace_oauth_enabled: bool = False
+
+    # --- Portfolio ledger and broker sync (Spec L) ---
+    # Off by default, like every new capability. With the flag false the tables
+    # exist, the read tools answer from whatever is in them (nothing, at first,
+    # and they say so through `provenance.stale`), and no scheduled job runs.
+    portfolio_sync_enabled: bool = False
+    # Spec L section 4: 60 minutes intraday. Past it every tool response carries
+    # stale=true, and any path feeding a proposal refuses rather than serves.
+    portfolio_freshness_budget_minutes: int = 60
+    # Hourly during market hours, plus one pre-market and one after the close.
+    portfolio_sync_interval_minutes: int = 60
+    portfolio_sync_pre_market_hour: int = 8
+    portfolio_sync_post_close_hour: int = 16
+    portfolio_sync_post_close_minute: int = 30
+    # Spec L section 4 failure policy: a sync that would drop more than this
+    # fraction of an account's known holdings writes nothing and pages.
+    portfolio_mass_deletion_threshold: float = 0.5
 
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
@@ -221,6 +263,25 @@ class Settings(BaseSettings):
     parallel_recovery_good_runs: int = 8
     parallel_alert_on_state_change: bool = True
 
+    # --- Price plane (Spec N §4.2/§4.3, Phase 3p) ---
+    # Off by default. Nothing in the price plane runs, and no vendor is called,
+    # until this is true; `data/market_data.py` (yfinance) is untouched either way.
+    price_plane_enabled: bool = False
+    # fixture | sharadar. `fixture` reads the committed CSVs and needs no key.
+    price_plane_source: str = "fixture"
+    # Nasdaq Data Link key for the Sharadar tables. Never hardcoded, never logged.
+    nasdaq_data_link_api_key: str = ""
+    # Named vintage of the price file that backfills and audits write against.
+    price_plane_snapshot: str = "dev"
+    # `liquid_us_equity_v1`: top N by 20-session median dollar volume at each
+    # month-end. Market-cap ranking waits for the Phase 3a share-count feed.
+    liquid_universe_top_n: int = 500
+    liquid_universe_window_sessions: int = 20
+    # Delisting audit (Spec N §4.2): terminal return over this many sessions,
+    # below this threshold, is a collapse rather than a stop.
+    delisting_audit_window_sessions: int = 10
+    delisting_audit_collapse_threshold: float = -0.60
+
     # --- Spec O Phase 3a: minimum SEC ingestion plane ---
     # Off by default. When false, filings.sec_minimal refuses to ingest; the
     # read helpers still work against whatever is already in the ledger.
@@ -296,13 +357,27 @@ class Settings(BaseSettings):
 
 
 def data_dir(settings) -> "Path":
-    """Directory that holds the SQLite DB file (prod: /data/), else cwd.
+    """Directory for sidecar files that must survive a container restart.
 
-    Used to anchor sidecar files (the pattern backfill queue) on the persistent
-    volume rather than the ephemeral container FS. Accepts any object exposing a
-    ``database_url`` attribute so test doubles work without a real Settings.
+    Resolution order:
+
+    1. ``DATA_DIR``, if set. This is the only answer that works once
+       ``DATABASE_URL`` points at Postgres, which is why it exists — Phase 0a
+       flagged the SQLite-derived path as a cutover bug.
+    2. The directory holding the SQLite file, when ``DATABASE_URL`` is a
+       ``sqlite:///`` URL with a directory component. Unchanged behaviour for
+       the pre-cutover deploy, where ``/data/swing_trader.db`` puts sidecars on
+       the mounted volume for free.
+    3. The working directory.
+
+    Accepts any object exposing ``data_dir``/``database_url`` attributes so test
+    doubles work without a real Settings.
     """
     from pathlib import Path
+
+    explicit = (getattr(settings, "data_dir", "") or "").strip()
+    if explicit:
+        return Path(explicit)
 
     url = getattr(settings, "database_url", "") or ""
     if url.startswith("sqlite:///"):

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "swingtrader-workspace": {
+      "url": "${WORKSPACE_BASE_URL}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${WORKSPACE_TOKEN}"
+      }
+    }
+  }
+}

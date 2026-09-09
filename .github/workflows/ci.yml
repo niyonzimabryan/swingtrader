@@ -92,8 +92,8 @@ jobs:
         run: |
           python -m compileall -q \
             agents backtest bot comparables config data database evals execution \
-            filings macro memo migrations news orchestrator scanning scoring \
-            screening scripts tests tracking utils main.py
+            filings macro memo migrations news orchestrator portfolio scanning \
+            scoring screening scripts tests tracking utils workspace main.py
 
       - name: Resolve the target database URL
         id: db
@@ -119,4 +119,10 @@ jobs:
         env:
           # Unset for SQLite: tests/dbfixture.py falls back to temporary files.
           TEST_DATABASE_URL: ${{ matrix.engine == 'postgres' && steps.db.outputs.url || '' }}
+          # Set on BOTH entries. A handful of tests need Postgres whichever
+          # engine the suite targets — the SQLite->Postgres migration
+          # round-trip needs both at once, and the concurrent-startup advisory
+          # lock has no SQLite equivalent. Without this they skip, and a
+          # skipped cutover test is not a passing one (spec K section 3.2).
+          TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/swingtrader_test
         run: python -m unittest discover -s tests -p "test_*.py"

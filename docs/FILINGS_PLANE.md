@@ -164,21 +164,11 @@ Three outcomes, and every input gets one:
 
 ## Reading it
 
-`filings/api.py` ships the stable Python API. **There is no `workspace/`
-service package on `main` at the time of writing** (Phase 0b has not merged),
-so Spec K §4.2's `filings_recent` MCP tool is a ten-line follow-up:
-
-```python
-from database.db import get_session
-from filings.api import filings_recent
-
-@server.tool()   # register on the workspace service when it exists
-def filings_recent_tool(ticker=None, entity_cik=None, as_of=None, limit=50) -> dict:
-    with get_session() as session:
-        return filings_recent(
-            session, ticker=ticker, entity_cik=entity_cik, as_of=as_of, limit=limit
-        )
-```
+`filings/api.py` ships the stable Python API, and **`filings_recent` is
+registered as an MCP read tool** on the workspace service (`workspace/tools.py`,
+scope `read`) — Phase 0b and Phase 1 landed that service while this phase was
+being built, so the registration is done rather than deferred. The tool layer
+holds no query logic: it parses arguments, authorises, and delegates here.
 
 Both functions return a `provenance` block (`as_of_utc`, per-field sources,
 staleness flags, `data_quality` tier), per Spec K §4.2. Both are reads. Neither

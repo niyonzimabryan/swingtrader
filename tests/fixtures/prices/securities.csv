@@ -1,0 +1,8 @@
+security_uid,ticker,name,exchange,venue,ticker_valid_from,ticker_valid_to,listing_date,delisting_date,delisting_reason
+fx-0001,ALPH,ALPH Fixture Corp,NYSE,nyse_amex,2011-05-02,,2011-05-02,,unknown
+fx-0002,BETA,BETA Fixture Corp,NASDAQ,nasdaq,2014-09-18,,2014-09-18,,unknown
+fx-0003,GAMM,GAMM Fixture Corp,NASDAQ,nasdaq,2009-03-05,,2009-03-05,,unknown
+fx-0004,DELT,DELT Fixture Corp,NYSEAMERICAN,nyse_amex,2018-01-22,,2018-01-22,,unknown
+fx-0005,EPSI,EPSI Fixture Corp,NASDAQ,nasdaq,2021-11-04,,2021-11-04,,unknown
+fx-0006,BBBY,BBBY Fixture Corp,NASDAQ,nasdaq,1992-07-28,,1992-07-28,2023-03-31,performance
+fx-0007,RAD,RAD Fixture Corp,NYSE,nyse_amex,1968-01-02,,1968-01-02,2023-03-23,performance
