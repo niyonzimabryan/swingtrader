@@ -965,266 +965,6 @@ class SourceObservation(Base):
 
 
 # ---------------------------------------------------------------------------
-# Research workspace — Spec M §3
-#
-# Five tables: `dossiers` and its append-only `dossier_sections`, `theses` and
-# its `thesis_invalidators`, plus `decision_journal` and `research_questions`.
-# No foreign key leaves this group, so the Phase 1 integration merge revision
-# is a no-op join (migrations/README.md).
-# ---------------------------------------------------------------------------
-
-#: Spec M §3: draft -> active -> weakened -> invalidated -> closed.
-THESIS_STATUSES = ("draft", "active", "weakened", "invalidated", "closed")
-
-#: Spec M §4. The first four are machine-checkable; `qualitative` is not, and a
-#: thesis made of nothing but `qualitative` rows cannot reach `active`.
-INVALIDATOR_TYPES = (
-    "metric_threshold",
-    "price_level",
-    "event",
-    "time_decay",
-    "qualitative",
-)
-MACHINE_CHECKABLE_INVALIDATOR_TYPES = (
-    "metric_threshold",
-    "price_level",
-    "event",
-    "time_decay",
-)
-
-#: Spec M §3 `decision_journal`.
-DECISION_KINDS = ("opened", "added", "trimmed", "closed", "passed")
-
-#: Spec L §6.6: two budgets, recorded separately so "how do my judgment trades
-#: do versus my evidenced trades" is a query.
-DECISION_BUDGETS = ("evidenced", "discretionary")
-
-
-class Dossier(Base):
-    """One per ticker: structured metadata plus versioned sections (Spec M §3).
-
-    Everything narrative lives in :class:`DossierSection`, keyed by
-    ``section_key``, including the fields Spec M names as structured metadata
-    (business model, revenue drivers, key customers, competitive position,
-    capital structure). Only ``sector`` is a column: it is the one field that is
-    a filter rather than prose, and a section carries the sources and the
-    revision history that a scalar column would throw away.
-    """
-
-    __tablename__ = "dossiers"
-    __table_args__ = (
-        UniqueConstraint("ticker", name="uq_dossiers_ticker"),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    ticker = Column(String(20), nullable=False, index=True)
-    company_name = Column(String(200), nullable=False, default="")
-    sector = Column(String(100), nullable=False, default="")
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
-    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
-
-
-class DossierSection(Base):
-    """Append-only dossier revisions (Spec M §3). Nothing is ever overwritten.
-
-    An update writes a new row whose ``supersedes_id`` points at the row it
-    replaces; the prior body stays readable, so "what did we believe in July" is
-    a query rather than an archaeology project.
-
-    ``unsourced`` is stored rather than derived so that "every surface that
-    renders this section renders the warning" is one column read, and so a
-    section written without sources cannot be laundered into a sourced one by a
-    later reader's interpretation of ``sources_json``.
-    """
-
-    __tablename__ = "dossier_sections"
-    __table_args__ = (
-        Index("ix_dossier_sections_current", "dossier_id", "section_key", "superseded"),
-        Index("ix_dossier_sections_created", "dossier_id", "created_at"),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    dossier_id = Column(Integer, ForeignKey("dossiers.id"), nullable=False)
-    section_key = Column(String(80), nullable=False)
-    body_md = Column(Text, nullable=False, default="")
-    # A JSON list of {"url", "tier", "title", "as_of"} objects. Tier is the
-    # Spec K §3.3 / Spec P §5 vocabulary in research_workspace/trust.py.
-    sources_json = Column(Text, nullable=False, default="[]")
-    # "human" or a model id ("claude-opus-4-6"). `author_kind` is the coarse
-    # split Spec M §7 requires to be visibly distinct.
-    author = Column(String(120), nullable=False, default="human")
-    author_kind = Column(String(20), nullable=False, default="human")
-    unsourced = Column(Boolean, nullable=False, default=False)
-    # Spec P §5: set only by a human asserting authorship, and the only way a
-    # section whose sources are all untrusted-tier may be written.
-    human_authored = Column(Boolean, nullable=False, default=False)
-    supersedes_id = Column(Integer, ForeignKey("dossier_sections.id"), nullable=True)
-    # Denormalised "this row is not the current one for its key". Written when
-    # the successor is inserted; the row itself is never otherwise touched.
-    superseded = Column(Boolean, nullable=False, default=False)
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
-
-    @property
-    def sources(self) -> list:
-        try:
-            loaded = json.loads(self.sources_json or "[]")
-        except (ValueError, TypeError):
-            return []
-        return loaded if isinstance(loaded, list) else []
-
-
-class Thesis(Base):
-    """What we believe, and what would prove it wrong (Spec M §3).
-
-    The two database checks are the parts that can be expressed in DDL on both
-    engines:
-
-    * a probability, when present, is a probability;
-    * ``active`` requires a stated probability, a ``resolution_at``, and a
-      non-zero ``machine_checkable_invalidators`` count.
-
-    The count is denormalised precisely so the second check can exist at all —
-    a CHECK constraint cannot count rows in another table. The application
-    keeps it true (``research_workspace.store``), and
-    ``test_machine_checkable_required`` covers the code path; the constraint is
-    the backstop that stops a hand-written ``UPDATE theses SET status='active'``
-    from producing an unfalsifiable thesis.
-
-    ``probability`` may be revised; ``original_probability`` is the number the
-    Brier score uses forever (Spec M §6), and ``probability_history_json``
-    keeps the revisions.
-    """
-
-    __tablename__ = "theses"
-    __table_args__ = (
-        Index("ix_theses_ticker_status", "ticker", "status"),
-        Index("ix_theses_next_review", "next_review_at"),
-        CheckConstraint(
-            "status IN ('draft','active','weakened','invalidated','closed')",
-            name="ck_theses_status",
-        ),
-        CheckConstraint(
-            "probability IS NULL OR (probability >= 0.0 AND probability <= 1.0)",
-            name="ck_theses_probability_range",
-        ),
-        CheckConstraint(
-            "status <> 'active' OR (probability IS NOT NULL "
-            "AND resolution_at IS NOT NULL "
-            "AND machine_checkable_invalidators >= 1)",
-            name="ck_theses_active_is_falsifiable",
-        ),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    ticker = Column(String(20), nullable=False, index=True)
-    slug = Column(String(160), nullable=False, default="")
-    title = Column(String(300), nullable=False)
-    claim = Column(Text, nullable=False, default="")
-    direction = Column(String(20), nullable=False, default="long")
-    horizon_days = Column(Integer, nullable=True)
-
-    # --- the falsifiable part ---
-    probability = Column(Float, nullable=True)
-    original_probability = Column(Float, nullable=True)
-    probability_history_json = Column(Text, nullable=False, default="[]")
-    resolution_at = Column(Date, nullable=True)
-    resolution_observable = Column(Text, nullable=False, default="")
-
-    # --- the argument ---
-    # A JSON list of {"n", "claim", "evidence": [...]} objects.
-    argument_json = Column(Text, nullable=False, default="[]")
-    # Required and non-empty before `active` (Spec M §3). Written by the
-    # thesis-critic subagent (Spec P §4) and attributed, never merged into the
-    # bull argument.
-    bear_case = Column(Text, nullable=False, default="")
-    bear_case_author = Column(String(120), nullable=False, default="")
-
-    status = Column(String(20), nullable=False, default="draft")
-    machine_checkable_invalidators = Column(Integer, nullable=False, default=0)
-
-    # Spec L and Spec N are parallel phases: these are references, not foreign
-    # keys, so the integration merge stays a no-op join.
-    linked_position_ref = Column(String(120), nullable=False, default="")
-    position_opened_at = Column(UtcDateTime, nullable=True)
-    cohort_answer_ids_json = Column(Text, nullable=False, default="[]")
-
-    next_review_at = Column(Date, nullable=True)
-    author = Column(String(120), nullable=False, default="human")
-    author_kind = Column(String(20), nullable=False, default="human")
-
-    # --- resolution, for §6 scoring ---
-    outcome = Column(String(20), nullable=True)  # "true" | "false"
-    resolved_at = Column(UtcDateTime, nullable=True)
-    # Spec M §6: invalidated-versus-quietly-abandoned is an honesty metric, so
-    # the two closes are different rows, not one "closed" bucket.
-    close_reason = Column(String(40), nullable=False, default="")
-
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
-    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
-    activated_at = Column(UtcDateTime, nullable=True)
-    weakened_at = Column(UtcDateTime, nullable=True)
-    closed_at = Column(UtcDateTime, nullable=True)
-
-    @property
-    def argument(self) -> list:
-        try:
-            loaded = json.loads(self.argument_json or "[]")
-        except (ValueError, TypeError):
-            return []
-        return loaded if isinstance(loaded, list) else []
-
-    @property
-    def probability_history(self) -> list:
-        try:
-            loaded = json.loads(self.probability_history_json or "[]")
-        except (ValueError, TypeError):
-            return []
-        return loaded if isinstance(loaded, list) else []
-
-
-class ThesisInvalidator(Base):
-    """The load-bearing table (Spec M §4).
-
-    ``params_json`` carries the machine-checkable parameters for its type; the
-    vocabulary and the evaluation are in ``research_workspace/invalidators.py``.
-    ``post_hoc`` is set at write time by comparing ``created_at`` against the
-    thesis's ``position_opened_at``: an invalidator added after entry is kept,
-    flagged, and excluded from the honesty metrics rather than deleted.
-    """
-
-    __tablename__ = "thesis_invalidators"
-    __table_args__ = (
-        Index("ix_thesis_invalidators_thesis", "thesis_id", "status"),
-        CheckConstraint(
-            "type IN ('metric_threshold','price_level','event','time_decay',"
-            "'qualitative')",
-            name="ck_thesis_invalidators_type",
-        ),
-        CheckConstraint(
-            "status IN ('armed','triggered','needs_human_review','retired')",
-            name="ck_thesis_invalidators_status",
-        ),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    thesis_id = Column(Integer, ForeignKey("theses.id"), nullable=False)
-    description = Column(Text, nullable=False)
-    type = Column(String(30), nullable=False)
-    params_json = Column(Text, nullable=False, default="{}")
-    machine_checkable = Column(Boolean, nullable=False, default=False)
-    post_hoc = Column(Boolean, nullable=False, default=False)
-    status = Column(String(30), nullable=False, default="armed")
-    last_checked_at = Column(UtcDateTime, nullable=True)
-    last_check_detail = Column(Text, nullable=False, default="")
-    triggered_at = Column(UtcDateTime, nullable=True)
-    triggered_reason = Column(Text, nullable=False, default="")
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
-    author = Column(String(120), nullable=False, default="human")
-
-    @property
-    def params(self) -> dict:
-        try:
-            loaded = json.loads(self.params_json or "{}")
 # Portfolio ledger — Spec L §3 (Phase 1)
 #
 # Seven tables, no foreign key to any other phase's table, so the integration
@@ -1309,81 +1049,6 @@ class BrokerageAccount(Base):
         return loaded if isinstance(loaded, dict) else {}
 
 
-class DecisionJournalEntry(Base):
-    """Append-only decision record (Spec M §3), including the decision to pass.
-
-    ``thesis_hash`` and ``cohort_evidence_hash`` freeze *what was believed and
-    what was cited at the time*, so a later revision of either cannot rewrite
-    the record of the decision. ``budget`` is Spec L §6.6's evidenced/
-    discretionary split, recorded here because the journal is where "how do my
-    judgment trades do versus my evidenced trades" is answered.
-
-    ``outcome_*`` is filled in later by a job, never at write time.
-    """
-
-    __tablename__ = "decision_journal"
-    __table_args__ = (
-        Index("ix_decision_journal_occurred", "occurred_on"),
-        Index("ix_decision_journal_tickers", "tickers"),
-        CheckConstraint(
-            "decision IN ('opened','added','trimmed','closed','passed')",
-            name="ck_decision_journal_decision",
-        ),
-        CheckConstraint(
-            "budget IN ('evidenced','discretionary')",
-            name="ck_decision_journal_budget",
-        ),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    occurred_on = Column(Date, nullable=False)
-    # Comma-separated, uppercase. A decision can touch more than one name and
-    # this table is read far more often than it is joined.
-    tickers = Column(String(200), nullable=False, default="")
-    decision = Column(String(20), nullable=False)
-    thesis_id = Column(Integer, ForeignKey("theses.id"), nullable=True)
-    thesis_hash = Column(String(64), nullable=False, default="")
-    # Spec N identifies an answer by its setup hash and as-of date; the id
-    # recorded here is that pair, and the hash is over the answer's canonical
-    # JSON so a re-run that differs is detectable.
-    cohort_answer_id = Column(String(120), nullable=False, default="")
-    cohort_evidence_hash = Column(String(64), nullable=False, default="")
-    budget = Column(String(20), nullable=False, default="discretionary")
-    sizing_rationale = Column(Text, nullable=False, default="")
-    expected_holding_days = Column(Integer, nullable=True)
-    note_md = Column(Text, nullable=False, default="")
-    author = Column(String(120), nullable=False, default="human")
-    author_kind = Column(String(20), nullable=False, default="human")
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
-
-    # --- filled in later, by a job, never at write time ---
-    outcome_note = Column(Text, nullable=False, default="")
-    outcome_return_pct = Column(Float, nullable=True)
-    outcome_exit_reason = Column(String(80), nullable=False, default="")
-    outcome_matched_reason = Column(Boolean, nullable=True)
-    outcome_recorded_at = Column(UtcDateTime, nullable=True)
-
-
-class ResearchQuestion(Base):
-    """What an agent could not resolve, written down instead of guessed at."""
-
-    __tablename__ = "research_questions"
-    __table_args__ = (
-        Index("ix_research_questions_status", "status"),
-        CheckConstraint(
-            "status IN ('open','answered','abandoned')",
-            name="ck_research_questions_status",
-        ),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    question = Column(Text, nullable=False)
-    ticker = Column(String(20), nullable=False, default="")
-    status = Column(String(20), nullable=False, default="open")
-    asked_by = Column(String(120), nullable=False, default="human")
-    answer_md = Column(Text, nullable=False, default="")
-    answered_at = Column(UtcDateTime, nullable=True)
-    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
 class Holding(Base):
     """A position as one sync saw it. Point-in-time by append, never by update.
 
@@ -1655,3 +1320,346 @@ class ExposureTag(Base):
     note = Column(Text, nullable=False, default="")
     created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
     retired_at = Column(UtcDateTime, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Research workspace — Spec M §3
+#
+# Five tables: `dossiers` and its append-only `dossier_sections`, `theses` and
+# its `thesis_invalidators`, plus `decision_journal` and `research_questions`.
+# No foreign key leaves this group, so the Phase 1 integration merge revision
+# is a no-op join (migrations/README.md).
+# ---------------------------------------------------------------------------
+
+#: Spec M §3: draft -> active -> weakened -> invalidated -> closed.
+THESIS_STATUSES = ("draft", "active", "weakened", "invalidated", "closed")
+
+#: Spec M §4. The first four are machine-checkable; `qualitative` is not, and a
+#: thesis made of nothing but `qualitative` rows cannot reach `active`.
+INVALIDATOR_TYPES = (
+    "metric_threshold",
+    "price_level",
+    "event",
+    "time_decay",
+    "qualitative",
+)
+MACHINE_CHECKABLE_INVALIDATOR_TYPES = (
+    "metric_threshold",
+    "price_level",
+    "event",
+    "time_decay",
+)
+
+#: Spec M §3 `decision_journal`.
+DECISION_KINDS = ("opened", "added", "trimmed", "closed", "passed")
+
+#: Spec L §6.6: two budgets, recorded separately so "how do my judgment trades
+#: do versus my evidenced trades" is a query.
+DECISION_BUDGETS = ("evidenced", "discretionary")
+
+
+class Dossier(Base):
+    """One per ticker: structured metadata plus versioned sections (Spec M §3).
+
+    Everything narrative lives in :class:`DossierSection`, keyed by
+    ``section_key``, including the fields Spec M names as structured metadata
+    (business model, revenue drivers, key customers, competitive position,
+    capital structure). Only ``sector`` is a column: it is the one field that is
+    a filter rather than prose, and a section carries the sources and the
+    revision history that a scalar column would throw away.
+    """
+
+    __tablename__ = "dossiers"
+    __table_args__ = (
+        UniqueConstraint("ticker", name="uq_dossiers_ticker"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(20), nullable=False, index=True)
+    company_name = Column(String(200), nullable=False, default="")
+    sector = Column(String(100), nullable=False, default="")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class DossierSection(Base):
+    """Append-only dossier revisions (Spec M §3). Nothing is ever overwritten.
+
+    An update writes a new row whose ``supersedes_id`` points at the row it
+    replaces; the prior body stays readable, so "what did we believe in July" is
+    a query rather than an archaeology project.
+
+    ``unsourced`` is stored rather than derived so that "every surface that
+    renders this section renders the warning" is one column read, and so a
+    section written without sources cannot be laundered into a sourced one by a
+    later reader's interpretation of ``sources_json``.
+    """
+
+    __tablename__ = "dossier_sections"
+    __table_args__ = (
+        Index("ix_dossier_sections_current", "dossier_id", "section_key", "superseded"),
+        Index("ix_dossier_sections_created", "dossier_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dossier_id = Column(Integer, ForeignKey("dossiers.id"), nullable=False)
+    section_key = Column(String(80), nullable=False)
+    body_md = Column(Text, nullable=False, default="")
+    # A JSON list of {"url", "tier", "title", "as_of"} objects. Tier is the
+    # Spec K §3.3 / Spec P §5 vocabulary in research_workspace/trust.py.
+    sources_json = Column(Text, nullable=False, default="[]")
+    # "human" or a model id ("claude-opus-4-6"). `author_kind` is the coarse
+    # split Spec M §7 requires to be visibly distinct.
+    author = Column(String(120), nullable=False, default="human")
+    author_kind = Column(String(20), nullable=False, default="human")
+    unsourced = Column(Boolean, nullable=False, default=False)
+    # Spec P §5: set only by a human asserting authorship, and the only way a
+    # section whose sources are all untrusted-tier may be written.
+    human_authored = Column(Boolean, nullable=False, default=False)
+    supersedes_id = Column(Integer, ForeignKey("dossier_sections.id"), nullable=True)
+    # Denormalised "this row is not the current one for its key". Written when
+    # the successor is inserted; the row itself is never otherwise touched.
+    superseded = Column(Boolean, nullable=False, default=False)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    @property
+    def sources(self) -> list:
+        try:
+            loaded = json.loads(self.sources_json or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
+
+
+class Thesis(Base):
+    """What we believe, and what would prove it wrong (Spec M §3).
+
+    The two database checks are the parts that can be expressed in DDL on both
+    engines:
+
+    * a probability, when present, is a probability;
+    * ``active`` requires a stated probability, a ``resolution_at``, and a
+      non-zero ``machine_checkable_invalidators`` count.
+
+    The count is denormalised precisely so the second check can exist at all —
+    a CHECK constraint cannot count rows in another table. The application
+    keeps it true (``research_workspace.store``), and
+    ``test_machine_checkable_required`` covers the code path; the constraint is
+    the backstop that stops a hand-written ``UPDATE theses SET status='active'``
+    from producing an unfalsifiable thesis.
+
+    ``probability`` may be revised; ``original_probability`` is the number the
+    Brier score uses forever (Spec M §6), and ``probability_history_json``
+    keeps the revisions.
+    """
+
+    __tablename__ = "theses"
+    __table_args__ = (
+        Index("ix_theses_ticker_status", "ticker", "status"),
+        Index("ix_theses_next_review", "next_review_at"),
+        CheckConstraint(
+            "status IN ('draft','active','weakened','invalidated','closed')",
+            name="ck_theses_status",
+        ),
+        CheckConstraint(
+            "probability IS NULL OR (probability >= 0.0 AND probability <= 1.0)",
+            name="ck_theses_probability_range",
+        ),
+        CheckConstraint(
+            "status <> 'active' OR (probability IS NOT NULL "
+            "AND resolution_at IS NOT NULL "
+            "AND machine_checkable_invalidators >= 1)",
+            name="ck_theses_active_is_falsifiable",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(20), nullable=False, index=True)
+    slug = Column(String(160), nullable=False, default="")
+    title = Column(String(300), nullable=False)
+    claim = Column(Text, nullable=False, default="")
+    direction = Column(String(20), nullable=False, default="long")
+    horizon_days = Column(Integer, nullable=True)
+
+    # --- the falsifiable part ---
+    probability = Column(Float, nullable=True)
+    original_probability = Column(Float, nullable=True)
+    probability_history_json = Column(Text, nullable=False, default="[]")
+    resolution_at = Column(Date, nullable=True)
+    resolution_observable = Column(Text, nullable=False, default="")
+
+    # --- the argument ---
+    # A JSON list of {"n", "claim", "evidence": [...]} objects.
+    argument_json = Column(Text, nullable=False, default="[]")
+    # Required and non-empty before `active` (Spec M §3). Written by the
+    # thesis-critic subagent (Spec P §4) and attributed, never merged into the
+    # bull argument.
+    bear_case = Column(Text, nullable=False, default="")
+    bear_case_author = Column(String(120), nullable=False, default="")
+
+    status = Column(String(20), nullable=False, default="draft")
+    machine_checkable_invalidators = Column(Integer, nullable=False, default=0)
+
+    # Spec L and Spec N are parallel phases: these are references, not foreign
+    # keys, so the integration merge stays a no-op join.
+    linked_position_ref = Column(String(120), nullable=False, default="")
+    position_opened_at = Column(UtcDateTime, nullable=True)
+    cohort_answer_ids_json = Column(Text, nullable=False, default="[]")
+
+    next_review_at = Column(Date, nullable=True)
+    author = Column(String(120), nullable=False, default="human")
+    author_kind = Column(String(20), nullable=False, default="human")
+
+    # --- resolution, for §6 scoring ---
+    outcome = Column(String(20), nullable=True)  # "true" | "false"
+    resolved_at = Column(UtcDateTime, nullable=True)
+    # Spec M §6: invalidated-versus-quietly-abandoned is an honesty metric, so
+    # the two closes are different rows, not one "closed" bucket.
+    close_reason = Column(String(40), nullable=False, default="")
+
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    activated_at = Column(UtcDateTime, nullable=True)
+    weakened_at = Column(UtcDateTime, nullable=True)
+    closed_at = Column(UtcDateTime, nullable=True)
+
+    @property
+    def argument(self) -> list:
+        try:
+            loaded = json.loads(self.argument_json or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
+
+    @property
+    def probability_history(self) -> list:
+        try:
+            loaded = json.loads(self.probability_history_json or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
+
+
+class ThesisInvalidator(Base):
+    """The load-bearing table (Spec M §4).
+
+    ``params_json`` carries the machine-checkable parameters for its type; the
+    vocabulary and the evaluation are in ``research_workspace/invalidators.py``.
+    ``post_hoc`` is set at write time by comparing ``created_at`` against the
+    thesis's ``position_opened_at``: an invalidator added after entry is kept,
+    flagged, and excluded from the honesty metrics rather than deleted.
+    """
+
+    __tablename__ = "thesis_invalidators"
+    __table_args__ = (
+        Index("ix_thesis_invalidators_thesis", "thesis_id", "status"),
+        CheckConstraint(
+            "type IN ('metric_threshold','price_level','event','time_decay',"
+            "'qualitative')",
+            name="ck_thesis_invalidators_type",
+        ),
+        CheckConstraint(
+            "status IN ('armed','triggered','needs_human_review','retired')",
+            name="ck_thesis_invalidators_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    thesis_id = Column(Integer, ForeignKey("theses.id"), nullable=False)
+    description = Column(Text, nullable=False)
+    type = Column(String(30), nullable=False)
+    params_json = Column(Text, nullable=False, default="{}")
+    machine_checkable = Column(Boolean, nullable=False, default=False)
+    post_hoc = Column(Boolean, nullable=False, default=False)
+    status = Column(String(30), nullable=False, default="armed")
+    last_checked_at = Column(UtcDateTime, nullable=True)
+    last_check_detail = Column(Text, nullable=False, default="")
+    triggered_at = Column(UtcDateTime, nullable=True)
+    triggered_reason = Column(Text, nullable=False, default="")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    author = Column(String(120), nullable=False, default="human")
+
+    @property
+    def params(self) -> dict:
+        try:
+            loaded = json.loads(self.params_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+
+class DecisionJournalEntry(Base):
+    """Append-only decision record (Spec M §3), including the decision to pass.
+
+    ``thesis_hash`` and ``cohort_evidence_hash`` freeze *what was believed and
+    what was cited at the time*, so a later revision of either cannot rewrite
+    the record of the decision. ``budget`` is Spec L §6.6's evidenced/
+    discretionary split, recorded here because the journal is where "how do my
+    judgment trades do versus my evidenced trades" is answered.
+
+    ``outcome_*`` is filled in later by a job, never at write time.
+    """
+
+    __tablename__ = "decision_journal"
+    __table_args__ = (
+        Index("ix_decision_journal_occurred", "occurred_on"),
+        Index("ix_decision_journal_tickers", "tickers"),
+        CheckConstraint(
+            "decision IN ('opened','added','trimmed','closed','passed')",
+            name="ck_decision_journal_decision",
+        ),
+        CheckConstraint(
+            "budget IN ('evidenced','discretionary')",
+            name="ck_decision_journal_budget",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    occurred_on = Column(Date, nullable=False)
+    # Comma-separated, uppercase. A decision can touch more than one name and
+    # this table is read far more often than it is joined.
+    tickers = Column(String(200), nullable=False, default="")
+    decision = Column(String(20), nullable=False)
+    thesis_id = Column(Integer, ForeignKey("theses.id"), nullable=True)
+    thesis_hash = Column(String(64), nullable=False, default="")
+    # Spec N identifies an answer by its setup hash and as-of date; the id
+    # recorded here is that pair, and the hash is over the answer's canonical
+    # JSON so a re-run that differs is detectable.
+    cohort_answer_id = Column(String(120), nullable=False, default="")
+    cohort_evidence_hash = Column(String(64), nullable=False, default="")
+    budget = Column(String(20), nullable=False, default="discretionary")
+    sizing_rationale = Column(Text, nullable=False, default="")
+    expected_holding_days = Column(Integer, nullable=True)
+    note_md = Column(Text, nullable=False, default="")
+    author = Column(String(120), nullable=False, default="human")
+    author_kind = Column(String(20), nullable=False, default="human")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    # --- filled in later, by a job, never at write time ---
+    outcome_note = Column(Text, nullable=False, default="")
+    outcome_return_pct = Column(Float, nullable=True)
+    outcome_exit_reason = Column(String(80), nullable=False, default="")
+    outcome_matched_reason = Column(Boolean, nullable=True)
+    outcome_recorded_at = Column(UtcDateTime, nullable=True)
+
+
+class ResearchQuestion(Base):
+    """What an agent could not resolve, written down instead of guessed at."""
+
+    __tablename__ = "research_questions"
+    __table_args__ = (
+        Index("ix_research_questions_status", "status"),
+        CheckConstraint(
+            "status IN ('open','answered','abandoned')",
+            name="ck_research_questions_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    question = Column(Text, nullable=False)
+    ticker = Column(String(20), nullable=False, default="")
+    status = Column(String(20), nullable=False, default="open")
+    asked_by = Column(String(120), nullable=False, default="human")
+    answer_md = Column(Text, nullable=False, default="")
+    answered_at = Column(UtcDateTime, nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
