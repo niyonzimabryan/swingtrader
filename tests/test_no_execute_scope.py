@@ -30,13 +30,16 @@ FIRST_PARTY = {
     "agents",
     "backtest",
     "bot",
+    "comparables",
     "config",
     "data",
     "database",
     "evals",
     "execution",
+    "filings",
     "memo",
     "orchestrator",
+    "research_workspace",
     "scanning",
     "scoring",
     "screening",
@@ -60,11 +63,20 @@ WORKSPACE_ENTRY_POINTS = (
     "workspace.app",
     "workspace.server",
     "workspace.tools",
+    "workspace.research_tools",
     "workspace.auth",
     "workspace.tokens",
     "workspace.scopes",
     "workspace.ratelimit",
     "workspace.oauth",
+    # Phase 2 (Spec M). The research workspace is reachable from the MCP tool
+    # surface, so it is inside the boundary and its own imports are walked:
+    # a triggered invalidator pages, and must not be able to do anything else.
+    "research_workspace.store",
+    "research_workspace.invalidators",
+    "research_workspace.mirror",
+    "research_workspace.jobs",
+    "scripts.sync_research_mirror",
 )
 
 

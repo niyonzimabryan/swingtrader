@@ -16,10 +16,10 @@ interval nobody will read.
 **The decomposition is reported, not just the score.** Murphy's identity is
 ``BS = reliability − resolution + uncertainty``. The score alone cannot tell
 "my 70%s happen 70% of the time" from "I only ever say 60%"; reliability and
-resolution can. The decomposition is bucket-dependent — coarse buckets below the
-coarse-bucket floor, deciles above it — and the returned block names the
-buckets it used, because a decomposition whose binning is unstated is not
-reproducible.
+resolution can. The decomposition bins by **distinct stated probability**, which is what makes
+Murphy's identity hold exactly; the coarse or decile buckets are the display
+view alongside it, and the returned block names both plus the residual, because
+a decomposition whose binning is unstated is not reproducible.
 
 No model call anywhere in this module: it is arithmetic over recorded rows
 (Spec K §5).
@@ -129,30 +129,40 @@ def brier(session, *, settings=None) -> dict:
     base_rate = sum(s.outcome for s in scored) / n
     score = sum((s.probability - s.outcome) ** 2 for s in scored) / n
 
-    buckets = _buckets_for(n, settings)
+    # Murphy's identity is exact only when each bin holds one *distinct*
+    # forecast value; binning 0.70 together with 0.90 leaves a within-bin
+    # scatter term and the three parts stop summing to the score. So the
+    # decomposition bins by distinct stated probability, and the coarse or
+    # decile buckets below are the *display* view of the same numbers. Getting
+    # this backwards produces a decomposition that looks reasonable and does
+    # not reconcile, which is why `identity_residual` is returned rather than
+    # assumed.
     reliability = 0.0
     resolution = 0.0
+    for value in sorted({round(s.probability, 6) for s in scored}):
+        members = [s for s in scored if round(s.probability, 6) == value]
+        n_k = len(members)
+        mean_outcome = sum(s.outcome for s in members) / n_k
+        reliability += n_k * (value - mean_outcome) ** 2
+        resolution += n_k * (mean_outcome - base_rate) ** 2
+    reliability /= n
+    resolution /= n
+    uncertainty = base_rate * (1 - base_rate)
+
+    buckets = _buckets_for(n, settings)
     per_bucket = []
     for label, low, high in buckets:
         members = [s for s in scored if _bucket_of(s.probability, buckets) == label]
         if not members:
             continue
-        n_k = len(members)
-        mean_forecast = sum(s.probability for s in members) / n_k
-        mean_outcome = sum(s.outcome for s in members) / n_k
-        reliability += n_k * (mean_forecast - mean_outcome) ** 2
-        resolution += n_k * (mean_outcome - base_rate) ** 2
         per_bucket.append(
             {
                 "bucket": label,
-                "n": n_k,
-                "mean_stated": round(mean_forecast, 4),
-                "realized_frequency": round(mean_outcome, 4),
+                "n": len(members),
+                "mean_stated": round(sum(s.probability for s in members) / len(members), 4),
+                "realized_frequency": round(sum(s.outcome for s in members) / len(members), 4),
             }
         )
-    reliability /= n
-    resolution /= n
-    uncertainty = base_rate * (1 - base_rate)
 
     return {
         "status": "ok",
@@ -163,6 +173,7 @@ def brier(session, *, settings=None) -> dict:
         "uncertainty": round(uncertainty, 4),
         "identity_residual": round(score - (reliability - resolution + uncertainty), 9),
         "base_rate": round(base_rate, 4),
+        "decomposition_bins": "distinct stated probabilities",
         "buckets_used": [b[0] for b in buckets],
         "decomposition_by_bucket": per_bucket,
         "n_revised_probabilities": sum(1 for s in scored if s.revised),
