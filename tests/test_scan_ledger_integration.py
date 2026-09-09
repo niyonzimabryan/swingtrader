@@ -7,12 +7,12 @@ and that the catalyst gate short-circuits before scoring (no ledger row).
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
 from database import db as db_module
-from database.db import get_session, init_db
+from database.db import get_session
 from database.models import ScoredCandidate
+from tests.dbfixture import init_test_db
 from data.event_outcomes import PriceBar
 from orchestrator.pipeline import ScanTickerItem, TradingPipeline
 
@@ -48,7 +48,7 @@ def _result(final, meets):
 class ProcessScanItemLedgerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        init_db(f"sqlite:///{Path(self.tmp.name) / 'scan.db'}")
+        self.db = init_test_db("scan")
         p = TradingPipeline.__new__(TradingPipeline)
         p.settings = SimpleNamespace(
             memo_threshold=0.55, auto_approve_min_score=0.55, exploration_min_score=0.45,
@@ -65,6 +65,7 @@ class ProcessScanItemLedgerTests(unittest.TestCase):
             db_module.engine.dispose()
         db_module.engine = None
         db_module.SessionLocal = None
+        self.db.cleanup()
         self.tmp.cleanup()
 
     def _item(self):

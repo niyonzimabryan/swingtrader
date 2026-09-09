@@ -1,10 +1,9 @@
-import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, text, inspect, event
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
-from database.models import Base
+from database.schema import backend_name, ensure_schema
 from utils.logger import get_logger
 
 log = get_logger("database")
@@ -12,31 +11,60 @@ log = get_logger("database")
 engine = None
 SessionLocal = None
 
+DEFAULT_DATABASE_URL = "sqlite:///swing_trader.db"
 
-def init_db(database_url: str = "sqlite:///swing_trader.db"):
+
+def init_db(database_url: str = DEFAULT_DATABASE_URL):
+    """Create the engine and bring the schema to the Alembic head.
+
+    ``DATABASE_URL`` selects the engine: ``sqlite:///...`` for local dev and the
+    current Railway deploy, ``postgresql+psycopg://...`` for Postgres. Nothing
+    else in the call path differs — engine-specific tuning is gated on the URL's
+    parsed backend name, never on a substring match.
+    """
     global engine, SessionLocal
 
-    # Ensure parent directory exists for SQLite (needed for Railway volume mounts)
-    if database_url.startswith("sqlite:///"):
-        db_path = database_url.replace("sqlite:///", "")
-        parent = Path(db_path).parent
-        if parent != Path("."):
-            parent.mkdir(parents=True, exist_ok=True)
+    backend = backend_name(database_url)
+
+    if backend == "sqlite":
+        _ensure_sqlite_parent_dir(database_url)
 
     engine = create_engine(
         database_url,
         echo=False,
-        connect_args={"check_same_thread": False} if "sqlite" in database_url else {},
+        # SQLite's DBAPI binds a connection to its creating thread unless told
+        # otherwise; every other driver is already thread-safe here.
+        connect_args={"check_same_thread": False} if backend == "sqlite" else {},
     )
-    if database_url.startswith("sqlite"):
+    if backend == "sqlite":
         _configure_sqlite_pragmas(engine)
+
     SessionLocal = sessionmaker(bind=engine, autoflush=False)
-    Base.metadata.create_all(engine)
-    _run_migrations(engine)
+
+    # Schema first, sessions after (strategy-lab-architecture.md §14): no ORM
+    # session is created before migrations have run.
+    action = ensure_schema(engine)
+    log.info("schema_ready", backend=backend, action=action)
+
     return engine
 
 
+def _ensure_sqlite_parent_dir(database_url: str) -> None:
+    """Create the directory holding the SQLite file (Railway volume mounts)."""
+    db_path = database_url.replace("sqlite:///", "")
+    parent = Path(db_path).parent
+    if parent != Path("."):
+        parent.mkdir(parents=True, exist_ok=True)
+
+
 def _configure_sqlite_pragmas(eng):
+    """WAL + busy_timeout, for SQLite only.
+
+    WAL lets the scheduler read while the bot writes; busy_timeout absorbs the
+    short lock contention that follows. Both are SQLite storage-engine settings
+    with no Postgres equivalent (Postgres has MVCC and lock timeouts already),
+    so the listener is only ever attached to a SQLite engine.
+    """
     @event.listens_for(eng, "connect")
     def _set_sqlite_pragmas(dbapi_connection, _connection_record):
         cursor = dbapi_connection.cursor()
@@ -45,95 +73,6 @@ def _configure_sqlite_pragmas(eng):
             cursor.execute("PRAGMA busy_timeout=5000")
         finally:
             cursor.close()
-
-
-def _run_migrations(eng):
-    """Run lightweight schema migrations for existing SQLite DBs."""
-    inspector = inspect(eng)
-
-    # v2.1: Add memo_data_json column to memos table
-    if "memos" in inspector.get_table_names():
-        columns = [c["name"] for c in inspector.get_columns("memos")]
-        if "memo_data_json" not in columns:
-            with eng.connect() as conn:
-                conn.execute(text("ALTER TABLE memos ADD COLUMN memo_data_json TEXT DEFAULT '{}'"))
-                conn.commit()
-            log.info("migration_applied", migration="add_memo_data_json_to_memos")
-
-    # v3: Add position monitoring columns to trades table
-    if "trades" in inspector.get_table_names():
-        columns = [c["name"] for c in inspector.get_columns("trades")]
-        new_cols = {
-            "peak_price": "FLOAT",
-            "t1_hit": "BOOLEAN DEFAULT 0",
-            "t2_hit": "BOOLEAN DEFAULT 0",
-            "t1_approaching_sent": "BOOLEAN DEFAULT 0",
-            "time_warning_sent": "BOOLEAN DEFAULT 0",
-            "drawdown_alert_sent": "BOOLEAN DEFAULT 0",
-            "broker": "VARCHAR(30) DEFAULT 'alpaca'",
-            "broker_account_id": "VARCHAR(100)",
-            "broker_order_id": "VARCHAR(100)",
-            "broker_stop_order_id": "VARCHAR(100)",
-            "broker_order_strategy": "VARCHAR(50)",
-            "order_review_json": "TEXT DEFAULT '{}'",
-            "execution_mode": "VARCHAR(20) DEFAULT 'paper'",
-            "requested_notional": "FLOAT",
-            "filled_notional": "FLOAT",
-        }
-        with eng.connect() as conn:
-            for col_name, col_type in new_cols.items():
-                if col_name not in columns:
-                    conn.execute(text(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}"))
-                    log.info("migration_applied", migration=f"add_{col_name}_to_trades")
-            conn.commit()
-
-    if "web_research_cache" not in inspector.get_table_names():
-        with eng.connect() as conn:
-            conn.execute(text("""
-                CREATE TABLE web_research_cache (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    cache_key VARCHAR(120) NOT NULL UNIQUE,
-                    ticker VARCHAR(10) NOT NULL,
-                    research_date VARCHAR(10) NOT NULL,
-                    catalyst_hash VARCHAR(64) NOT NULL,
-                    provider VARCHAR(30) DEFAULT '',
-                    model_used VARCHAR(80) DEFAULT '',
-                    result_json TEXT DEFAULT '{}',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    expires_at DATETIME
-                )
-            """))
-            conn.execute(text(
-                "CREATE INDEX ix_web_research_cache_lookup "
-                "ON web_research_cache (ticker, research_date, catalyst_hash)"
-            ))
-            conn.commit()
-        log.info("migration_applied", migration="create_web_research_cache")
-
-    # E3: performance indices on hot digest/status/monitor query predicates.
-    # Idempotent — CREATE INDEX IF NOT EXISTS matches the models.__table_args__.
-    index_ddl = {
-        "ix_memos_created_at": "CREATE INDEX IF NOT EXISTS ix_memos_created_at ON memos (created_at)",
-        "ix_trades_status_created_at": "CREATE INDEX IF NOT EXISTS ix_trades_status_created_at ON trades (status, created_at)",
-        "ix_trades_broker_status": "CREATE INDEX IF NOT EXISTS ix_trades_broker_status ON trades (broker, status)",
-    }
-    table_names = set(inspector.get_table_names())
-    with eng.connect() as conn:
-        for index_name, ddl in index_ddl.items():
-            table = "memos" if "memos" in index_name else "trades"
-            if table in table_names:
-                conn.execute(text(ddl))
-                log.info("migration_applied", migration=f"create_index_{index_name}")
-        conn.commit()
-
-    # E4: drop the orphaned reddit_sentiment table (Reddit retired at 465c835;
-    # model class removed, no runtime reads/writes).
-    if "reddit_sentiment" in table_names:
-        with eng.connect() as conn:
-            conn.execute(text("DROP TABLE IF EXISTS reddit_sentiment"))
-            conn.commit()
-        log.info("migration_applied", migration="drop_reddit_sentiment")
 
 
 @contextmanager

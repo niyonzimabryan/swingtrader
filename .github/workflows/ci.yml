@@ -15,10 +15,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Python tests
+  secrets:
+    name: Secret scan
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
@@ -36,6 +36,43 @@ jobs:
 
       - name: Scan git history for secrets
         run: gitleaks git --redact --verbose .
+
+  test:
+    # The suite runs identically on both engines DATABASE_URL can select:
+    # SQLite (local dev and the current Railway deploy) and Postgres (the
+    # target of the Phase 0b cutover). The SQLite entry stays until the
+    # Postgres migration is confirmed in production — spec K section 3.2.
+    name: Python tests (${{ matrix.engine }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [sqlite, postgres]
+
+    services:
+      # Started for both matrix entries; the SQLite entry simply never
+      # connects to it. GitHub Actions cannot make a service conditional on a
+      # matrix value, and a ~5s container start is cheaper than duplicating
+      # the whole job.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: swingtrader_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -58,5 +95,28 @@ jobs:
             migrations orchestrator scanning scoring screening scripts tests \
             tracking utils main.py
 
+      - name: Resolve the target database URL
+        id: db
+        run: |
+          if [ "${{ matrix.engine }}" = "postgres" ]; then
+            echo "url=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/swingtrader_test" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=sqlite:///$RUNNER_TEMP/ci_swing_trader.db" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: alembic upgrade head on an empty database
+        # Exercises the CLI path (alembic.ini + DATABASE_URL) that the in-process
+        # ensure_schema() does not cover, and proves the baseline applies cleanly
+        # from nothing on this engine. Test coverage for schema equivalence lives
+        # in tests/test_schema_discipline.py.
+        env:
+          DATABASE_URL: ${{ steps.db.outputs.url }}
+        run: |
+          python -m alembic upgrade head
+          python -m alembic current
+
       - name: Run unit tests
+        env:
+          # Unset for SQLite: tests/dbfixture.py falls back to temporary files.
+          TEST_DATABASE_URL: ${{ matrix.engine == 'postgres' && steps.db.outputs.url || '' }}
         run: python -m unittest discover -s tests -p "test_*.py"
