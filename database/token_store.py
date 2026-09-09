@@ -31,8 +31,25 @@ log = get_logger("token_store")
 
 # Refresh-skew buffer: treat the access token as expired this many seconds early.
 EXPIRY_SKEW_SECONDS = 300
+# How many token writes the on-disk refresh log keeps. 200 covers a year of
+# ~6.7-day access tokens several times over, and the file must stay small:
+# it is read and rewritten on every refresh.
+REFRESH_LOG_LIMIT = 200
 DEFAULT_CALLBACK_PORT = 8765
 DEFAULT_SCOPE = "internal"
+
+
+def _seconds_until(iso_timestamp: str | None) -> int | None:
+    """Seconds from now until an ISO-8601 instant, or ``None`` if unparseable."""
+    if not iso_timestamp:
+        return None
+    try:
+        target = datetime.fromisoformat(iso_timestamp)
+    except ValueError:
+        return None
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=timezone.utc)
+    return int((target - datetime.now(timezone.utc)).total_seconds())
 
 
 def generate_key() -> str:
@@ -147,9 +164,26 @@ class EncryptedFileTokenStorage(TokenStorage):
 
     # --- TokenStorage interface (async per the SDK) -----------------------
     async def get_tokens(self) -> OAuthToken | None:
-        data = self._read_blob().get("tokens")
+        blob = self._read_blob()
+        data = blob.get("tokens")
         if not data:
             return None
+        # The refresh-attempt half of the unattended-survival log (Spec L §5.1).
+        # The SDK only calls `set_tokens` when a refresh *succeeds*, so a run
+        # that fails to refresh would otherwise leave no trace at all — which is
+        # exactly the 30-day question the log exists to answer. Reading an
+        # expired access token is the moment a refresh becomes necessary, so it
+        # is logged here, with timestamps, before the SDK attempts one.
+        expires_at = blob.get("tokens_expires_at")
+        seconds_left = _seconds_until(expires_at)
+        if seconds_left is not None and seconds_left <= EXPIRY_SKEW_SECONDS:
+            log.info(
+                "robinhood_token_refresh_due",
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                expires_at=expires_at,
+                seconds_until_expiry=seconds_left,
+                has_refresh_token=bool(data.get("refresh_token")),
+            )
         try:
             return OAuthToken.model_validate(data)
         except Exception as e:  # malformed persisted token -> force re-auth
@@ -158,15 +192,38 @@ class EncryptedFileTokenStorage(TokenStorage):
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
         blob = self._read_blob()
+        previous = blob.get("tokens") or {}
+        previous_expires_at = blob.get("tokens_expires_at")
+        previous_obtained_at = blob.get("tokens_obtained_at")
+        # A write with a token already stored is a refresh; the first write of
+        # a bootstrap is not. The distinction is what makes the log answer
+        # "did a continuously refreshing service survive 30 days unattended?"
+        is_refresh = bool(previous.get("access_token"))
+
         blob["tokens"] = tokens.model_dump(mode="json", exclude_none=True)
         # Record an absolute expiry so status()/monitoring don't depend on the
         # relative expires_in after a restart.
-        blob["tokens_obtained_at"] = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        blob["tokens_obtained_at"] = now_iso
         if tokens.expires_in:
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(tokens.expires_in))
             blob["tokens_expires_at"] = expires_at.isoformat()
         else:
             blob.pop("tokens_expires_at", None)
+
+        entry = {
+            "at": now_iso,
+            "kind": "refresh" if is_refresh else "bootstrap",
+            "previous_obtained_at": previous_obtained_at,
+            "previous_expires_at": previous_expires_at,
+            "new_expires_at": blob.get("tokens_expires_at"),
+            "expires_in": tokens.expires_in,
+            "has_refresh_token": bool(tokens.refresh_token),
+        }
+        history = [e for e in (blob.get("refresh_log") or []) if isinstance(e, dict)]
+        history.append(entry)
+        blob["refresh_log"] = history[-REFRESH_LOG_LIMIT:]
+
         self._write_blob(blob)
         log.info(
             "token_store_tokens_saved",
@@ -174,6 +231,15 @@ class EncryptedFileTokenStorage(TokenStorage):
             expires_in=tokens.expires_in,
             scope=tokens.scope,
         )
+        # One line per refresh, with both timestamps. Railway's log retention is
+        # what the 30-day unattended test reads; the on-disk `refresh_log` is
+        # the copy that survives a log rotation.
+        log.info("robinhood_token_refresh", **entry)
+
+    def refresh_log(self) -> list:
+        """Every recorded token write, oldest first. Never contains a token."""
+        entries = self._read_blob().get("refresh_log") or []
+        return [e for e in entries if isinstance(e, dict)]
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
         data = self._read_blob().get("client_info")
@@ -217,4 +283,10 @@ class EncryptedFileTokenStorage(TokenStorage):
             and not tokens.get("refresh_token")
             and (seconds_left is not None and seconds_left <= EXPIRY_SKEW_SECONDS),
             "has_client_registration": bool(blob.get("client_info")),
+            # Spec L §5.1: the 30-day unattended-refresh probe reads these.
+            "refresh_count": len([e for e in (blob.get("refresh_log") or []) if isinstance(e, dict) and e.get("kind") == "refresh"]),
+            "last_refresh_at": next(
+                (e.get("at") for e in reversed(blob.get("refresh_log") or []) if isinstance(e, dict) and e.get("kind") == "refresh"),
+                None,
+            ),
         }

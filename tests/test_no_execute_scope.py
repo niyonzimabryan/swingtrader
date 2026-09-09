@@ -37,6 +37,7 @@ FIRST_PARTY = {
     "execution",
     "memo",
     "orchestrator",
+    "portfolio",
     "scanning",
     "scoring",
     "screening",
@@ -56,6 +57,9 @@ FIRST_PARTY_ROOT_MODULES = {"main"}
 FORBIDDEN_ROOTS = {"execution", "bot", "orchestrator", "agents"}
 
 #: The workspace entry points. Everything reachable from these is the surface.
+#: Phase 1 added ``portfolio`` to FIRST_PARTY above, so the walker follows the
+#: ledger package the tool surface now imports; without it the closure would
+#: stop at ``workspace/`` and this assertion would be vacuous.
 WORKSPACE_ENTRY_POINTS = (
     "workspace.app",
     "workspace.server",

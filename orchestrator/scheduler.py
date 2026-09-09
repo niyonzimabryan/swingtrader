@@ -123,6 +123,13 @@ class PipelineScheduler:
                 name="Pattern backfill queue drain (3 AM ET)",
             )
 
+        # Portfolio ledger sync (Spec L §4): hourly in market hours, plus
+        # pre-market and after the close. Gated on PORTFOLIO_SYNC_ENABLED
+        # rather than on enable_scans — it spends no model budget and a paused
+        # scan pipeline is not a reason to stop knowing what is held — but it
+        # does reach a broker API, so it stays off until the owner turns it on.
+        portfolio_jobs = self._add_portfolio_sync_jobs()
+
         # Daily pre-market self-restart — runs regardless of SCHEDULER_ENABLED.
         self._add_daily_restart_job()
 
@@ -134,6 +141,7 @@ class PipelineScheduler:
             + (1 if enable_scans and self.weekly_report else 0)
             + (1 if enable_scans else 0)  # shadow_returns
             + (1 if pattern_backfill else 0)
+            + len(portfolio_jobs)
         )
         log.info(
             "scheduler_started",
@@ -146,6 +154,7 @@ class PipelineScheduler:
             weekly_report="Sun 18:00 ET" if (enable_scans and self.weekly_report) else "disabled",
             shadow_returns="03:30 ET" if enable_scans else "disabled",
             pattern_backfill="03:00 ET" if pattern_backfill else "disabled",
+            portfolio_sync=portfolio_jobs or "disabled",
             daily_restart=self._restart_time_str() or "disabled",
         )
 
@@ -158,6 +167,25 @@ class PipelineScheduler:
         value = getattr(self.settings, "daily_restart_time_et", None)
         value = (value or "").strip() if isinstance(value, str) else None
         return value or None
+
+    def _add_portfolio_sync_jobs(self) -> list:
+        """Register the Spec L §4 portfolio sync cadence. Returns the job ids.
+
+        The import is deferred into the method so that the module that knows
+        about both the ledger and a broker adapter
+        (``scripts/portfolio_sync.py``) is reached only when the flag is on.
+        """
+        if not bool(getattr(self.settings, "portfolio_sync_enabled", False)):
+            return []
+        try:
+            from scripts.portfolio_sync import register_on
+
+            return register_on(self.scheduler, self.settings)
+        except Exception as exc:
+            # A broken sync registration must not stop the trading monitor from
+            # starting; it pages through the log and the scheduler carries on.
+            log.error("portfolio_sync_registration_failed", error=str(exc))
+            return []
 
     def _add_daily_restart_job(self):
         """Register the daily self-restart cron job if a time is configured."""

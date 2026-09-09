@@ -1,0 +1,16 @@
+{
+  "results": [
+    {
+      "account_number": "****4021",
+      "chain_symbol": "AMD",
+      "option_type": "put",
+      "position_type": "short",
+      "quantity": "1.00000000",
+      "strike_price": "140.00",
+      "expiration_date": "2026-10-16",
+      "trade_value_multiplier": "100.00",
+      "average_price": "3.15",
+      "market_value": "-215.00"
+    }
+  ]
+}

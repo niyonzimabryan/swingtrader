@@ -150,6 +150,23 @@ class Settings(BaseSettings):
     # resource metadata and nothing else changes.
     workspace_oauth_enabled: bool = False
 
+    # --- Portfolio ledger and broker sync (Spec L) ---
+    # Off by default, like every new capability. With the flag false the tables
+    # exist, the read tools answer from whatever is in them (nothing, at first,
+    # and they say so through `provenance.stale`), and no scheduled job runs.
+    portfolio_sync_enabled: bool = False
+    # Spec L section 4: 60 minutes intraday. Past it every tool response carries
+    # stale=true, and any path feeding a proposal refuses rather than serves.
+    portfolio_freshness_budget_minutes: int = 60
+    # Hourly during market hours, plus one pre-market and one after the close.
+    portfolio_sync_interval_minutes: int = 60
+    portfolio_sync_pre_market_hour: int = 8
+    portfolio_sync_post_close_hour: int = 16
+    portfolio_sync_post_close_minute: int = 30
+    # Spec L section 4 failure policy: a sync that would drop more than this
+    # fraction of an account's known holdings writes nothing and pages.
+    portfolio_mass_deletion_threshold: float = 0.5
+
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
     scoring_model: str = "claude-opus-4-6"
