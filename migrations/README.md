@@ -30,6 +30,25 @@ the job.
 `tests/test_schema_discipline.py` fails if the graph gains a second base, gains
 a second head, or contains a revision that does not descend from the baseline.
 
+## Adding a table: also add it to `POST_BASELINE_TABLES`
+
+`database/schema.py` adopts an unversioned pre-Alembic database by comparing its
+table and column names against the models. A database built before your
+migration existed cannot have your table, so without a list of what came after
+the baseline the first new table turns every un-adopted production database into
+`SchemaMismatch` at startup — the adoption path would work exactly once.
+
+So when you add a table, append it to `POST_BASELINE_TABLES` in
+`database/schema.py` with the revision and phase that introduced it. `classify`
+then treats those absences as expected and `adoption_revision` decides where to
+stamp: the baseline for a database that has none of them (the migrations then
+build the tables), `head` for one that already has all of them (re-running those
+migrations would fail on a table that is already there). A database holding
+*some* of them matches no revision and still fails closed.
+
+Parallel phases each append a line; the conflict is a one-line merge, which is
+why the list is explicit rather than derived by replaying migrations at startup.
+
 ## Adding a migration
 
 ```bash

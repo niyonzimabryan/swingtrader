@@ -246,7 +246,34 @@ class Settings(BaseSettings):
     parallel_recovery_good_runs: int = 8
     parallel_alert_on_state_change: bool = True
 
+    # --- Spec O Phase 3a: minimum SEC ingestion plane ---
+    # Off by default. When false, filings.sec_minimal refuses to ingest; the
+    # read helpers still work against whatever is already in the ledger.
+    plane_sec_minimal_enabled: bool = False
+    # SEC requires a self-identifying User-Agent of the form
+    # "Sample Company Name AdminContact@<domain>.com" (webmaster FAQ, verified
+    # in docs/research/2026-09-research-verification.md claim 13). There is no
+    # default: a real contact address must never be baked into the repo, and a
+    # made-up one is worse than none. filings.client raises until it is set.
+    sec_user_agent: str = ""
+    # SEC's published maximum is 10 requests/second. The client refuses a
+    # higher value; lower it if EDGAR starts returning 429.
+    sec_max_requests_per_second: float = 10.0
+    sec_request_timeout_s: float = 30.0
+    sec_max_retries: int = 4
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+    @field_validator("sec_max_requests_per_second")
+    @classmethod
+    def validate_sec_rate(cls, value: float) -> float:
+        if not 0 < value <= 10.0:
+            raise ValueError(
+                "SEC_MAX_REQUESTS_PER_SECOND must be >0 and <=10.0 "
+                "(https://www.sec.gov/os/webmaster-faq: maximum access rate is "
+                "10 requests per second)"
+            )
+        return value
 
     @field_validator("robinhood_order_type")
     @classmethod

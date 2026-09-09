@@ -272,6 +272,52 @@ class LegacyAdoptionTests(unittest.TestCase):
         # Adoption stamps; it must not have dropped or rebuilt the data tables.
         self.assertIn("trades", inspect(self.engine).get_table_names())
 
+    def test_a_baseline_era_database_is_still_adopted_after_a_new_table_lands(self):
+        """A pre-Alembic database predates every post-baseline migration.
+
+        ``create_all()`` builds today's schema, which includes tables no
+        baseline-era database can have. Adoption has to tolerate exactly those
+        absences and nothing else, or the first phase that adds a table turns
+        every un-adopted production database into ``SchemaMismatch`` at startup.
+        """
+        # Post-baseline tables are derived from the migration graph (Phase 0b
+        # replaced Phase 3a's hardcoded list with a replay of every revision),
+        # so a phase that adds a table changes nothing here.
+        from database.schema import migration_owned_tables, revision_signatures
+
+        baseline_tables = set(revision_signatures()[BASELINE_REVISION])
+        post_baseline_names = set(migration_owned_tables()) - baseline_tables
+        post_baseline = {
+            name: table
+            for name, table in Base.metadata.tables.items()
+            if name in post_baseline_names
+        }
+        self.assertTrue(
+            post_baseline,
+            "No post-baseline table is declared; this test needs at least one.",
+        )
+
+        Base.metadata.create_all(
+            self.engine,
+            tables=[
+                table
+                for name, table in Base.metadata.tables.items()
+                if name not in post_baseline_names
+            ],
+        )
+        present = set(inspect(self.engine).get_table_names())
+        self.assertFalse(present & post_baseline_names)
+
+        with self.engine.connect() as conn:
+            self.assertEqual(classify(conn), "legacy")
+
+        self.assertEqual(ensure_schema(self.engine), "adopted")
+
+        # The stamp is followed by an upgrade, which is what creates them.
+        after = set(inspect(self.engine).get_table_names())
+        self.assertTrue(post_baseline_names <= after)
+        self.assertIn("trades", after)
+
     def test_already_versioned_database_is_upgraded_not_restamped(self):
         ensure_schema(self.engine)
         self.assertEqual(ensure_schema(self.engine), "upgraded")
