@@ -43,8 +43,8 @@ MCP_INSTRUCTIONS = (
 )
 
 
-def build_mcp() -> FastMCP:
-    """A stateless streamable-HTTP MCP server carrying the Phase 0b tools.
+def build_mcp(settings=None) -> tuple[FastMCP, tuple[str, ...]]:
+    """A stateless streamable-HTTP MCP server carrying this phase's tools.
 
     ``stateless_http`` because nothing here holds per-session state and a
     stateless server survives a proxy dropping an idle connection, which is the
@@ -61,8 +61,8 @@ def build_mcp() -> FastMCP:
         instructions=MCP_INSTRUCTIONS,
         stateless_http=True,
     )
-    tool_module.register(mcp)
-    return mcp
+    registered = tool_module.register(mcp, settings)
+    return mcp, registered
 
 
 def mount_mcp_endpoint(app: FastAPI, mcp: FastMCP) -> None:
@@ -140,7 +140,7 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
         session_factory=get_session,
     )
 
-    mcp = build_mcp()
+    mcp, registered_tools = build_mcp(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -153,7 +153,7 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
             "workspace_starting",
             enabled=bool(settings.workspace_api_enabled),
             oauth_enabled=bool(settings.workspace_oauth_enabled),
-            tools=list(tool_module.REGISTERED_TOOLS),
+            tools=list(registered_tools),
         )
         async with mcp.session_manager.run():
             yield
@@ -168,6 +168,7 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
     )
     app.state.workspace_auth = auth
     app.state.mcp = mcp
+    app.state.registered_tools = registered_tools
 
     @app.get("/health")
     def health():
@@ -189,8 +190,11 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
                 "mcp": {
                     "path": "/mcp",
                     "transport": "streamable-http",
-                    "tools": list(tool_module.REGISTERED_TOOLS),
+                    "tools": list(registered_tools),
                 },
+                "comparable_setups_enabled": bool(
+                    getattr(settings, "comparable_setups_enabled", False)
+                ),
                 "pending_checks": [
                     "last_portfolio_sync_age (Spec L, Phase 1)",
                     "last_cohort_maturation_age (Spec N, Phase 3)",

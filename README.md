@@ -198,6 +198,7 @@ Core required settings:
 | DATABASE_URL | Local default: sqlite:///swing_trader.db. Postgres is supported with the same schema: postgresql+psycopg://user:pass@host:5432/db. See [docs/DATABASE_ENGINES.md](docs/DATABASE_ENGINES.md) |
 | SCHEDULER_ENABLED | Start with false; set true only after `/eval` works |
 | PRICE_PLANE_ENABLED | Off by default. The Spec N price backbone (three price series, point-in-time universes, the delisting audit). See [docs/PRICE_PLANE.md](docs/PRICE_PLANE.md) |
+| COMPARABLE_SETUPS_ENABLED | Off by default. The Spec N cohort engine and its two read-only MCP tools (`compare_setups`, `cohort_detail`). Off means the tools are not registered at all. See [docs/COMPARABLE_SETUPS.md](docs/COMPARABLE_SETUPS.md) |
 
 Broker controls:
 

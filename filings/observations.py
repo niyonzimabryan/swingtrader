@@ -365,3 +365,33 @@ def latest_observation_as_of(session, **kwargs) -> SourceObservation | None:
     """
     rows = observations_known_at(session, **kwargs)
     return rows[-1] if rows else None
+
+
+# --- truncation, for the lookahead harness ----------------------------------
+
+
+def delete_observations_after(session, cutoff: datetime) -> int:
+    """Remove every observation that was **not** knowable at ``cutoff``.
+
+    This exists for one caller: the Spec N §10 lookahead harness
+    (``comparables/lookahead.py``), which re-runs a cohort against a ledger
+    physically truncated at each event's cutoff and asserts the answer does not
+    move. Borrowed from freqtrade's ``lookahead-analysis``: a filter can be
+    written correctly and still be bypassed by a join somewhere downstream, and
+    the only way to know is to delete the rows and see whether anything
+    changes.
+
+    It lives here rather than in ``comparables/`` on purpose. The engine reads
+    the ledger through :func:`observations_known_at` and writes nothing; the
+    one place that knows how to remove a row from ``source_observations`` is
+    the module that knows how to add one. **Call it inside a savepoint you
+    intend to roll back** — the harness does, and nothing else should call it
+    at all.
+    """
+    deleted = (
+        session.query(SourceObservation)
+        .filter(SourceObservation.known_at_utc > _to_naive_utc(cutoff))
+        .delete(synchronize_session=False)
+    )
+    session.flush()
+    return int(deleted or 0)

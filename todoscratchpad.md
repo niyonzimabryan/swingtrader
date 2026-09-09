@@ -682,6 +682,60 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
       overlap-aware uncertainty, regime splits, null tests, and a real `insufficient`
       answer. Parallelizable with Phase 5. Fixture first, `depth="quick"` first,
       price-only setup before earnings. Deps: `arch` + `statsmodels`; never `mlfinlab`.
+- [ ] **Phase 3c — comparable-setups persistence** (`N` §4, §6.5, §7, §8, §10, §11) —
+      in review on `claude/phase-3c-comparables-persistence`. Connects Phase 3b's
+      pure-math core to stored data and exposes it as workspace tools.
+      `comparables/cohort.py` (point-in-time cohort construction: facts through
+      `filings.observations` only, membership as of the event date, price-plane
+      bars/factors/terminal outcomes, covariates from `data/prices/derived.py`,
+      market cap refused without a share count known at the date);
+      `comparables/setups/` (the pre-registered roster: `gap_and_go_v1`,
+      `earnings_sue_seasonal_v1`, and `insider_cluster_v1` refusing with
+      `pending_plane`); `comparables/registry.py` + migration
+      `0005_comparable_registry` (`comparable_queries`, `cohort_answers`,
+      `cohort_predictions`); `comparables/lookahead.py` (the §10 truncation
+      harness, run by CI and by `scripts/cohort_lookahead_check.py`);
+      `comparables/citations.py` (the citation seam until Phase 2's
+      `research_workspace/citations.py` merges); `compare_setups` and
+      `cohort_detail` on the workspace service behind `COMPARABLE_SETUPS_ENABLED`
+      (default off, and off means *not registered*). Docs:
+      `docs/COMPARABLE_SETUPS.md`. Open items carried out of the build:
+      - [ ] **Run `scripts/cohort_smoke.py` against the production database.**
+            Spec N §11 wants one `insufficient` and one `clean_pit`/`vendor_pit`
+            answer on real data, hand-verified. The warmed event library
+            (`historical_events`) is only there; the build session ran the script
+            against fixtures only and says so in the PR.
+      - [ ] **Owner ruling: `gap_and_go_v1` enters on the session *after* the gap.**
+            §5.0 puts entry at the open of session 0, which is unachievable when the
+            signal *is* that open. The qualifying fact is stamped at the close of its
+            day (the ledger's day-precision convention), costing one session of drift.
+            One line to change if the ruling goes the other way.
+      - [ ] **Owner ruling: an earnings event whose XBRL EPS lands with the 10-Q is
+            dated at the 10-Q, not at the announcement.** It carries
+            `sue_known_after_announcement` with both instants;
+            `require_sue_at_announcement=True` drops those events instead. The
+            alternative is qualifying on a number that did not exist yet.
+      - [ ] **Owner ruling: shrinkage pools a family at each cohort's longest
+            horizon.** §6.4 pools "all cohorts sharing the same primary condition"
+            into one `k` and does not say at which horizon; mixing horizons inside a
+            family is a units error, so one per cohort it is.
+      - [ ] **`data/analog_ranker.py` scores on `outcome_completeness`, which is a
+            post-event feature.** Not this phase's to change (the ranker was out of
+            scope), and structurally harmless — the cohort seam takes candidate
+            identifiers only and the statistics are invariant to its ordering and
+            top-k, which `test_analog_generator_adds_no_bias` asserts. Worth dropping
+            the feature when the ranker is next touched.
+      - [ ] **Regime labels are calendar half-years, not market regimes.** Spec O §4's
+            regime plane is Phase 4; the label is named `2023H1`-style so nobody
+            mistakes it for a bull/bear classifier. Swap it in when the plane lands.
+      - [ ] **`market_cap_decile` joins tickers to CIKs through `COMPARABLE_CIK_MAP`.**
+            The price plane's security master carries no CIK. Phase 4's entity-history
+            plane replaces the env var with a stored point-in-time mapping.
+      - [ ] **Bind Phase 2's citation seam.** `workspace/tools.bind_citation_seam()`
+            registers `comparables.citations.resolve` with
+            `research_workspace.citations` when that module exists and reports its
+            absence otherwise. Confirm at integration that `journal_append` resolves
+            a `cohort:<id>` citation.
 - [ ] **Phase 3p — price plane** (`N` §4.2/§4.3/§4.5) — in review on
       `claude/phase-3p-price-plane`. Five tables (`securities`, `price_bars`,
       `corporate_actions`, `universe_membership`, `price_snapshots`) on migration
