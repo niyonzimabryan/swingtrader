@@ -18,10 +18,13 @@ Startup classification
     ``reddit_sentiment`` table) do not make a database non-empty; the baseline
     drops them.
 ``legacy``
-    Every ORM table exists with the expected column names but there is no
-    ``alembic_version``. This is a database built by the pre-Alembic
-    ``create_all()`` + inline-``ALTER TABLE`` path. Stamp the baseline, then
-    ``upgrade head``.
+    Every baseline-era ORM table exists with the expected column names but
+    there is no ``alembic_version``. This is a database built by the
+    pre-Alembic ``create_all()`` + inline-``ALTER TABLE`` path. Stamp the
+    baseline, then ``upgrade head``. Tables introduced by a later migration
+    (``POST_BASELINE_TABLES``) are *expected* to be absent here — such a
+    database predates them, and the ``upgrade head`` that follows the stamp is
+    what creates them.
 ``unknown``
     Anything else — a partial schema, a missing column, an unexpected extra
     column on an ORM table. Fail closed with recovery instructions rather than
@@ -49,6 +52,21 @@ from database.models import Base
 
 #: The revision every later phase branches its migrations from.
 BASELINE_REVISION = "0001_baseline"
+
+#: ORM tables introduced by a migration *after* ``0001_baseline``.
+#:
+#: The legacy branch adopts a pre-Alembic database by table/column names, so it
+#: has to know which of today's tables a baseline-era database is legitimately
+#: allowed to be missing. Without this list the first phase that adds a table
+#: turns every un-adopted production database into ``unknown`` at startup —
+#: the adoption path would work exactly once and then break.
+#:
+#: **Append your table here when you add one.** Parallel phases each add a line;
+#: the conflict is a one-line merge, which is the point of keeping it explicit
+#: rather than deriving it by replaying migrations at startup.
+POST_BASELINE_TABLES = frozenset({
+    "source_observations",  # 0002, Phase 3a (Spec O / Spec Q section 8)
+})
 
 ALEMBIC_VERSION_TABLE = "alembic_version"
 
@@ -118,18 +136,40 @@ def classify(connection) -> str:
         return "empty"
 
     expected = expected_signature()
-    if set(observed) != set(expected):
+    if set(observed) - set(expected):
         return "unknown"
-    for table, columns in expected.items():
-        if observed[table] != columns:
+
+    missing = set(expected) - set(observed)
+    # An unversioned database is adoptable at one of two points: it predates
+    # every post-baseline migration (a genuine pre-Alembic database), or it
+    # already carries all of them (a schema someone built straight from the
+    # models). A database holding *some* of them matches no revision, so
+    # nothing can be stamped without skipping a migration — fail closed.
+    if missing and missing != POST_BASELINE_TABLES:
+        return "unknown"
+
+    for table in set(expected) - missing:
+        if observed[table] != expected[table]:
             return "unknown"
     return "legacy"
+
+
+def adoption_revision(connection) -> str:
+    """The revision an unversioned but adoptable database should be stamped at.
+
+    ``BASELINE_REVISION`` for a pre-Alembic database, so the post-baseline
+    migrations then run and build their tables; ``head`` for one that already
+    has them, because re-running those migrations would fail on a table that
+    is already there.
+    """
+    observed = set(observed_signature(connection))
+    return "head" if observed & POST_BASELINE_TABLES else BASELINE_REVISION
 
 
 def recovery_message(connection) -> str:
     expected = expected_signature()
     observed = observed_signature(connection)
-    missing_tables = sorted(set(expected) - set(observed))
+    missing_tables = sorted(set(expected) - set(observed) - POST_BASELINE_TABLES)
     extra = sorted(set(observed) - set(expected))
     column_drift = {
         table: {
@@ -166,7 +206,7 @@ def ensure_schema(engine: Engine) -> str:
             raise SchemaMismatch(recovery_message(connection))
         cfg = alembic_config(connection)
         if state == "legacy":
-            command.stamp(cfg, BASELINE_REVISION)
+            command.stamp(cfg, adoption_revision(connection))
         command.upgrade(cfg, "head")
 
     return {"empty": "created", "versioned": "upgraded", "legacy": "adopted"}[state]

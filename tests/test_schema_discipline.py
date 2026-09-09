@@ -28,6 +28,7 @@ from sqlalchemy import create_engine, inspect
 from database.models import Base
 from database.schema import (
     BASELINE_REVISION,
+    POST_BASELINE_TABLES,
     SchemaMismatch,
     alembic_config,
     classify,
@@ -271,6 +272,45 @@ class LegacyAdoptionTests(unittest.TestCase):
             self.assertEqual(current_revision(conn), script.get_current_head())
         # Adoption stamps; it must not have dropped or rebuilt the data tables.
         self.assertIn("trades", inspect(self.engine).get_table_names())
+
+    def test_a_baseline_era_database_is_still_adopted_after_a_new_table_lands(self):
+        """A pre-Alembic database predates every post-baseline migration.
+
+        ``create_all()`` builds today's schema, which includes tables no
+        baseline-era database can have. Adoption has to tolerate exactly those
+        absences and nothing else, or the first phase that adds a table turns
+        every un-adopted production database into ``SchemaMismatch`` at startup.
+        """
+        post_baseline = {
+            name: table
+            for name, table in Base.metadata.tables.items()
+            if name in POST_BASELINE_TABLES
+        }
+        self.assertTrue(
+            post_baseline,
+            "POST_BASELINE_TABLES no longer names a table this branch declares.",
+        )
+
+        Base.metadata.create_all(
+            self.engine,
+            tables=[
+                table
+                for name, table in Base.metadata.tables.items()
+                if name not in POST_BASELINE_TABLES
+            ],
+        )
+        present = set(inspect(self.engine).get_table_names())
+        self.assertFalse(present & set(POST_BASELINE_TABLES))
+
+        with self.engine.connect() as conn:
+            self.assertEqual(classify(conn), "legacy")
+
+        self.assertEqual(ensure_schema(self.engine), "adopted")
+
+        # The stamp is followed by an upgrade, which is what creates them.
+        after = set(inspect(self.engine).get_table_names())
+        self.assertTrue(set(POST_BASELINE_TABLES) <= after)
+        self.assertIn("trades", after)
 
     def test_already_versioned_database_is_upgraded_not_restamped(self):
         ensure_schema(self.engine)
