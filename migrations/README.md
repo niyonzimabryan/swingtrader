@@ -30,24 +30,23 @@ the job.
 `tests/test_schema_discipline.py` fails if the graph gains a second base, gains
 a second head, or contains a revision that does not descend from the baseline.
 
-## Adding a table: also add it to `POST_BASELINE_TABLES`
+## Adding a table: nothing extra to do
 
 `database/schema.py` adopts an unversioned pre-Alembic database by comparing its
-table and column names against the models. A database built before your
-migration existed cannot have your table, so without a list of what came after
-the baseline the first new table turns every un-adopted production database into
-`SchemaMismatch` at startup — the adoption path would work exactly once.
+table and column names against **each revision in the graph**, so a database
+built before your migration existed is adopted at the revision it does match and
+your table is created by the `upgrade head` that follows the stamp. You do not
+have to register the table anywhere.
 
-So when you add a table, append it to `POST_BASELINE_TABLES` in
-`database/schema.py` with the revision and phase that introduced it. `classify`
-then treats those absences as expected and `adoption_revision` decides where to
-stamp: the baseline for a database that has none of them (the migrations then
-build the tables), `head` for one that already has all of them (re-running those
-migrations would fail on a table that is already there). A database holding
-*some* of them matches no revision and still fails closed.
-
-Parallel phases each append a line; the conflict is a one-line merge, which is
-why the list is explicit rather than derived by replaying migrations at startup.
+Phase 3a shipped this as an explicit `POST_BASELINE_TABLES` list, on the
+reasoning that a hand-maintained line per phase is a one-line merge conflict and
+therefore cheap. Phase 0b replaced it at integration with the derived version:
+the failure mode of forgetting the line is every un-adopted production database
+becoming `SchemaMismatch` at startup, which is a bad thing to leave to whether
+someone remembered. The signatures are computed by replaying the migrations into
+a throwaway in-memory SQLite database, once per process, and only when a
+database has tables but no `alembic_version` — so the cost lands on the one path
+that needs it and nowhere else.
 
 ## Adding a migration
 
