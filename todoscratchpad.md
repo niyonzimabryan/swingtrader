@@ -653,12 +653,22 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
       README §5 slot table now carries decisions; README §8 is the v0.1→v0.2 changelog.
       Caveat: the research session's proxy blocked most vendor domains, so prices and
       several vendor capabilities are search-extract tier — verify before spending.
-- [ ] **Phase 0a — schema discipline** — Alembic baseline + engine-neutral models + CI
-      matrix on SQLite and Postgres (`K` §3.1–3.2). **This closes `BRY-107` below**,
-      which has been "decision pending" since July; the decision is made in Spec K.
+- [x] **Phase 0a — schema discipline** — Alembic baseline + engine-neutral models + CI
+      matrix on SQLite and Postgres (`K` §3.1–3.2). Merged as PR #41.
+      **This closes `BRY-107` below**, which has been "decision pending" since July;
+      the decision is made in Spec K.
       Blocks everything; N and Q need only this, not the cutover.
-- [ ] **Phase 0b — Postgres cutover** — migration script with parity report + Railway
-      workspace service skeleton. Blocks Phases 1, 2, 4.
+- [ ] **Phase 0b — Postgres cutover** — code landed on
+      `claude/phase-0b-cutover-and-workspace-skeleton`: `scripts/migrate_sqlite_to_postgres.py`
+      (dependency-ordered, read-only source, per-table content hashes, idempotent,
+      report to `docs/audits/`), a `pg_advisory_xact_lock` around `ensure_schema`,
+      revision-signature adoption so the prod file still classifies `legacy` now that
+      `0002` adds a table, the `workspace/` FastAPI + MCP service (`/health`, `/v1`,
+      `/mcp`, one `whoami` tool, `WORKSPACE_API_ENABLED=false`), owner tokens with
+      scopes and per-token rate limits, and the `data_dir()` / `evals/` SQLite fixes.
+      **Needs Bryan (owner actions, not done):** provision Postgres, set
+      `DATABASE_URL` + `DATA_DIR`, run the migration, create the second Railway
+      service. Runbook: `docs/POSTGRES_CUTOVER_RUNBOOK.md`. Blocks Phases 1, 2, 4.
 - [ ] **Phase 1 — portfolio ledger + read-only tool surface** (`L`, `K` §4)
 - [ ] **Phase 2 — research workspace: dossiers, theses, invalidators, git mirror** (`M`)
 - [x] **Independent plan review folded in — v0.4 (2026-09-06)** — 11 should-fixes, 2 cuts
@@ -675,7 +685,8 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
 - [ ] **Phase 3p — price plane** (`N` §4.2/§4.3/§4.5) — in review on
       `claude/phase-3p-price-plane`. Five tables (`securities`, `price_bars`,
       `corporate_actions`, `universe_membership`, `price_snapshots`) on migration
-      `3p01_price_plane`, branched from `0001_baseline`; `PricePlane` interface with a
+      `0002_price_plane`, branched from `0001_baseline` and joined to the 0b/3a
+      head by `0004_merge_price_plane`; `PricePlane` interface with a
       fixture-backed and a Sharadar implementation; `sp500_wikipedia_v1` (MIT
       `fja05680/sp500`, committed) and `liquid_us_equity_v1` (computed from `price_bars`
       alone); the twenty-delisting audit recorded on the snapshot. Behind

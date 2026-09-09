@@ -41,15 +41,18 @@ def generate_key() -> str:
 
 
 def token_store_path(settings) -> Path:
-    """Co-locate the encrypted token file with the SQLite DB (mirrors db.py:19-24
-    so it lands on the persistent DB volume in prod and the project root locally)."""
-    database_url = getattr(settings, "database_url", "sqlite:///swing_trader.db")
-    if database_url.startswith("sqlite:///"):
-        db_path = database_url.replace("sqlite:///", "")
-        parent = Path(db_path).parent
-    else:
-        parent = Path(".")
-    return parent / "robinhood_token.enc"
+    """Put the encrypted token file on the persistent volume.
+
+    Delegates to :func:`config.settings.data_dir`, which resolves ``DATA_DIR``
+    first and only then falls back to the SQLite file's directory. Deriving the
+    location from a ``sqlite:///`` URL was correct until the Postgres cutover
+    and silently wrong after it: the token blob would land on the ephemeral
+    container filesystem and be lost on every deploy, forcing a manual
+    re-authentication that nobody would expect.
+    """
+    from config.settings import data_dir
+
+    return data_dir(settings) / "robinhood_token.enc"
 
 
 def is_configured(settings) -> bool:

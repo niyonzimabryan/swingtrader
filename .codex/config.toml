@@ -1,0 +1,15 @@
+# Codex MCP server entry for the SwingTrader workspace (spec K section 4.3).
+#
+# Codex accepts a static bearer through `bearer_token_env_var`, which names an
+# environment variable rather than holding the secret — so nothing here is a
+# secret and this file is committed. Export WORKSPACE_TOKEN (and
+# WORKSPACE_BASE_URL) before starting Codex; see docs/WORKSPACE_ACCESS.md.
+#
+# Codex reads ~/.codex/config.toml. If it does not pick this file up from the
+# repository, copy the block into that file. Whether Codex expands ${VAR} in
+# `url` is not verified — if the connection fails, replace the URL with the
+# literal https://<service>.up.railway.app/mcp.
+
+[mcp_servers.swingtrader_workspace]
+url = "${WORKSPACE_BASE_URL}/mcp"
+bearer_token_env_var = "WORKSPACE_TOKEN"

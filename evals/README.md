@@ -14,7 +14,9 @@ python -m evals.run_evals scoring --from-traces 2026-04-01T00:00:00Z --candidate
 # ...or from a local JSONL snapshot:
 python -m evals.run_evals scoring --corpus evals/corpus/scoring.jsonl --candidate claude-sonnet-5
 
-# P&L rollback monitor around a swap date (reads the SQLite outcomes DB):
+# P&L rollback monitor around a swap date (reads the outcomes DB — a SQLAlchemy
+# URL after the Postgres cutover, or a path to the archived SQLite file):
+python -m evals.run_evals pnl --db "$DATABASE_URL" --swap-date 2026-08-01
 python -m evals.run_evals pnl --db /data/swing_trader.db --swap-date 2026-08-01
 ```
 

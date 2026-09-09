@@ -4,24 +4,24 @@ The Alembic single-head / descends-from-baseline tests live in
 `tests/test_schema_discipline.py` and still apply; what is here is specific to
 this phase: that the revision branches from the baseline rather than from
 another phase's work, that the five tables round-trip on whichever engine the
-matrix entry selects, and that `BASELINE_TABLES` has not drifted from the
-migration it claims to describe.
+matrix entry selects, and that the five tables are absent from the baseline's
+signature and present in the head's — the shape `database/schema.py`'s adoption
+path depends on.
 """
 
 from __future__ import annotations
 
-import re
 import unittest
 from datetime import date
 from pathlib import Path
 
 from alembic.script import ScriptDirectory
 
-from database.schema import BASELINE_REVISION, BASELINE_TABLES, alembic_config
+from database.schema import BASELINE_REVISION, alembic_config, revision_signatures
 from tests.dbfixture import init_test_db
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-REVISION = "3p01_price_plane"
+REVISION = "0002_price_plane"
 
 PHASE_TABLES = (
     "securities", "price_bars", "corporate_actions",
@@ -30,18 +30,22 @@ PHASE_TABLES = (
 
 
 class BaselineTableSetTests(unittest.TestCase):
-    def test_baseline_table_set_matches_the_migration(self):
-        """`BASELINE_TABLES` is the tables `0001_baseline` creates, exactly.
+    def test_this_phases_tables_are_not_in_the_baseline(self):
+        """A baseline-era database predates all five of them.
 
-        It is hand-written, and the legacy-adoption branch depends on it, so it
-        is checked against the migration rather than trusted.
+        `database.schema` derives each revision's signature by replaying the
+        graph, so adoption of an un-versioned production database has to
+        tolerate exactly these absences — the case
+        `tests/test_schema_discipline.py::test_a_baseline_era_database_is_still_adopted_after_a_new_table_lands`
+        covers generically.
         """
-        source = (REPO_ROOT / "migrations" / "versions" / "0001_baseline.py").read_text()
-        created = set(re.findall(r"op\.create_table\('([^']+)'", source))
-        self.assertEqual(created, set(BASELINE_TABLES))
+        baseline_tables = set(revision_signatures()[BASELINE_REVISION])
+        self.assertEqual(set(PHASE_TABLES) & baseline_tables, set())
 
-    def test_this_phases_tables_are_not_in_the_baseline_set(self):
-        self.assertEqual(set(PHASE_TABLES) & set(BASELINE_TABLES), set())
+    def test_this_phases_tables_are_in_the_head_signature(self):
+        head_signature = list(revision_signatures().values())[-1]
+        for table in PHASE_TABLES:
+            self.assertIn(table, head_signature)
 
 
 class MigrationLineageTests(unittest.TestCase):
@@ -56,11 +60,11 @@ class MigrationLineageTests(unittest.TestCase):
             "migrations/README.md: never branch from another phase's migration.",
         )
 
-    def test_the_revision_id_does_not_collide_with_a_sequential_number(self):
-        """Three phases each numbering their first revision 0002 would collide."""
-        ids = {rev.revision for rev in self.script.walk_revisions()}
-        self.assertIn(REVISION, ids)
-        self.assertNotIn("0002", ids)
+    def test_the_revision_is_reachable_from_the_single_head(self):
+        """Phases 0b, 3a and 3p all branch from the baseline; a merge joins them."""
+        head = self.script.get_current_head()
+        lineage = {rev.revision for rev in self.script.walk_revisions(BASELINE_REVISION, head)}
+        self.assertIn(REVISION, lineage)
 
     def test_the_migration_declares_no_cross_phase_foreign_key(self):
         source = (REPO_ROOT / "migrations" / "versions" / f"{REVISION}.py").read_text()

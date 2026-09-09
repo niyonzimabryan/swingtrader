@@ -7,12 +7,11 @@ migrations/
   env.py                      Alembic environment (shared by CLI and startup)
   versions/
     0001_baseline.py          the root revision
-    3p01_price_plane.py       phase 3p: the price plane (Spec N §4.2/§4.3)
+    0002_workspace_tokens.py  Phase 0b: workspace owner tokens (spec K §4.1)
+    0002_price_plane.py       Phase 3p: the price plane (spec N §4.2/§4.3)
+    0003_merge_heads.py       merge: 0b + 3a
+    0004_merge_price_plane.py merge: 3p onto that head
 ```
-
-Revision ids carry a phase prefix rather than a global sequence number
-(`3p01_price_plane`, not `0002_...`): three phases developed in parallel would
-each reach for `0002` and collide in the same directory.
 
 ## The baseline rule
 
@@ -33,6 +32,27 @@ the job.
 
 `tests/test_schema_discipline.py` fails if the graph gains a second base, gains
 a second head, or contains a revision that does not descend from the baseline.
+
+## Adding a table: nothing extra to register
+
+`database/schema.py` adopts an unversioned pre-Alembic database by matching its
+table and column names against **every revision in the graph**. A database built
+before your migration existed cannot have your table, so a comparison against
+`Base.metadata` alone would turn every un-adopted production database into
+`SchemaMismatch` at startup the moment the first new table landed — the adoption
+path would work exactly once.
+
+`revision_signatures()` replays the graph into a scratch in-memory SQLite
+database, once per process, and `adoptable_revision()` returns the revision whose
+signature the database matches: `0001_baseline` for a real pre-Alembic file (the
+migrations then build the newer tables), `head` for a test database built
+straight from the models (re-running those migrations would fail on tables that
+already exist). A database matching *no* revision — a partial schema — still
+fails closed.
+
+Nothing to append, and parallel phases have nothing to conflict over. Phase 3a
+kept an explicit `POST_BASELINE_TABLES` list here; Phase 0b replaced it with the
+replay, and this section is the leftover instruction, corrected.
 
 ## Adding a migration
 
@@ -73,20 +93,27 @@ session exists. `ensure_schema` classifies the database and acts:
 | State | Condition | Action |
 | --- | --- | --- |
 | `versioned` | `alembic_version` exists | `upgrade head` |
-| `empty` | no ORM tables exist | `upgrade head` |
-| `legacy` | exactly the baseline's tables exist with the expected columns, no `alembic_version` | stamp `0001_baseline`, then `upgrade head` |
+| `empty` | no migration-owned tables exist | `upgrade head` |
+| `legacy` | the tables and columns present are exactly some revision's, no `alembic_version` | stamp **that revision**, then `upgrade head` |
 | `unknown` | anything else | raise `SchemaMismatch` with recovery instructions |
 
 The `legacy` path is how the existing unversioned Railway SQLite file is
-adopted without being rebuilt. It compares against `database.schema.BASELINE_TABLES`
-— the tables `0001_baseline` creates — and not against `Base.metadata`, because the
-moment a phase adds a table those two sets differ: a production database would be
-missing the new tables (and classify `unknown`), while a database that matched the
-models would be stamped at the baseline and then have the phase's migration try to
-create tables it already has. The signature it checks is table and column
+adopted without being rebuilt. The signature it checks is table and column
 *names*: the old inline `ALTER TABLE` statements attached server defaults that
 `create_all()` never emitted, so a byte-exact DDL comparison would reject the
 very databases this path exists to adopt.
+
+It compares against **every revision in the graph**, not against
+`Base.metadata`. That distinction only started to matter when `0002` added a
+table: the production file has the baseline's tables and not `workspace_tokens`,
+and a models-only comparison would have called it `unknown`. The signatures are
+computed by replaying the migrations into a throwaway in-memory SQLite database,
+once per process, and only when a database has tables but no `alembic_version`.
+A phase that adds a table needs to do nothing for this to keep working.
+
+On Postgres, `ensure_schema` takes `pg_advisory_xact_lock` before it classifies
+anything, so the bot and the workspace service booting at the same moment cannot
+both run `upgrade head`.
 
 Check how a given database will be classified before deploying — read-only,
 writes nothing:

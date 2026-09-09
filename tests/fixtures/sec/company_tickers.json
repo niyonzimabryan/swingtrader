@@ -1,0 +1,17 @@
+{
+ "0": {
+  "cik_str": 1000001,
+  "ticker": "TAGM",
+  "title": "Tagmigration Industries Inc"
+ },
+ "1": {
+  "cik_str": 1000002,
+  "ticker": "GAPC",
+  "title": "Gapco Holdings Inc"
+ },
+ "2": {
+  "cik_str": 1000003,
+  "ticker": "DUAL",
+  "title": "Dualclass Systems Inc"
+ }
+}

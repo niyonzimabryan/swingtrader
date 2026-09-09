@@ -31,6 +31,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
+TEST_POSTGRES_URL_ENV = "TEST_POSTGRES_URL"
 
 
 def target_url() -> str | None:
@@ -43,21 +44,43 @@ def target_backend() -> str:
     return make_url(url).get_backend_name() if url else "sqlite"
 
 
+def postgres_url() -> str | None:
+    """A Postgres URL for tests that cannot run on SQLite at all, or ``None``.
+
+    The SQLite->Postgres migration round-trip (Spec K §3.2) is one of those: it
+    needs both engines at once, so it cannot follow ``TEST_DATABASE_URL`` the
+    way an engine-neutral test does. CI sets ``TEST_POSTGRES_URL`` on *both*
+    matrix entries, pointing at the same service container, so the round-trip
+    runs on both. Locally, without a Postgres to hand, those tests skip and say
+    so rather than passing vacuously.
+    """
+    explicit = os.environ.get(TEST_POSTGRES_URL_ENV)
+    if explicit:
+        return explicit
+    base = target_url()
+    if base and make_url(base).get_backend_name() == "postgresql":
+        return base
+    return None
+
+
 class TestDatabase:
     """A disposable database for one test case.
 
     ``url`` is safe to pass to :func:`database.db.init_db`. ``path`` is the
     SQLite file, or ``None`` on Postgres. ``cleanup`` releases the temporary
     directory or drops the schema; call it from ``tearDown``.
+
+    ``base_url`` overrides the engine the run targets, for the few tests that
+    need a specific engine rather than whichever one CI selected.
     """
 
-    def __init__(self, name: str = "test"):
-        self.backend = target_backend()
+    def __init__(self, name: str = "test", base_url: str | None = None):
+        base = base_url if base_url is not None else target_url()
+        self.backend = make_url(base).get_backend_name() if base else "sqlite"
         self._tmp: tempfile.TemporaryDirectory | None = None
         self._schema: str | None = None
         self._admin_url: str | None = None
 
-        base = target_url()
         if base is None:
             self._tmp = tempfile.TemporaryDirectory()
             self.path: Path | None = Path(self._tmp.name) / f"{name}.db"

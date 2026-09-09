@@ -1,17 +1,23 @@
 """Realized-P&L monitor — the rollback signal (design §2), NOT a swap gate.
 
-Joins closed trades → memos → tickers from the SQLite outcomes DB
-(prod: /data/swing_trader.db). P&L can never *promote* a model (too slow, too
-noisy, market-beta-dominated), but a P&L drop after a swap is a rollback trigger.
-So the monitor's job is: split realized P&L before vs after a swap date and flag
-a regression.
+Joins closed trades → memos → tickers from the outcomes database. P&L can never
+*promote* a model (too slow, too noisy, market-beta-dominated), but a P&L drop
+after a swap is a rollback trigger. So the monitor's job is: split realized P&L
+before vs after a swap date and flag a regression.
+
+The database is addressed by SQLAlchemy URL, so this reads Postgres after the
+Phase 0b cutover and the archived SQLite file before it. A bare filesystem path
+is still accepted and means SQLite, which is what every recorded invocation of
+this tool passes.
 """
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
+from datetime import date, datetime
 from statistics import mean
+
+from sqlalchemy import create_engine, text
 
 from evals import _bootstrap  # noqa: F401
 
@@ -47,16 +53,33 @@ def _conviction(opus_critique) -> str:
         return "unknown"
 
 
-def realized_pnl(db_path: str) -> list[Outcome]:
-    con = sqlite3.connect(db_path)
+def database_url(target: str) -> str:
+    """Accept a SQLAlchemy URL, or a bare path meaning a SQLite file."""
+    return target if "://" in target else f"sqlite:///{target}"
+
+
+def _day(value) -> str:
+    """A ``YYYY-MM-DD`` string, whatever the driver returned.
+
+    SQLite hands back the stored text; Postgres hands back a ``datetime``. The
+    swap-date comparison is a string comparison, so both have to arrive as one.
+    """
+    if isinstance(value, (datetime, date)):
+        return value.date().isoformat() if isinstance(value, datetime) else value.isoformat()
+    return str(value or "")[:10]
+
+
+def realized_pnl(db: str) -> list[Outcome]:
+    engine = create_engine(database_url(db))
     try:
-        rows = con.execute(_JOIN).fetchall()
+        with engine.connect() as connection:
+            rows = connection.execute(text(_JOIN)).fetchall()
     finally:
-        con.close()
+        engine.dispose()
     out = []
     for symbol, direction, score, _cls, crit, pnl_pct, _abs, ed, xd, reason in rows:
         out.append(Outcome(symbol, direction, score or 0.0, _conviction(crit),
-                           float(pnl_pct), ed or "", xd or "", reason or ""))
+                           float(pnl_pct), _day(ed), _day(xd), reason or ""))
     return out
 
 

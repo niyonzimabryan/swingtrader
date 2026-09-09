@@ -1,0 +1,19 @@
+{
+  "$comment": [
+    "Project-scoped MCP servers for Claude Code (spec K section 4.3).",
+    "Claude Code expands ${VAR} from the environment when it reads this file,",
+    "so no secret is committed: export WORKSPACE_BASE_URL and WORKSPACE_TOKEN",
+    "first. See docs/WORKSPACE_ACCESS.md.",
+    "The endpoint answers only when WORKSPACE_API_ENABLED is true on the",
+    "service; until the owner flips it, every call returns 503."
+  ],
+  "mcpServers": {
+    "swingtrader-workspace": {
+      "type": "http",
+      "url": "${WORKSPACE_BASE_URL}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${WORKSPACE_TOKEN}"
+      }
+    }
+  }
+}

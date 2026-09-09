@@ -124,6 +124,31 @@ class Settings(BaseSettings):
 
     # --- Database ---
     database_url: str = "sqlite:///swing_trader.db"
+    # Directory for sidecar files that must live beside the data, not on the
+    # ephemeral container FS: the pattern-backfill queue, the encrypted
+    # Robinhood token blob. It used to be derived from a `sqlite:///` path,
+    # which silently became the working directory the moment DATABASE_URL
+    # pointed at Postgres. Set it explicitly (Railway: /data); left empty it
+    # still falls back to the SQLite file's directory. See `data_dir()`.
+    data_dir: str = ""
+
+    # --- Workspace API / MCP service (Spec K) ---
+    # Separate process from the bot. Off by default: with the flag false the
+    # service still answers /health so a deploy is observable, and refuses
+    # every authenticated call with 503.
+    workspace_api_enabled: bool = False
+    workspace_host: str = "0.0.0.0"
+    workspace_port: int = 8000
+    # Read by clients (scripts, docs, .mcp.json), not by the server itself.
+    workspace_base_url: str = ""
+    workspace_token: str = ""
+    # Spec K section 4.1: 60 read and 10 write calls per minute per token.
+    workspace_read_rate_limit_per_minute: int = 60
+    workspace_write_rate_limit_per_minute: int = 10
+    # OAuth 2.1 + dynamic client registration is designed but not implemented;
+    # see workspace/oauth.py. With this true the service advertises protected
+    # resource metadata and nothing else changes.
+    workspace_oauth_enabled: bool = False
 
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
@@ -240,7 +265,34 @@ class Settings(BaseSettings):
     delisting_audit_window_sessions: int = 10
     delisting_audit_collapse_threshold: float = -0.60
 
+    # --- Spec O Phase 3a: minimum SEC ingestion plane ---
+    # Off by default. When false, filings.sec_minimal refuses to ingest; the
+    # read helpers still work against whatever is already in the ledger.
+    plane_sec_minimal_enabled: bool = False
+    # SEC requires a self-identifying User-Agent of the form
+    # "Sample Company Name AdminContact@<domain>.com" (webmaster FAQ, verified
+    # in docs/research/2026-09-research-verification.md claim 13). There is no
+    # default: a real contact address must never be baked into the repo, and a
+    # made-up one is worse than none. filings.client raises until it is set.
+    sec_user_agent: str = ""
+    # SEC's published maximum is 10 requests/second. The client refuses a
+    # higher value; lower it if EDGAR starts returning 429.
+    sec_max_requests_per_second: float = 10.0
+    sec_request_timeout_s: float = 30.0
+    sec_max_retries: int = 4
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+    @field_validator("sec_max_requests_per_second")
+    @classmethod
+    def validate_sec_rate(cls, value: float) -> float:
+        if not 0 < value <= 10.0:
+            raise ValueError(
+                "SEC_MAX_REQUESTS_PER_SECOND must be >0 and <=10.0 "
+                "(https://www.sec.gov/os/webmaster-faq: maximum access rate is "
+                "10 requests per second)"
+            )
+        return value
 
     @field_validator("robinhood_order_type")
     @classmethod
@@ -252,13 +304,27 @@ class Settings(BaseSettings):
 
 
 def data_dir(settings) -> "Path":
-    """Directory that holds the SQLite DB file (prod: /data/), else cwd.
+    """Directory for sidecar files that must survive a container restart.
 
-    Used to anchor sidecar files (the pattern backfill queue) on the persistent
-    volume rather than the ephemeral container FS. Accepts any object exposing a
-    ``database_url`` attribute so test doubles work without a real Settings.
+    Resolution order:
+
+    1. ``DATA_DIR``, if set. This is the only answer that works once
+       ``DATABASE_URL`` points at Postgres, which is why it exists — Phase 0a
+       flagged the SQLite-derived path as a cutover bug.
+    2. The directory holding the SQLite file, when ``DATABASE_URL`` is a
+       ``sqlite:///`` URL with a directory component. Unchanged behaviour for
+       the pre-cutover deploy, where ``/data/swing_trader.db`` puts sidecars on
+       the mounted volume for free.
+    3. The working directory.
+
+    Accepts any object exposing ``data_dir``/``database_url`` attributes so test
+    doubles work without a real Settings.
     """
     from pathlib import Path
+
+    explicit = (getattr(settings, "data_dir", "") or "").strip()
+    if explicit:
+        return Path(explicit)
 
     url = getattr(settings, "database_url", "") or ""
     if url.startswith("sqlite:///"):

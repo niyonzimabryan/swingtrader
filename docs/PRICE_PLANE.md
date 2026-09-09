@@ -5,7 +5,7 @@ additive: `data/market_data.py` (the incumbent yfinance path) is untouched, and
 nothing here runs until `PRICE_PLANE_ENABLED=true`.
 
 - Spec: `specs/investment-workspace/N-comparable-setups-engine.md` §4.2, §4.3, §4.5
-- Schema: `migrations/versions/3p01_price_plane.py`, branching from `0001_baseline`
+- Schema: `migrations/versions/0002_price_plane.py`, branching from `0001_baseline`
 - Licences: [`DATA_LICENSES.md`](DATA_LICENSES.md)
 
 ## What is stored
@@ -326,12 +326,6 @@ These are known and unresolved, not oversights.
    hundred names; a full 5,000-name, 10-year file is ~12M rows and will need a
    windowed rebuild (one month-end at a time, bars restricted to the window).
    The rule itself is unchanged by that — only how the bars are fetched.
-6. **Legacy schema adoption.** `database.schema.classify` now compares a
-   pre-Alembic database against `BASELINE_TABLES` rather than against
-   `Base.metadata`, because the two diverge the moment any phase adds a table.
-   Its column check still reads the ORM declaration for those tables, which is
-   correct only while no phase *alters* a baseline table. A phase that does must
-   extend `BASELINE_TABLES` to carry the baseline's columns too.
 
 ## Tests
 

@@ -23,11 +23,10 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import MetaData, Table, create_engine, inspect
+from sqlalchemy import create_engine, inspect
 
 from database.models import Base
 from database.schema import (
-    ALEMBIC_VERSION_TABLE,
     BASELINE_REVISION,
     SchemaMismatch,
     alembic_config,
@@ -261,11 +260,7 @@ class LegacyAdoptionTests(unittest.TestCase):
         self.assertEqual(ensure_schema(self.engine), "created")
 
     def test_unversioned_pre_alembic_schema_is_adopted(self):
-        # The pre-Alembic schema is the baseline's tables with no
-        # alembic_version. Build exactly that: `create_all_for_tests` stopped
-        # being a faithful stand-in once a phase added a table of its own, since
-        # it also creates the tables that phase's migration is still due to add.
-        _build_pre_alembic_schema(self.engine)
+        create_all_for_tests(self.engine)
         with self.engine.connect() as conn:
             self.assertEqual(classify(conn), "legacy")
 
@@ -276,6 +271,52 @@ class LegacyAdoptionTests(unittest.TestCase):
             self.assertEqual(current_revision(conn), script.get_current_head())
         # Adoption stamps; it must not have dropped or rebuilt the data tables.
         self.assertIn("trades", inspect(self.engine).get_table_names())
+
+    def test_a_baseline_era_database_is_still_adopted_after_a_new_table_lands(self):
+        """A pre-Alembic database predates every post-baseline migration.
+
+        ``create_all()`` builds today's schema, which includes tables no
+        baseline-era database can have. Adoption has to tolerate exactly those
+        absences and nothing else, or the first phase that adds a table turns
+        every un-adopted production database into ``SchemaMismatch`` at startup.
+        """
+        # Post-baseline tables are derived from the migration graph (Phase 0b
+        # replaced Phase 3a's hardcoded list with a replay of every revision),
+        # so a phase that adds a table changes nothing here.
+        from database.schema import migration_owned_tables, revision_signatures
+
+        baseline_tables = set(revision_signatures()[BASELINE_REVISION])
+        post_baseline_names = set(migration_owned_tables()) - baseline_tables
+        post_baseline = {
+            name: table
+            for name, table in Base.metadata.tables.items()
+            if name in post_baseline_names
+        }
+        self.assertTrue(
+            post_baseline,
+            "No post-baseline table is declared; this test needs at least one.",
+        )
+
+        Base.metadata.create_all(
+            self.engine,
+            tables=[
+                table
+                for name, table in Base.metadata.tables.items()
+                if name not in post_baseline_names
+            ],
+        )
+        present = set(inspect(self.engine).get_table_names())
+        self.assertFalse(present & post_baseline_names)
+
+        with self.engine.connect() as conn:
+            self.assertEqual(classify(conn), "legacy")
+
+        self.assertEqual(ensure_schema(self.engine), "adopted")
+
+        # The stamp is followed by an upgrade, which is what creates them.
+        after = set(inspect(self.engine).get_table_names())
+        self.assertTrue(post_baseline_names <= after)
+        self.assertIn("trades", after)
 
     def test_already_versioned_database_is_upgraded_not_restamped(self):
         ensure_schema(self.engine)
@@ -293,13 +334,6 @@ class LegacyAdoptionTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("missing tables", message)
         self.assertIn(f"alembic stamp {BASELINE_REVISION}", message)
-
-
-def _build_pre_alembic_schema(engine) -> None:
-    """The baseline's tables, with no ``alembic_version`` — a legacy database."""
-    with engine.begin() as conn:
-        command.upgrade(alembic_config(conn), BASELINE_REVISION)
-    Table(ALEMBIC_VERSION_TABLE, MetaData()).drop(engine)
 
 
 def _reflect(engine) -> dict:
