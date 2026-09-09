@@ -359,6 +359,15 @@ def set_probability(
     return thesis
 
 
+def set_argument(session, thesis: Thesis, argument) -> Thesis:
+    """Replace the numbered argument. The claims are prose; the *gate* is
+    elsewhere, so this needs no check of its own."""
+    thesis.argument_json = _canonical_json(list(argument or []))
+    thesis.updated_at = utcnow_naive()
+    session.flush()
+    return thesis
+
+
 def add_invalidator(
     session,
     thesis: Thesis,
@@ -700,6 +709,7 @@ def journal_append(
     occurred_on: date | None = None,
     thesis: Thesis | None = None,
     cohort_answer=None,
+    cohort_answer_id: str = "",
     budget: str = "discretionary",
     sizing_rationale: str = "",
     expected_holding_days: int | None = None,
@@ -728,6 +738,25 @@ def journal_append(
     symbols = [t.strip().upper() for t in (tickers or []) if str(t).strip()]
     if not symbols:
         raise ResearchRefused("missing_ticker", "a journal entry names at least one ticker")
+
+    if cohort_answer is None and cohort_answer_id:
+        from research_workspace import citations
+
+        cohort_answer = citations.resolve(cohort_answer_id)
+        if cohort_answer is None:
+            raise ResearchRefused(
+                "unresolvable_cohort_answer",
+                f"cohort answer {cohort_answer_id!r} cannot be resolved, so its "
+                f"depth and status cannot be checked. An unverifiable citation "
+                f"is not a citation (Spec N §8); record the decision as "
+                f"budget='discretionary' and say so in the note."
+                + (
+                    ""
+                    if citations.has_resolver()
+                    else " No cohort answer store is registered yet — that "
+                    "arrives with compare_setups in Phase 3."
+                ),
+            )
 
     cited: CitedAnswer | None = None
     if cohort_answer is not None:

@@ -1,10 +1,12 @@
-"""The MCP tool surface. In Phase 0b that is exactly one read tool.
+"""The MCP tool surface.
 
 Spec K §4.2 fixes fifteen tools; Phases 1-4 build them. Shipping them early as
 stubs would put tools in an agent's ``tools/list`` that return nothing useful,
-which is worse than not having them, so the surface here is ``whoami`` and
-nothing else — enough to prove that a client can attach, authenticate, and get
-an answer end to end.
+which is worse than not having them, so a tool appears here only once it
+answers: ``whoami`` from Phase 0b, and the five Spec M research tools when
+``RESEARCH_WORKSPACE_ENABLED`` is on. The same reasoning is why the research
+tools are *not* registered with the flag off — a tool that answers "disabled"
+still tells a client this workspace does research, and it does not.
 
 Every tool body starts with :func:`authorize_call`, which is where the scope
 check, the rate limit, and the Spec K §4.1 call log live. Nothing enforces that
@@ -20,10 +22,24 @@ from mcp.server.fastmcp import Context, FastMCP
 from workspace import scopes as scope_module
 from workspace.auth import AuthError, auth_from_scope, authorize, identity_from_scope
 
-#: The tools this phase registers. Kept as a constant so ``/health`` and the
-#: startup log need not await ``tools/list``; the test asserts it matches what
-#: the server actually advertises.
+#: The tools every workspace registers, whatever the flags say. Kept as a
+#: constant so ``/health`` and the startup log need not await ``tools/list``;
+#: the test asserts it matches what the server actually advertises.
 REGISTERED_TOOLS: tuple[str, ...] = ("whoami",)
+
+
+def registered_tools(settings=None) -> tuple[str, ...]:
+    """What a workspace built with ``settings`` advertises.
+
+    ``/health`` and the startup log call this rather than reading
+    :data:`REGISTERED_TOOLS`, because the surface is now flag-dependent and a
+    health check that reports a fixed list would be reporting a guess.
+    """
+    from workspace.research_tools import RESEARCH_TOOLS
+
+    if settings is not None and getattr(settings, "research_workspace_enabled", False):
+        return REGISTERED_TOOLS + RESEARCH_TOOLS
+    return REGISTERED_TOOLS
 
 
 class ToolRefused(ValueError):
@@ -48,8 +64,8 @@ def authorize_call(ctx: Context, tool: str, arguments: dict | None = None):
         raise ToolRefused(f"{exc.code}: {exc.message}") from exc
 
 
-def register(mcp: FastMCP) -> None:
-    """Attach the Phase 0b tool surface to ``mcp``."""
+def register(mcp: FastMCP, settings=None) -> tuple[str, ...]:
+    """Attach the tool surface to ``mcp``; returns the names registered."""
 
     @mcp.tool(
         name="whoami",
@@ -75,9 +91,21 @@ def register(mcp: FastMCP) -> None:
             ),
         }
 
-    missing = [t for t in REGISTERED_TOOLS if t not in scope_module.TOOL_SCOPES]
+    names = REGISTERED_TOOLS
+    if settings is not None and getattr(settings, "research_workspace_enabled", False):
+        # Imported here rather than at module scope: `workspace.research_tools`
+        # imports `authorize_call` and `ToolRefused` from this module, and a
+        # top-level import either way would be a cycle.
+        from workspace import research_tools
+
+        names = names + research_tools.register(
+            mcp, settings, authorize_call=authorize_call, ToolRefused=ToolRefused
+        )
+
+    missing = [t for t in names if t not in scope_module.TOOL_SCOPES]
     if missing:  # pragma: no cover - guarded by test_workspace_mcp too
         raise KeyError(
             f"tools {missing} have no entry in workspace.scopes.TOOL_SCOPES. "
             "Declare the scope before registering the tool."
         )
+    return names
