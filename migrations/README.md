@@ -6,8 +6,11 @@ The database schema is owned by Alembic. Nothing else may change it.
 migrations/
   env.py                      Alembic environment (shared by CLI and startup)
   versions/
-    0001_baseline.py          the root revision
-    0002_workspace_tokens.py  Phase 0b: workspace owner tokens (spec K §4.1)
+    0001_baseline.py             the root revision
+    0002_workspace_tokens.py     Phase 0b: workspace owner tokens (spec K §4.1)
+    0002_source_observations.py  Phase 3a: the bitemporal source ledger (spec O §2)
+    0003_merge_heads.py          the merge of those two parallel phases
+    0004_research_workspace.py   Phase 2: dossiers, theses, invalidators, journal (spec M §3)
 ```
 
 ## The baseline rule
