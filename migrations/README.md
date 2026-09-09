@@ -8,9 +8,6 @@ migrations/
   versions/
     0001_baseline.py          the root revision
     0002_workspace_tokens.py  Phase 0b: workspace owner tokens (spec K §4.1)
-    0002_price_plane.py       Phase 3p: the price plane (spec N §4.2/§4.3)
-    0003_merge_heads.py       merge: 0b + 3a
-    0004_merge_price_plane.py merge: 3p onto that head
 ```
 
 ## The baseline rule
@@ -33,26 +30,23 @@ the job.
 `tests/test_schema_discipline.py` fails if the graph gains a second base, gains
 a second head, or contains a revision that does not descend from the baseline.
 
-## Adding a table: nothing extra to register
+## Adding a table: nothing extra to do
 
-`database/schema.py` adopts an unversioned pre-Alembic database by matching its
-table and column names against **every revision in the graph**. A database built
-before your migration existed cannot have your table, so a comparison against
-`Base.metadata` alone would turn every un-adopted production database into
-`SchemaMismatch` at startup the moment the first new table landed — the adoption
-path would work exactly once.
+`database/schema.py` adopts an unversioned pre-Alembic database by comparing its
+table and column names against **each revision in the graph**, so a database
+built before your migration existed is adopted at the revision it does match and
+your table is created by the `upgrade head` that follows the stamp. You do not
+have to register the table anywhere.
 
-`revision_signatures()` replays the graph into a scratch in-memory SQLite
-database, once per process, and `adoptable_revision()` returns the revision whose
-signature the database matches: `0001_baseline` for a real pre-Alembic file (the
-migrations then build the newer tables), `head` for a test database built
-straight from the models (re-running those migrations would fail on tables that
-already exist). A database matching *no* revision — a partial schema — still
-fails closed.
-
-Nothing to append, and parallel phases have nothing to conflict over. Phase 3a
-kept an explicit `POST_BASELINE_TABLES` list here; Phase 0b replaced it with the
-replay, and this section is the leftover instruction, corrected.
+Phase 3a shipped this as an explicit `POST_BASELINE_TABLES` list, on the
+reasoning that a hand-maintained line per phase is a one-line merge conflict and
+therefore cheap. Phase 0b replaced it at integration with the derived version:
+the failure mode of forgetting the line is every un-adopted production database
+becoming `SchemaMismatch` at startup, which is a bad thing to leave to whether
+someone remembered. The signatures are computed by replaying the migrations into
+a throwaway in-memory SQLite database, once per process, and only when a
+database has tables but no `alembic_version` — so the cost lands on the one path
+that needs it and nowhere else.
 
 ## Adding a migration
 
