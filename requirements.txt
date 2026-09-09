@@ -22,4 +22,6 @@ opentelemetry-instrumentation-anthropic>=0.1
 google-genai>=1.0
 firecrawl-py>=2.0
 mcp>=1.27.2,<2  # 2.x renamed streamablehttp_client -> streamable_http_client; breaks execution/brokers/robinhood.py and scripts/robinhood_auth.py
+fastapi>=0.115  # workspace service (Spec K section 4); the bot does not import it
+uvicorn>=0.30  # ASGI server for the workspace service only
 cryptography>=42,<47

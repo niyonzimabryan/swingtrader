@@ -7,6 +7,7 @@ migrations/
   env.py                      Alembic environment (shared by CLI and startup)
   versions/
     0001_baseline.py          the root revision
+    0002_workspace_tokens.py  Phase 0b: workspace owner tokens (spec K §4.1)
 ```
 
 ## The baseline rule
@@ -68,8 +69,8 @@ session exists. `ensure_schema` classifies the database and acts:
 | State | Condition | Action |
 | --- | --- | --- |
 | `versioned` | `alembic_version` exists | `upgrade head` |
-| `empty` | no ORM tables exist | `upgrade head` |
-| `legacy` | every ORM table exists with the expected columns, no `alembic_version` | stamp `0001_baseline`, then `upgrade head` |
+| `empty` | no migration-owned tables exist | `upgrade head` |
+| `legacy` | the tables and columns present are exactly some revision's, no `alembic_version` | stamp **that revision**, then `upgrade head` |
 | `unknown` | anything else | raise `SchemaMismatch` with recovery instructions |
 
 The `legacy` path is how the existing unversioned Railway SQLite file is
@@ -77,6 +78,18 @@ adopted without being rebuilt. The signature it checks is table and column
 *names*: the old inline `ALTER TABLE` statements attached server defaults that
 `create_all()` never emitted, so a byte-exact DDL comparison would reject the
 very databases this path exists to adopt.
+
+It compares against **every revision in the graph**, not against
+`Base.metadata`. That distinction only started to matter when `0002` added a
+table: the production file has the baseline's tables and not `workspace_tokens`,
+and a models-only comparison would have called it `unknown`. The signatures are
+computed by replaying the migrations into a throwaway in-memory SQLite database,
+once per process, and only when a database has tables but no `alembic_version`.
+A phase that adds a table needs to do nothing for this to keep working.
+
+On Postgres, `ensure_schema` takes `pg_advisory_xact_lock` before it classifies
+anything, so the bot and the workspace service booting at the same moment cannot
+both run `upgrade head`.
 
 Check how a given database will be classified before deploying — read-only,
 writes nothing:
