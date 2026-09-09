@@ -263,7 +263,13 @@ Four things only Bryan can do, each under half an hour, each blocking something:
    bulk download is included, and the redistribution terms. Pricing itself is now
    verified (§3).
 3. **Run the twenty-delisting audit** (Spec N §4.2) against whichever vendor is on the
-   table before paying. Decides EODHD vs Tiingo vs Sharadar on the one property that
+   table before paying.
+4. **Record real SEC fixtures and run the 50-ticker coverage checkpoint** from any
+   machine that can reach `data.sec.gov` (the cloud build environment cannot). With
+   `SEC_USER_AGENT` set to a real address in `.env`:
+   `python -m scripts.record_sec_fixtures --tickers AAPL MSFT KO` then
+   `python -m scripts.sec_backfill --coverage-universe --since 2015-01-01 --report coverage.json`,
+   and paste the report. Until then Phase 3a is validated on synthetic fixtures only. Decides EODHD vs Tiingo vs Sharadar on the one property that
    matters and that no vendor documents.
 4. **Cherry-pick the `mcp<2` pin to `main`** (commit `18b47a2`) before the next Railway
    deploy. A fresh install today breaks every Robinhood call.
