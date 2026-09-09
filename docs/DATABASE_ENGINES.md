@@ -99,17 +99,68 @@ into its own `Secret scan` job so it runs once rather than per matrix entry.
 The SQLite entry stays until the Postgres migration is confirmed in production
 for one week (spec K §3.2).
 
+## Running the suite on Postgres (continued)
+
+A few tests need Postgres **whichever** engine the run targets, so they follow
+`TEST_POSTGRES_URL` rather than `TEST_DATABASE_URL`:
+
+- `tests/test_sqlite_migration_roundtrip.py` needs both engines at once — it is
+  the cutover's parity proof.
+- `tests/test_schema_cutover.py::AdvisoryLockTests` tests a Postgres advisory
+  lock, which has no SQLite equivalent.
+
+CI sets `TEST_POSTGRES_URL` on both matrix entries, pointing at the same
+service container, so those tests run twice rather than skipping on the SQLite
+entry. Locally, without a Postgres to hand, they skip and say why.
+
+```bash
+TEST_POSTGRES_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/swingtrader_test \
+  .venv/bin/python -m unittest discover -s tests -p "test_*.py"
+```
+
+## Two processes, one database (Phase 0b)
+
+The workspace service (`workspace/`, spec K §4) is a second process against the
+same database, and both call `ensure_schema()` at startup. `upgrade head` is not
+safe to run twice concurrently, so `ensure_schema` takes a transaction-scoped
+Postgres advisory lock (`pg_advisory_xact_lock`) before it classifies anything.
+The second process blocks, then observes the first one's result. The lock is
+released by the transaction's commit *or rollback*, so a process that dies
+mid-migration does not leave it held. SQLite takes no lock and needs none — one
+host, one file, one writer.
+
+## Adopting a database at the revision it matches
+
+Phase 0a's `legacy` check compared the database against `Base.metadata`. That
+was the same thing as comparing it against the baseline while the baseline was
+the only revision, and stopped being the same thing the moment a phase added a
+table: the production SQLite file has the baseline's tables and not
+`workspace_tokens`, so a models-only comparison would call it `unknown` and
+startup would fail closed on the very database the `legacy` path exists to
+adopt.
+
+`database/schema.py` now computes the table-and-column signature of **every**
+revision in the graph — by replaying the migrations into a throwaway in-memory
+SQLite database, once per process, and only on the path that needs it — and
+adopts an unversioned database at whichever revision it matches. A database
+built by `create_all()` matches `head`; the pre-Alembic Railway file matches
+`0001_baseline`. Anything else is still `unknown` and still fails closed.
+
+Names are engine-independent, so replaying on SQLite says the same thing about
+a Postgres database.
+
 ## What still points at SQLite
 
-These are out of Phase 0a's scope and are listed so they are not forgotten:
+Phase 0b closed the three items Phase 0a flagged:
 
-- `evals/pnl_monitor.py` and `evals/test_swingtrader_evals.py` open the
-  production `.db` file with `sqlite3` directly. They are an offline eval
-  harness, not part of the application or of `unittest discover -s tests`. They
-  will need a SQLAlchemy path at cutover (Phase 0b).
-- `config/settings.py::data_dir()` derives the sidecar-file directory from a
-  `sqlite:///` URL and falls back to the working directory otherwise. On
-  Postgres the pattern-backfill queue therefore lands in the process's working
-  directory; Phase 0b should give it an explicit setting.
-- `Dockerfile` and `.env.example` still default to SQLite, which is correct
-  until the cutover.
+| Was | Now |
+| --- | --- |
+| `evals/pnl_monitor.py` opened the production `.db` with `sqlite3` | Reads through SQLAlchemy from a URL. A bare path still means SQLite, so every recorded invocation keeps working. `tests/test_evals_engine_neutral.py` runs it on whichever engine the suite targets. |
+| `config/settings.py::data_dir()` derived the sidecar directory from a `sqlite:///` URL | `DATA_DIR` is the first answer, the SQLite directory the fallback. Both the pattern-backfill queue and the encrypted Robinhood token blob follow it — the token blob silently moving to the container filesystem was the sharper of the two bugs. |
+| — | `evals/test_swingtrader_evals.py` still builds its fixture with `sqlite3`. That is a fixture builder, not a production read path, and it is deliberate. |
+
+Still true, and correct until the cutover:
+
+- `Dockerfile` and `.env.example` default to SQLite. A Railway service variable
+  overrides the `Dockerfile`'s `ENV`; see
+  [`POSTGRES_CUTOVER_RUNBOOK.md`](POSTGRES_CUTOVER_RUNBOOK.md).

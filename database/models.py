@@ -667,6 +667,40 @@ class DeepResearchRequest(Base):
     error = Column(Text, default="")
 
 
+class WorkspaceToken(Base):
+    """An owner token for the workspace API and MCP endpoint (Spec K §4.1).
+
+    One row per client ("codex-laptop", "claude-web"), issued by
+    ``scripts/workspace_token.py --issue``. Only the SHA-256 digest of the
+    secret is stored: the plaintext is printed once and never persisted, so a
+    database dump does not hand anyone an access token.
+
+    SHA-256 rather than bcrypt/argon2 on purpose. A password hash is slow to
+    defend a *low-entropy* secret against offline guessing; these secrets are
+    256 bits from ``secrets.token_urlsafe``, where guessing is not a threat, and
+    a slow hash on every request would be a rate-limiter working against us.
+
+    ``scopes`` is a comma-separated list drawn from
+    ``workspace.scopes.SCOPES``. There is deliberately no ``execute`` scope —
+    order placement is not reachable by token at all (Spec L §6), and
+    ``tests/test_no_execute_scope.py`` keeps it that way.
+    """
+
+    __tablename__ = "workspace_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    label = Column(String(100), unique=True, nullable=False, index=True)
+    # Hex SHA-256 of the secret. Indexed because it is the lookup key on every
+    # authenticated request.
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    # Leading characters of the secret, for logs and `--list`. Not secret and
+    # not sufficient to authenticate.
+    token_prefix = Column(String(12), nullable=False, default="")
+    scopes = Column(String(200), nullable=False, default="read")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    last_used_at = Column(UtcDateTime, nullable=True)
+    revoked_at = Column(UtcDateTime, nullable=True)
+    note = Column(Text, nullable=False, default="")
 class SourceObservation(Base):
     """Bitemporal source ledger — Spec Q section 8, extended by Spec O section 2.
 
