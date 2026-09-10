@@ -14,10 +14,11 @@ import sys
 # every service it builds from it. The workspace service sets
 # SERVICE_ROLE=workspace; it must never start the bot — Telegram allows one
 # polling connection — so hand off here, before a single bot module is imported.
+# It replaces the process rather than importing the workspace: Spec K §4 keeps
+# the bot's import closure free of `workspace` (tests/test_no_execute_scope.py),
+# so a workspace change can never restart or alter the trading monitor.
 if os.environ.get("SERVICE_ROLE", "").strip().lower() == "workspace":
-    from workspace.server import main as _workspace_main
-
-    sys.exit(_workspace_main())
+    os.execv(sys.executable, [sys.executable, "-m", "workspace.server", *sys.argv[1:]])
 
 from config.settings import Settings
 from database.db import init_db
