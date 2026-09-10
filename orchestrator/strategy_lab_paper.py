@@ -19,12 +19,18 @@ consulted, and a mismatch is refused before broker review or placement (Spec Q
 §11, §12 invariant 11). ``tests/test_strategy_lab_e2e.py`` proves the live
 adapter sees zero calls in exactly that configuration.
 
-**The budget is virtual and independent.** Sizing is judged first against the
-arm's own paper book — ``STRATEGY_LAB_PAPER_*`` — through PR 3's pure
+**The budget is virtual and independent — and the division of labour is worth
+stating exactly.** Eligibility and the caps are judged against the arm's own paper
+book (``STRATEGY_LAB_PAPER_*``) through PR 3's pure
 :func:`strategy_lab.shadow.assess`, which is where the max-open-positions,
-position-fraction, daily-notional and ticker-already-held rules already live. The
-production ledger is *not* that budget; it is a ceiling Phase 6 applies on top,
-and it can only make an order smaller.
+position-fraction, daily-notional and ticker-already-held rules already live. What
+is then handed to Phase 6 is a ``risk_fraction`` — the arm's immutable budget times
+the decision's ``position_risk_pct``, neither of which is a global setting — and
+Phase 6 turns that fraction into a *quantity* against the real ledger under its own
+caps. So the arm decides how much risk to take and whether to take it at all; the
+production book decides how many shares that is, and can only make the order
+smaller. The recorded ``quantity`` and ``notional`` are Phase 6's, by design: they
+are what was actually proposed.
 
 **No duplicate orders, at three levels.** Per decision, the partial unique index
 on ``strategy_trades.decision_id`` holds it in the database. Per ticker, a name

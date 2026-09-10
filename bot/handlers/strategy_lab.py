@@ -686,6 +686,8 @@ def render_promotion(plan, *, confirmable: bool, expires_at=None) -> str:
         "",
         f"*evidence* snapshot `#{evidence.metric_snapshot_id}` at "
         f"`{_code(str(evidence.cutoff_utc or ''))}`",
+        f"  class `{_code(evidence.evidence_class or 'unrecorded')}` "
+        f"\(`archival_reconstructed` can never satisfy a promotion gate\)",
         f"  decisions `{evidence.n_decisions}` \\| matured `{evidence.n_matured}` "
         f"\\| closed `{evidence.n_closed}`",
         f"  floor `{_code(evidence.floor_name)}` \\= `{evidence.floor_value}` — "

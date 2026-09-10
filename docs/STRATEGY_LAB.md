@@ -1154,29 +1154,34 @@ thing to do to a hypothetical position and the wrong thing to do to one that
 exists at a broker; a paper arm's executions are settled by the §12 state machine
 against the broker's own answer.
 
-### Independent virtual budgets
+### Independent virtual budgets, and who decides what
 
 Spec Q §11: "shadow and paper arms receive independent virtual budgets." The
 paper book is its own settings family (`STRATEGY_LAB_PAPER_EQUITY`,
 `_RISK_BUDGET`, `_MAX_OPEN_POSITIONS`, `_MAX_POSITION_FRACTION`,
-`_DAILY_NOTIONAL`) and the sizing runs through PR 3's pure
+`_DAILY_NOTIONAL`) and eligibility runs through PR 3's pure
 `strategy_lab.shadow.assess` / `size_position`, which is where the
 max-open-positions, position-fraction, daily-notional and ticker-already-held
 rules already live. Reusing them means the paper tier's caps are the ones months
 of shadow evidence were produced under.
 
-Phase 6 then applies its **own** caps — the risk-fraction hard cap, the budget's
-per-trade cap, concentration, sector, daily notional, settled cash — over the
-real ledger, and those can only make an order *smaller*. So the honest
-description of a paper arm's size is: the virtual book decides it, and the
-production book is a ceiling.
+The division of labour, stated exactly rather than loosely:
+
+| Decided by | What |
+|---|---|
+| the arm's virtual book | *whether* to propose at all, and the `risk_fraction` — the arm's immutable `risk_budget` times the decision's `position_risk_pct`. Neither is a global setting |
+| Phase 6, over the real ledger | the *quantity* that fraction buys, under the risk-fraction hard cap, the budget's per-trade cap, concentration, sector, daily notional and settled cash — every one of which can only make the order **smaller** |
+
+So the recorded `quantity` and `notional` on a `strategy_trades` row are Phase 6's
+numbers, by design: they are what was actually proposed. The arm's contribution is
+the risk fraction and the veto.
 
 **What that leaves open, stated plainly.** `create_proposal` reads the ledger's
 `agent_placeable` account for equity, concentration and settled cash, which on a
 configured deployment is the Robinhood Agentic account — not the Alpaca paper
-account the order actually reaches. A paper arm is therefore sized against the
-virtual book and *bounded* by a book it does not trade. That is conservative in
-the direction that matters (the bound can only shrink the order) but it is not
+account the order actually reaches. A paper arm's *quantity* is therefore
+computed against a book it does not trade. That is conservative in the direction
+that matters (every one of those caps can only shrink the order) but it is not
 the same thing as a self-contained paper ledger, and closing it means teaching
 Phase 6's `read_context` to take a venue. PR 6 did not do that: it is a Phase 6
 change with its own risk surface, and it is recorded here rather than hidden.

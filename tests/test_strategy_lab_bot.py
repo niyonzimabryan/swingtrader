@@ -483,6 +483,12 @@ class CommandSurfaceTests(unittest.TestCase):
         self.assertIn("approval of any entry", text)
         self.assertIn("single-use", text)
 
+    def test_the_card_names_the_evidence_class(self):
+        """It is a gate now, so the owner sees it rather than inferring it."""
+        text = _plain(handlers.render_promotion(_a_plan(), confirmable=True))
+        self.assertIn("forward_shadow", text)
+        self.assertIn("archival_reconstructed", text)
+
     def test_a_blocked_plan_renders_every_refusal_and_no_buttons(self):
         plan = _a_plan(
             refusals=("the target arm is active",),
@@ -532,6 +538,7 @@ def _a_plan(*, refusals=(), external_refusals=()):
         floor_value=30,
         floor_met=True,
         cutoff_utc=datetime(2026, 4, 1, 20, 0),
+        evidence_class="forward_shadow",
     )
     request = pm.PromotionRequest(
         source_arm_id=1,
