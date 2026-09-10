@@ -85,10 +85,30 @@ Owner actions: buy Sharadar Prices (confirm what "from $9" gates and the
 redistribution terms), then `python -m scripts.audit_delisting_returns` before
 relying on any cohort, then `python -m scripts.price_backfill --source sharadar --since 2015-01-01`.
 
-## 7. Comparable setups (Phase 3c, pending)
+## 7. Comparable setups (Phase 3c)
 
-`COMPARABLE_SETUPS_ENABLED=true` on the workspace service once merged; it reads
-the price plane and `source_observations` and needs nothing else.
+`COMPARABLE_SETUPS_ENABLED=true` on the workspace service. Off means
+`compare_setups` and `cohort_detail` are not registered at all. It reads the
+price plane and `source_observations` and needs, on the workspace service:
+
+- `COMPARABLE_BENCHMARK_SECURITY_UID` — **required**: the `security_uid` in
+  `price_bars` every abnormal return is measured against (a total-return
+  benchmark, e.g. the SPY row after the backfill). Empty refuses every cohort;
+  there is no default benchmark on purpose.
+- `COMPARABLE_PRICE_SNAPSHOT` (default `dev`) — the named price-file vintage; its
+  delisting audit (§6) must be recorded or no cohort can reach `vendor_pit`.
+- `COMPARABLE_UNIVERSE_SLUG` (default `liquid_us_equity_v1`) — must have
+  `universe_membership` rows for the period, or cohorts cap at
+  `archival_reconstructed`.
+- `COMPARABLE_EXECUTION_POLICY` (default `event_swing_14cal_v1`),
+  `COMPARABLE_QUICK_BOOTSTRAP_REPS` (1000), `COMPARABLE_FULL_BOOTSTRAP_REPS`
+  (10000) — leave as defaults.
+- `COMPARABLE_CIK_MAP` (`TICKER:CIK,...`) — optional; empty refuses every name a
+  market-cap decile rather than guessing one. Phase 4's entity plane replaces it.
+
+Then `python -m scripts.cohort_smoke` against the production database (Spec N
+§11 asks for one `insufficient` and one `ok` answer hand-verified on real data;
+this was only run on fixtures). `docs/COMPARABLE_SETUPS.md` is the reference.
 
 ## 8. Evidence planes (Phase 4)
 
@@ -119,10 +139,45 @@ Details per plane: `docs/FILINGS_PLANE.md`, `docs/MACRO_PLANE.md`,
 Alpaca's terms bar redistributing the data or any derived products, so nothing
 news-derived may leave Postgres.
 
-## 9. Execution (Phase 6, pending)
+## 9. Execution lifecycle (Phase 6)
 
-Nothing until the Robinhood `gtc` `stop_market` probe passes; the Agentic
-account budget is loaded by hand (`ROBINHOOD_ACCOUNT_BUDGET` caps it in code).
+The proposal → approval → execution path (Spec L §6). Full state machine, guard
+table, and the owner's live-probe runbook are in `docs/EXECUTION_LIFECYCLE.md`;
+this is the checklist.
+
+Everything defaults **off**. With `PHASE6_EXECUTION_ENABLED=false` the
+`propose_order` tool is not registered on the workspace and every approval
+callback is refused.
+
+To reach a **paper** testing state (no live capital, Alpaca paper venue, same
+lifecycle):
+
+- `PHASE6_EXECUTION_ENABLED=true` on both the workspace and the bot services.
+- `EXECUTION_APPROVAL_SECRET=<a strong secret>` — without it no approval card can
+  be minted or verified, so nothing can be approved. This is the intended
+  failure, not a bug.
+- `EXECUTION_MODE=paper` (the default). Approvals route to the Alpaca paper
+  adapter.
+- Issue a workspace token carrying the `propose` scope (`scripts/`), then call
+  `propose_order` from an attached client.
+
+To reach a **live** state — only after the §6 live probe has passed:
+
+- Additionally `ALLOW_LIVE_TRADING=true` and `EXECUTION_MODE=live`. Both are
+  required on top of the flag; absence or invalidity of either never means live.
+- Fund the Agentic account by hand; `ROBINHOOD_ACCOUNT_BUDGET` caps it in code.
+- Confirm the kill switch is off: `/live_kill off` (it is a persistent database
+  row and survives restart; `/live_kill on` blocks approval-to-placement).
+
+Optional tuning (defaults in `.env.example` / `docs/EXECUTION_LIFECYCLE.md` §5):
+`RISK_FRACTION_HARD_CAP`, `RISK_FRACTION_PERCENTAGE_FLOOR`, `EVIDENCED_RISK_CAP`,
+`DISCRETIONARY_RISK_CAP`, `DISCRETIONARY_DAILY_NOTIONAL`, `EVIDENCE_GATE_MODE`
+(`advisory` default), `CITATION_MAX_AGE_SESSIONS`, `PROTECTION_WINDOW_SECONDS`,
+`APPROVAL_TTL_SECONDS`, `PROPOSAL_MAX_POSITION_PCT`, `PROPOSAL_MAX_SECTOR_PCT`.
+
+The Robinhood `gtc` `stop_market` live probe (`docs/EXECUTION_LIFECYCLE.md` §6)
+is an **owner action** and is not run from a build session. Until it passes,
+keep `EXECUTION_MODE=live` off.
 
 ## Order of operations to a testing state
 
@@ -137,4 +192,5 @@ account budget is loaded by hand (`ROBINHOOD_ACCOUNT_BUDGET` caps it in code).
    `whoami`, then `portfolio_overview`. Holdings appear after the first sync.
 5. Record real SEC and Robinhood fixtures from the laptop (§3, §5) and push.
 6. Buy Sharadar Prices, run the delisting audit and the price backfill (§6),
-   then flip `COMPARABLE_SETUPS_ENABLED` when Phase 3c lands.
+   then set `COMPARABLE_BENCHMARK_SECURITY_UID` and flip
+   `COMPARABLE_SETUPS_ENABLED` (§7).

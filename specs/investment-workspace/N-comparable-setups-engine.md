@@ -677,3 +677,25 @@ failing test attached (§10).
   cross-sectional dispersion has a standard error near 1.5% at n=30). The page cites the
   post-earnings-drift literature on decay (Chordia, Subrahmanyam & Tong 2014; Martineau
   2022; contested by Meursault et al. 2023) as the reason §5.5 exists.
+
+---
+
+## 12. Rulings log (post-build)
+
+Ratified 2026-09-09 from the Phase 3p build (PR #48):
+
+- **Collapse threshold for the delisting audit is −60% over 10 sessions**,
+  configurable, deliberately below the −55% Nasdaq correction so a drift *to* the
+  correction level is not credited as a collapse.
+- **The stored total-return series is derived from raw closes and stored factors;
+  the vendor's own adjusted close is not stored.** A series that cannot be
+  reproduced from stored factors is not inspectable. Cross-check against the vendor
+  series once a key exists.
+- **`liquid_us_equity_v1` is liquidity-only** (20-session median dollar volume,
+  month-end ranks, a name ranks only if its window ends on the ranking date). A
+  market-cap leg is a new slug once the share-count feed is joined.
+- Sharadar SEP carries no raw OHLC (only `closeunadj`); raw OHLC is reconstructed as
+  `field × (closeunadj / close)`. TICKERS carries no delisting reason; the reason
+  comes from ACTIONS where present, else `unknown`, which §4.4 treats as censored.
+- `consensus_eps_news` lives in `news/`, not `filings/` as §4.0 named it: it parses
+  article bodies and belongs on the licence-bounded side. Same code, different file.

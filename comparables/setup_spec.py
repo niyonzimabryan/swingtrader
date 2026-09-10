@@ -32,6 +32,11 @@ FACT_TYPES = frozenset({
     "realized_vol_decile",
     "days_since_prior_event",
     "sector",
+    # Phase 4's Form 4 plane supplies this one. The roster's
+    # `insider_cluster_v1` is declared against it now so that the setup is
+    # frozen, hashed and countable against its family before the facts exist;
+    # the engine refuses the query with `pending_plane` until they do.
+    "insider_cluster_count",
 })
 
 

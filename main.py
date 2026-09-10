@@ -172,6 +172,43 @@ async def main():
     # false — nothing calls the pager until the check job runs.
     research_paging.register(notifications, pipeline.bot_loop)
 
+    # Phase 6 (Spec L §6): the proposal -> approval -> execution lifecycle.
+    # Wired only when PHASE6_EXECUTION_ENABLED; with the flag off the proposal
+    # tool is not even registered on the workspace and no callback is accepted.
+    # The card sender posts through the existing message queue; the execution
+    # service is the ONLY path from an approval to a placement, and it lives in
+    # execution/ where the workspace can never import it.
+    if getattr(settings, "phase6_execution_enabled", False):
+        from bot.handlers.proposals import register_bot_card_sender
+        from execution.lifecycle import ExecutionService
+
+        from database.db import get_session as _get_session
+
+        register_bot_card_sender(mq, settings.telegram_chat_id, pipeline.bot_loop)
+
+        def _pager(event, detail):
+            # A protection failure or an unknown placement must reach the owner
+            # on the same channel everything else pages on. The recovery text is
+            # in `detail`; system_message carries it verbatim.
+            recovery = (detail or {}).get("recovery", "")
+            message = f"⚠️ {event}: proposal {(detail or {}).get('proposal_id', '?')} " \
+                      f"{(detail or {}).get('ticker', '')}\n{recovery}"
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    notifications.system_message(message),
+                    pipeline.bot_loop,
+                )
+            except Exception as exc:  # pragma: no cover - loop-specific
+                log.warning("phase6_page_failed", event=event, error=str(exc))
+
+        app.bot_data["execution_service"] = ExecutionService(
+            session_factory=_get_session,
+            broker=pipeline.broker,
+            settings=settings,
+            pager=_pager,
+        )
+        log.info("phase6_execution_wired", execution_mode=getattr(settings, "execution_mode", "paper"))
+
     # Initialize order monitor — always bound to the Alpaca broker, never the
     # mode-sensitive router. These monitors manage Alpaca order lifecycles only;
     # Robinhood live trades are managed via callbacks/manual close. Binding to

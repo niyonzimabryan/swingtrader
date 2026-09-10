@@ -186,6 +186,49 @@ class Settings(BaseSettings):
     # fraction of an account's known holdings writes nothing and pages.
     portfolio_mass_deletion_threshold: float = 0.5
 
+    # --- Proposal -> approval -> execution lifecycle (Spec L §6, Phase 6) ---
+    # Off by default, like every new capability. With the flag false the
+    # `propose_order` tool is not registered at all (an advertised tool that
+    # answers "disabled" is worse than an absent one) and the execution
+    # service refuses every approval callback.
+    phase6_execution_enabled: bool = False
+    # Spec L §6.6. `risk_fraction` is a *fraction* of equity. A value at or
+    # above this is a percentage typed as a fraction (0.5 meaning 0.5%) and is
+    # refused rather than converted.
+    risk_fraction_percentage_floor: float = 0.05
+    # The hard cap. Above it a proposal is refused, never silently clamped.
+    risk_fraction_hard_cap: float = 0.01
+    # The evidenced budget: per-trade cap and daily notional.
+    evidenced_risk_cap: float = 0.01
+    evidenced_daily_notional: float = 0.0
+    # The discretionary budget: separate per-trade cap and daily notional, so
+    # judgment trades and evidenced trades are separate rows and a separate
+    # query (Spec L §6.6).
+    discretionary_risk_cap: float = 0.0025
+    discretionary_daily_notional: float = 0.0
+    # `advisory` (default): a non-positive lower bound re-labels the proposal
+    # `discretionary` and prints the bound. `strict`: it sizes to zero and an
+    # uncited proposal is refused. Owner decision 2026-09-08 — advisory.
+    evidence_gate_mode: str = "advisory"
+    # A cited cohort answer must be no older than this many trading sessions.
+    citation_max_age_sessions: int = 5
+    # Spec L §5.1: entry fills -> stop placed -> stop read back from the broker.
+    # A position not read back as protected inside this window is marked
+    # `unprotected`, pages, and blocks further entries.
+    protection_window_seconds: int = 120
+    protection_poll_interval_seconds: float = 2.0
+    # How long an approval card stays valid. Single-use and owner-bound too.
+    approval_ttl_seconds: int = 1800
+    # HMAC key for the signed approval reference. No default: an unset secret
+    # means no card can be minted, which is the correct failure.
+    execution_approval_secret: str = ""
+    # Concentration and sector caps for a Phase 6 proposal, over the COMBINED
+    # book across every account (Spec L §5.1). Separate from the scan bot's
+    # `max_position_pct` / `max_sector_exposure` so Phase 6 cannot move
+    # production capital limits.
+    proposal_max_position_pct: float = 0.10
+    proposal_max_sector_pct: float = 0.30
+
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
     scoring_model: str = "claude-opus-4-6"
@@ -300,6 +343,38 @@ class Settings(BaseSettings):
     # below this threshold, is a collapse rather than a stop.
     delisting_audit_window_sessions: int = 10
     delisting_audit_collapse_threshold: float = -0.60
+
+    # --- Comparable-setups engine (Spec N, Phase 3c) ---
+    # Off by default. When false the `compare_setups` and `cohort_detail` MCP
+    # tools are not registered at all — an unregistered tool is a clearer
+    # refusal than a registered one that answers "disabled".
+    comparable_setups_enabled: bool = False
+    # The stored universe a cohort's membership is read from, as of the event
+    # date. A universe with no `universe_membership` rows for the period caps
+    # the cohort at `archival_reconstructed` (Spec N §4.2).
+    comparable_universe_slug: str = "liquid_us_equity_v1"
+    # The named price-file vintage a cohort runs against. Its delisting audit
+    # (Spec N §4.2) must be recorded, or the cohort cannot reach `vendor_pit`.
+    comparable_price_snapshot: str = "dev"
+    # The total-return benchmark every abnormal return is measured against.
+    # A `security_uid` in `price_bars`, not a ticker: tickers are reused.
+    comparable_benchmark_security_uid: str = ""
+    # The execution policy the §5.3 policy leg replays under.
+    comparable_execution_policy: str = "event_swing_14cal_v1"
+    # Bootstrap replications for a `quick` answer. `full` uses the configured
+    # comparables default (10,000); quick trades width for latency.
+    comparable_quick_bootstrap_reps: int = 1000
+    # Bootstrap replications for a `full` answer. Spec N §6.1 wants a stationary
+    # block bootstrap, not a number of draws; 10,000 is the default and lowering
+    # it widens nothing and only makes the interval noisier, so it is configurable
+    # rather than fixed for the same reason the floors are.
+    comparable_full_bootstrap_reps: int = 10_000
+    # `TICKER:CIK,TICKER:CIK` — the join `market_cap_decile` needs, because the
+    # price plane's security master has no CIK column and the SEC feed stamps a
+    # ticker. Phase 4's entity-history plane replaces it with a stored,
+    # point-in-time mapping. Empty means every name is refused a market-cap
+    # decile rather than given one computed from a count it could not have had.
+    comparable_cik_map: str = ""
 
     # --- Spec O Phase 3a: minimum SEC ingestion plane ---
     # Off by default. When false, filings.sec_minimal refuses to ingest; the

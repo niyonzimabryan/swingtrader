@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from execution.brokers.base import BrokerOrderRequest, BrokerOrderResult, BrokerOrderReview
+from execution.brokers.base import (
+    BrokerOrderRequest,
+    BrokerOrderResult,
+    BrokerOrderReview,
+    OpenOrder,
+)
 
 
 class AlpacaBroker:
@@ -104,3 +109,79 @@ class AlpacaBroker:
 
     def submit_stop_loss(self, ticker: str, qty: int, stop_price: float, direction: str = "long") -> str:
         return self.client.submit_stop_loss(ticker, qty, stop_price, direction=direction)
+
+    # --- the protective exit (Spec L §5.1; Spec Q §11 for who may use it) ---
+    # A paper arm may reach only this adapter, whatever the application-wide
+    # primary broker is, and it runs the same lifecycle as live: fill, stop,
+    # read the stop back, only then `protected`. Paper that skipped the
+    # verification step would be testing a different state machine from the one
+    # live capital runs on, which is the one thing paper is for.
+
+    def place_stop(
+        self,
+        *,
+        symbol: str,
+        quantity: int,
+        stop_price: float,
+        ref_id: str,
+        side: str = "sell",
+    ) -> BrokerOrderResult:
+        """A ``gtc`` stop through the paper client.
+
+        Whole shares are asserted rather than rounded, matching the Robinhood
+        adapter — not because Alpaca requires it, but because the paper venue
+        exists to rehearse the live one and a rehearsal that accepts an order
+        shape the live venue rejects teaches the wrong thing.
+
+        Alpaca's client here takes no idempotency key, so ``ref_id`` is carried
+        on the result for the lifecycle's own bookkeeping and the read-back
+        matches on symbol, type and stop price instead. That is weaker than the
+        Robinhood path and is stated rather than hidden.
+        """
+        if int(quantity) != float(quantity) or int(quantity) <= 0:
+            return BrokerOrderResult(
+                broker=self.name,
+                success=False,
+                error=f"a protective stop is whole-share only; refusing quantity={quantity!r}.",
+            )
+        direction = "short" if side == "buy" else "long"
+        try:
+            order_id = self.client.submit_stop_loss(
+                symbol.upper(), int(quantity), float(stop_price), direction=direction
+            )
+        except Exception as exc:  # pragma: no cover - client-specific
+            return BrokerOrderResult(broker=self.name, success=False, error=str(exc))
+        return BrokerOrderResult(
+            broker=self.name,
+            success=True,
+            order_id=str(order_id),
+            stop_order_id=str(order_id),
+            status="submitted",
+            order_strategy="standalone_gtc_stop",
+            raw={"ref_id": ref_id},
+        )
+
+    def read_open_orders(self, *, symbol: str | None = None) -> list[OpenOrder]:
+        wanted = (symbol or "").strip().upper()
+        out: list[OpenOrder] = []
+        for raw in self.get_orders():
+            row_symbol = str(raw.get("symbol") or "").upper()
+            if wanted and row_symbol != wanted:
+                continue
+            out.append(
+                OpenOrder(
+                    broker=self.name,
+                    order_id=str(raw.get("id") or ""),
+                    symbol=row_symbol,
+                    side=str(raw.get("side") or ""),
+                    order_type=str(raw.get("type") or ""),
+                    status=str(raw.get("status") or ""),
+                    quantity=raw.get("quantity"),
+                    stop_price=raw.get("stop_price"),
+                    limit_price=raw.get("limit_price"),
+                    time_in_force=str(raw.get("time_in_force") or ""),
+                    ref_id=str(raw.get("client_order_id") or ""),
+                    raw=raw,
+                )
+            )
+        return out
