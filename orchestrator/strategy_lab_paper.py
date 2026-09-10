@@ -260,6 +260,42 @@ class Candidate:
     decision: object = None
 
 
+def entry_reference_for(snapshot, ticker: str) -> float | None:
+    """The price this decision's plan and order are both anchored to, or ``None``.
+
+    Two shapes, because the roster has two (``strategy_lab/replay.py``'s
+    ``build_plan`` handles the same split):
+
+    * a **derived-plan** arm reads prices, so the snapshot carries bars and the
+      reference is the last bar's ``split_adjusted_close`` — the series every
+      signal, policy and replay in this package runs on (Spec N §4.3). For the
+      most recent session the forward split factor is 1, so it is also the raw
+      last trade;
+    * the **compatibility** arm's plan was frozen by the pipeline that produced
+      it, and its snapshot carries a composite result rather than a price series.
+      Its reference is that result's own ``entry_price``, which is the number the
+      memo quoted and the stop and targets beside it were computed from.
+
+    Anchoring the plan and the order to the *same* number is the point either
+    way: a stop taken from one price and an entry from another is a stop at a
+    distance nobody chose. ``None`` means the snapshot carries neither, and the
+    decision is skipped with a reason rather than priced off a guess.
+    """
+    from strategy_lab import snapshots
+
+    bars = snapshots.bars_of(snapshot, ticker)
+    if bars:
+        return float(bars[-1].split_adjusted_close)
+    composite = snapshots.composite_of(snapshot, ticker)
+    if composite is None:
+        return None
+    try:
+        value = float(dict(composite.trade_params or {}).get("entry_price") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return value or None
+
+
 def candidates_for_arm(
     session,
     settings,
@@ -298,18 +334,8 @@ def candidates_for_arm(
         if now - snapshot.as_of_utc > max_age:
             skipped.append((label, SKIP_STALE_SNAPSHOT))
             continue
-        bars = snapshots.bars_of(snapshot, row.ticker)
-        if not bars:
-            skipped.append((label, SKIP_NO_ENTRY_REFERENCE))
-            continue
-        # The split-adjusted close of the last bar in the snapshot, which is the
-        # series every signal, policy and replay in this package runs on (Spec N
-        # §4.3). For the most recent session the forward split factor is 1, so it
-        # is also the raw last trade — and anchoring the plan and the order to the
-        # same number is what keeps the stop a fixed distance from the entry
-        # rather than a fixed distance from a differently-adjusted price.
-        entry_reference = float(bars[-1].split_adjusted_close)
-        if entry_reference <= 0:
+        entry_reference = entry_reference_for(snapshot, row.ticker)
+        if entry_reference is None or entry_reference <= 0:
             skipped.append((label, SKIP_NO_ENTRY_REFERENCE))
             continue
         try:
