@@ -2,6 +2,7 @@
 
     python -m scripts.price_backfill --source fixture --since 2023-01-01
     python -m scripts.price_backfill --source sharadar --since 2015-01-01 --tickers AAPL,MSFT
+    python -m scripts.price_backfill --source sharadar --bulk years=10
 
 Idempotent: the natural keys in `data/prices/store.py` mean re-running the same
 `--since` rewrites the same rows rather than duplicating them, so a run that
@@ -13,20 +14,37 @@ agree with its own factors is caught here, at ingest, and not six weeks later in
 a cohort. `--skip-reconstruction-check` exists for triage only and prints a
 warning that says so.
 
+`--bulk years=5|10|full` (Sharadar only) downloads the vendor's pre-built zip
+for `stocks` and `actions` instead of paging `daily_bars`/`corporate_actions`
+once per ticker — the right mode for the 10-year Prices tier the owner buys,
+where paging thousands of names one at a time would take hours. Security
+master rows are still fetched through the ordinary slice path, batched to keep
+the `ticker=` query string a sane length, since `tickers` is a full-snapshot
+table either way (Sharadar re-publishes it whole regardless of `years`).
+`--tickers` still narrows a bulk run to a subset after the zip is parsed;
+omitted, every ticker in the zip is loaded.
+
 Requires `PRICE_PLANE_ENABLED=true`, and for `--source sharadar`,
-`NASDAQ_DATA_LINK_API_KEY`.
+`SHARADAR_API_KEY`.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from datetime import date, datetime
+from pathlib import Path
 
 from data.prices import config as plane_config
 from data.prices import store
 from data.prices.base import PricePlane, PricePlaneError
 from data.prices.derived import check_reconstruction
+
+#: Tickers per `security_master` call in bulk mode, so the comma-joined
+#: `ticker=` query string stays well under any sane URL-length limit even for
+#: a `years=full` run over the whole market.
+MASTER_BATCH_SIZE = 200
 
 
 def parse_date(value: str) -> date:
@@ -76,6 +94,90 @@ def backfill(
     return summary
 
 
+def backfill_bulk(
+    plane: PricePlane,
+    years: str,
+    tickers: list[str] | None,
+    since: date | None,
+    until: date | None = None,
+    check: bool = True,
+) -> dict:
+    """Bulk-load `stocks` + `actions` from Sharadar's zip download.
+
+    `plane` must be a `SharadarPricePlane` (bulk is not part of the generic
+    `PricePlane` interface — `FixturePricePlane` has no vendor zip to fetch).
+    `tickers`, if given, narrows the parsed zip to a subset; otherwise every
+    ticker in the zip is loaded.
+    """
+    from database.db import get_session
+
+    if not hasattr(plane, "bulk_download"):
+        raise PricePlaneError(f"{plane.source} has no bulk download path")
+
+    summary = {
+        "source": plane.source,
+        "since": since.isoformat() if since else None,
+        "until": until.isoformat() if until else None,
+        "bulk_years": years,
+        "tickers_requested": len(tickers) if tickers else None,
+        "tickers_with_bars": 0,
+        "bars_written": 0,
+        "actions_written": 0,
+        "securities_written": 0,
+        "tickers_empty": [],
+        "reconstruction_checked": check,
+    }
+
+    with tempfile.TemporaryDirectory(prefix="sharadar_bulk_") as tmp:
+        stocks_zip = plane.bulk_download("stocks", years, Path(tmp) / "stocks.zip")
+        actions_zip = plane.bulk_download("actions", years, Path(tmp) / "actions.zip")
+        bars_by_ticker = plane.load_bulk_bars(stocks_zip)
+        actions_by_ticker = plane.load_bulk_actions(actions_zip)
+
+    wanted = set(tickers) if tickers else set(bars_by_ticker)
+
+    with get_session() as session:
+        ticker_list = sorted(wanted)
+        for start in range(0, len(ticker_list), MASTER_BATCH_SIZE):
+            batch = ticker_list[start:start + MASTER_BATCH_SIZE]
+            summary["securities_written"] += store.upsert_securities(
+                session, plane.security_master(batch)
+            )
+
+        for ticker in ticker_list:
+            bars = tuple(
+                bar for bar in bars_by_ticker.get(ticker, ())
+                if (since is None or bar.session_date >= since)
+                and (until is None or bar.session_date <= until)
+            )
+            if not bars:
+                summary["tickers_empty"].append(ticker)
+                continue
+            if check:
+                check_reconstruction(bars)
+            summary["bars_written"] += store.upsert_bars(session, bars)
+            actions = tuple(
+                action for action in actions_by_ticker.get(ticker, ())
+                if (since is None or action.ex_date >= since)
+                and (until is None or action.ex_date <= until)
+            )
+            summary["actions_written"] += store.upsert_corporate_actions(session, actions)
+            summary["tickers_with_bars"] += 1
+
+    return summary
+
+
+def parse_bulk_years(value: str) -> str:
+    """`years=10` or bare `10` -> `"10"`, validated against `BULK_YEARS`."""
+    from data.prices.sharadar import BULK_YEARS
+
+    years = value.split("=", 1)[1] if "=" in value else value
+    years = years.strip()
+    if years not in BULK_YEARS:
+        raise argparse.ArgumentTypeError(f"--bulk must name years in {BULK_YEARS}, got {value!r}")
+    return years
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", default=None, help="fixture | sharadar")
@@ -83,7 +185,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--until", type=parse_date, default=None, help="YYYY-MM-DD")
     parser.add_argument(
         "--tickers", default="",
-        help="comma-separated; default is every ticker the source knows (fixture only)",
+        help="comma-separated; default is every ticker the source knows (fixture), "
+        "or every ticker in the zip (--bulk)",
+    )
+    parser.add_argument(
+        "--bulk", default=None, type=parse_bulk_years, metavar="years=5|10|full",
+        help="Sharadar only: load stocks+actions from the vendor's bulk zip "
+        "instead of paging per ticker",
     )
     parser.add_argument("--snapshot", default=None, help="snapshot slug to record coverage on")
     parser.add_argument("--skip-reconstruction-check", action="store_true")
@@ -97,8 +205,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"price backfill refused: {exc}", file=sys.stderr)
         return 2
 
+    if args.bulk and plane.source != "sharadar":
+        print(f"--bulk is Sharadar-only; --source resolved to {plane.source!r}", file=sys.stderr)
+        return 2
+
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    if not tickers:
+    if not tickers and not args.bulk:
         listed = getattr(plane, "tickers", None)
         if listed is None:
             print(
@@ -119,9 +231,15 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    summary = backfill(
-        plane, tickers, args.since, args.until, check=not args.skip_reconstruction_check
-    )
+    if args.bulk:
+        summary = backfill_bulk(
+            plane, args.bulk, tickers or None, args.since, args.until,
+            check=not args.skip_reconstruction_check,
+        )
+    else:
+        summary = backfill(
+            plane, tickers, args.since, args.until, check=not args.skip_reconstruction_check
+        )
 
     snapshot = args.snapshot or settings.price_plane_snapshot
     with get_session() as session:

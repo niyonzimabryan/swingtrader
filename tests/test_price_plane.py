@@ -19,9 +19,12 @@ The named tests from the phase's stop condition:
 
 from __future__ import annotations
 
+import io
 import socket
+import tempfile
 import unittest
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 from data.prices import store, universes
 from data.prices.audit import run_audit
@@ -47,7 +50,7 @@ from data.prices.derived import (
     total_return_closes,
 )
 from data.prices.fixture_plane import FixturePricePlane, session_close_utc
-from data.prices.sharadar import SharadarPricePlane
+from data.prices.sharadar import PricePlaneAuthError, SharadarPricePlane
 from tests.dbfixture import init_test_db
 
 
@@ -502,6 +505,8 @@ class DelistingAuditTests(unittest.TestCase):
 
 
 class _StubResponse:
+    """A direct-API response stand-in: `{"count": N, "data": [...]}` or an error body."""
+
     def __init__(self, payload, status_code=200, text=""):
         self._payload = payload
         self.status_code = status_code
@@ -513,65 +518,102 @@ class _StubResponse:
         return self._payload
 
 
+class _StubStream:
+    """A `client.stream(...)` context-manager stand-in, for `bulk_download`."""
+
+    def __init__(self, content=b"", status_code=200, error_payload=None):
+        self.status_code = status_code
+        self._content = content
+        self._error_payload = error_payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def json(self):
+        if self._error_payload is None:
+            raise ValueError("not JSON")
+        return self._error_payload
+
+    def iter_bytes(self):
+        yield self._content
+
+
 class _StubClient:
-    """An `httpx.Client` stand-in. Records calls; opens no socket."""
+    """An `httpx.Client` stand-in. Records calls; opens no socket.
 
-    def __init__(self, payloads):
-        self.payloads = payloads
+    `tables` maps a table name to either a flat list of row dicts (paged by
+    `limit`/`offset` exactly like the real API) or a `_StubResponse` to force
+    a particular status/error body. `streams` maps a table name to a
+    `_StubStream`, for the bulk path.
+    """
+
+    def __init__(self, tables=None, streams=None):
+        self.tables = tables or {}
+        self.streams = streams or {}
         self.calls = []
+        self.stream_calls = []
 
-    def get(self, url, params=None, timeout=None):
-        table = url.rsplit("/", 1)[-1].split(".")[0]
-        self.calls.append((table, dict(params or {})))
-        payload = self.payloads[table]
-        if isinstance(payload, _StubResponse):
-            return payload
-        return _StubResponse(payload)
+    def get(self, url, params=None, headers=None, timeout=None):
+        table = url.rsplit("/", 1)[-1]
+        params = dict(params or {})
+        self.calls.append((table, params, dict(headers or {})))
+        entry = self.tables[table]
+        if isinstance(entry, _StubResponse):
+            return entry
+        limit = params.get("limit")
+        offset = params.get("offset", 0) or 0
+        page = entry[offset:offset + limit] if limit is not None else entry
+        return _StubResponse({"count": len(page), "data": page})
 
-
-def _datatable(columns, rows):
-    return {
-        "datatable": {"columns": [{"name": c} for c in columns], "data": rows},
-        "meta": {"next_cursor_id": None},
-    }
+    def stream(self, method, url, params=None, headers=None, timeout=None, follow_redirects=None):
+        table = url.rsplit("/", 1)[-1]
+        self.stream_calls.append((table, dict(params or {}), dict(headers or {}), follow_redirects))
+        return self.streams[table]
 
 
 TICKERS_COLUMNS = (
     "permaticker", "ticker", "name", "exchange", "isdelisted",
     "firstpricedate", "lastpricedate",
 )
-SEP_COLUMNS = ("ticker", "date", "open", "high", "low", "close", "volume", "closeunadj")
+STOCKS_COLUMNS = ("ticker", "date", "open", "high", "low", "close", "volume", "closeunadj")
 ACTIONS_COLUMNS = ("date", "action", "ticker", "value")
 
 
-def _sharadar_payloads(**overrides):
-    payloads = {
-        "TICKERS": _datatable(
-            TICKERS_COLUMNS,
-            [[199059, "BBBY", "Bed Bath & Beyond Inc", "NASDAQ", "Y", "1992-07-28", "2023-05-02"]],
-        ),
-        "ACTIONS": _datatable(
-            ACTIONS_COLUMNS,
-            [["2023-04-24", "bankruptcy", "BBBY", None], ["2022-01-10", "dividend", "BBBY", 0.10]],
-        ),
-        "SEP": _datatable(
-            SEP_COLUMNS,
-            [
-                ["BBBY", "2023-04-28", 1.0, 1.1, 0.9, 1.00, 1_000_000, 1.00],
-                ["BBBY", "2023-05-01", 0.8, 0.9, 0.7, 0.80, 2_000_000, 0.80],
-                ["BBBY", "2023-05-02", 0.3, 0.4, 0.2, 0.30, 3_000_000, 0.30],
-            ],
-        ),
+def _sharadar_tables(**overrides):
+    tables = {
+        "tickers": [
+            {
+                "table": "stocks", "permaticker": "199059", "ticker": "BBBY",
+                "name": "Bed Bath & Beyond Inc", "exchange": "NASDAQ", "isdelisted": "Y",
+                "firstpricedate": "1992-07-28", "lastpricedate": "2023-05-02",
+            },
+        ],
+        "actions": [
+            {"date": "2023-04-24", "action": "bankruptcy", "ticker": "BBBY", "value": None},
+            {"date": "2022-01-10", "action": "dividend", "ticker": "BBBY", "value": 0.10},
+        ],
+        "stocks": [
+            {"ticker": "BBBY", "date": "2023-04-28", "open": 1.0, "high": 1.1, "low": 0.9,
+             "close": 1.00, "volume": 1_000_000, "closeunadj": 1.00},
+            {"ticker": "BBBY", "date": "2023-05-01", "open": 0.8, "high": 0.9, "low": 0.7,
+             "close": 0.80, "volume": 2_000_000, "closeunadj": 0.80},
+            {"ticker": "BBBY", "date": "2023-05-02", "open": 0.3, "high": 0.4, "low": 0.2,
+             "close": 0.30, "volume": 3_000_000, "closeunadj": 0.30},
+        ],
     }
-    payloads.update(overrides)
-    return payloads
+    tables.update(overrides)
+    return tables
 
 
 class SharadarAdapterTests(unittest.TestCase):
-    """The vendor adapter, exercised entirely against stub payloads."""
+    """The vendor adapter, exercised entirely against stub payloads recorded
+    live in `tests/fixtures/sharadar_direct/` (see that directory's README)."""
 
     def test_parses_a_well_formed_payload(self):
-        client = _StubClient(_sharadar_payloads())
+        client = _StubClient(_sharadar_tables())
         plane = SharadarPricePlane(api_key="test-key", client=client)
 
         master = plane.security_master(["BBBY"])
@@ -585,32 +627,51 @@ class SharadarAdapterTests(unittest.TestCase):
         check_reconstruction(bars)
         self.assertEqual(bars[-1].raw_close, 0.30)
 
-    def test_the_key_is_never_in_a_url_path_and_comes_from_config(self):
-        client = _StubClient(_sharadar_payloads())
+    def test_the_key_travels_as_a_header_never_in_the_url(self):
+        """Changed from the pre-port adapter: the direct API also accepts the
+        key as an `api_key` query param, but a header keeps it out of logs,
+        proxies and the bulk endpoint's redirect `Referer`."""
+        client = _StubClient(_sharadar_tables())
         plane = SharadarPricePlane(api_key="test-key", client=client)
         plane.security_master(["BBBY"])
-        table, params = client.calls[0]
-        self.assertEqual(table, "TICKERS")
-        self.assertEqual(params["api_key"], "test-key")
+        table, params, headers = client.calls[0]
+        self.assertEqual(table, "tickers")
+        self.assertNotIn("api_key", params)
+        self.assertNotIn("apiKey", params)
+        self.assertEqual(headers["x-api-key"], "test-key")
+
+    def test_security_master_filters_to_the_stocks_plan(self):
+        """`tickers` returns one row per plan a ticker appears in unless
+        filtered — confirmed live (README.md, `tickers_aapl_all_tables.json`).
+        The adapter must send `table=stocks`."""
+        client = _StubClient(_sharadar_tables())
+        SharadarPricePlane(api_key="k", client=client).security_master(["BBBY"])
+        _, params, _ = client.calls[0]
+        self.assertEqual(params["table"], "stocks")
 
     def test_a_missing_key_refuses_rather_than_calling_anonymously(self):
         import os
 
-        saved = os.environ.pop("NASDAQ_DATA_LINK_API_KEY", None)
-        self.addCleanup(
-            lambda: os.environ.__setitem__("NASDAQ_DATA_LINK_API_KEY", saved)
-            if saved is not None else None
-        )
+        saved = {}
+        for name in ("SHARADAR_API_KEY", "NASDAQ_DATA_LINK_API_KEY"):
+            saved[name] = os.environ.pop(name, None)
+
+        def restore():
+            for name, value in saved.items():
+                if value is not None:
+                    os.environ[name] = value
+
+        self.addCleanup(restore)
         with self.assertRaises(PricePlaneConfigError):
             SharadarPricePlane()
 
     def test_adapter_schema_change_fails_loudly(self):
         """A renamed column is an error, not a silent null."""
-        renamed = _sharadar_payloads(
-            SEP=_datatable(
-                ("ticker", "date", "open", "high", "low", "close", "volume", "close_unadjusted"),
-                [["BBBY", "2023-05-02", 0.3, 0.4, 0.2, 0.30, 3_000_000, 0.30]],
-            )
+        renamed = _sharadar_tables(
+            stocks=[
+                {"ticker": "BBBY", "date": "2023-05-02", "open": 0.3, "high": 0.4, "low": 0.2,
+                 "close": 0.30, "volume": 3_000_000, "close_unadjusted": 0.30},
+            ],
         )
         plane = SharadarPricePlane(api_key="k", client=_StubClient(renamed))
         with self.assertRaises(PricePlaneSchemaError) as caught:
@@ -618,51 +679,86 @@ class SharadarAdapterTests(unittest.TestCase):
         self.assertIn("closeunadj", str(caught.exception))
 
         # And in the security master.
-        renamed_master = _sharadar_payloads(
-            TICKERS=_datatable(
-                ("permaticker", "ticker", "name", "exchange", "delisted",
-                 "firstpricedate", "lastpricedate"),
-                [[1, "BBBY", "x", "NASDAQ", "Y", "1992-07-28", "2023-05-02"]],
-            )
+        renamed_master = _sharadar_tables(
+            tickers=[
+                {"table": "stocks", "permaticker": "1", "ticker": "BBBY", "name": "x",
+                 "exchange": "NASDAQ", "delisted": "Y",
+                 "firstpricedate": "1992-07-28", "lastpricedate": "2023-05-02"},
+            ],
         )
         with self.assertRaises(PricePlaneSchemaError):
             SharadarPricePlane(api_key="k", client=_StubClient(renamed_master)).security_master()
 
     def test_a_null_in_a_required_field_is_an_error(self):
-        nulled = _sharadar_payloads(
-            SEP=_datatable(
-                SEP_COLUMNS,
-                [["BBBY", "2023-05-02", 0.3, 0.4, 0.2, 0.30, 3_000_000, None]],
-            )
+        nulled = _sharadar_tables(
+            stocks=[
+                {"ticker": "BBBY", "date": "2023-05-02", "open": 0.3, "high": 0.4, "low": 0.2,
+                 "close": 0.30, "volume": 3_000_000, "closeunadj": None},
+            ],
         )
         plane = SharadarPricePlane(api_key="k", client=_StubClient(nulled))
         with self.assertRaises(PricePlaneSchemaError) as caught:
             plane.daily_bars("BBBY")
         self.assertIn("never stores a null", str(caught.exception))
 
-    def test_a_non_200_is_an_error(self):
+    def test_a_401_is_a_rejected_key_error(self):
+        """Observed live only on the bulk path, but any `/data` call could 401
+        per the vendor docs; mapped the same way either way."""
         plane = SharadarPricePlane(
             api_key="k",
-            client=_StubClient(_sharadar_payloads(
-                TICKERS=_StubResponse(None, status_code=403, text="forbidden")
+            client=_StubClient(_sharadar_tables(
+                tickers=_StubResponse(
+                    {"error": "Unauthorized", "description": "A valid API key is required."},
+                    status_code=401,
+                )
+            )),
+        )
+        with self.assertRaises(PricePlaneAuthError) as caught:
+            plane.security_master()
+        self.assertIn("rejected the API key", str(caught.exception))
+
+    def test_a_403_free_tier_error_names_the_plan_not_the_key(self):
+        """Observed live: `GET /data/stocks?ticker=XOM` with `test-api-key`
+        (`tests/fixtures/sharadar_direct/error_403_exceeds_free_tier.json`)."""
+        plane = SharadarPricePlane(
+            api_key="test-api-key",
+            client=_StubClient(_sharadar_tables(
+                stocks=_StubResponse(
+                    {"error": "Exceeds free tier", "description": "Please sign up at /subscribe."},
+                    status_code=403,
+                )
+            )),
+        )
+        with self.assertRaises(PricePlaneAuthError) as caught:
+            plane.daily_bars("XOM")
+        self.assertIn("free-tier", str(caught.exception))
+
+    def test_an_unrelated_non_200_is_a_schema_error(self):
+        """Observed live: `GET /data/notatable` -> 403 `Forbidden: Unknown
+        table` (`error_403_unknown_table.json`) — not a free-tier message, so
+        it means "this adapter is calling the API wrong", not "upgrade"."""
+        plane = SharadarPricePlane(
+            api_key="k",
+            client=_StubClient(_sharadar_tables(
+                tickers=_StubResponse({"error": "Forbidden", "description": "Unknown table."}, status_code=403)
             )),
         )
         with self.assertRaises(PricePlaneSchemaError) as caught:
             plane.security_master()
         self.assertIn("403", str(caught.exception))
 
-    def test_a_payload_without_a_datatable_is_an_error(self):
+    def test_a_payload_without_a_data_list_is_an_error(self):
         plane = SharadarPricePlane(
-            api_key="k", client=_StubClient(_sharadar_payloads(TICKERS={"quandl_error": "x"}))
+            api_key="k", client=_StubClient(_sharadar_tables(tickers=_StubResponse({"unexpected": "x"})))
         )
         with self.assertRaises(PricePlaneSchemaError):
             plane.security_master()
 
-    def test_a_row_of_the_wrong_width_is_an_error(self):
+    def test_a_row_missing_an_expected_key_is_an_error(self):
         plane = SharadarPricePlane(
             api_key="k",
-            client=_StubClient(_sharadar_payloads(
-                TICKERS=_datatable(TICKERS_COLUMNS, [[1, "BBBY", "x"]])
+            client=_StubClient(_sharadar_tables(
+                tickers=[{"permaticker": "1", "ticker": "BBBY"}],
             )),
         )
         with self.assertRaises(PricePlaneSchemaError):
@@ -670,14 +766,244 @@ class SharadarAdapterTests(unittest.TestCase):
 
     def test_an_extra_vendor_column_is_tolerated(self):
         """A vendor adding a field must not stop ingest; a rename must."""
-        widened = _sharadar_payloads(
-            TICKERS=_datatable(
-                TICKERS_COLUMNS + ("newfield",),
-                [[1, "BBBY", "x", "NASDAQ", "N", "1992-07-28", "2023-05-02", "whatever"]],
-            )
+        widened = _sharadar_tables(
+            tickers=[
+                {
+                    "table": "stocks", "permaticker": "1", "ticker": "BBBY", "name": "x",
+                    "exchange": "NASDAQ", "isdelisted": "N", "firstpricedate": "1992-07-28",
+                    "lastpricedate": "2023-05-02", "newfield": "whatever",
+                },
+            ],
         )
         plane = SharadarPricePlane(api_key="k", client=_StubClient(widened))
         self.assertEqual(plane.security_master()[0].ticker, "BBBY")
+
+    def test_pagination_stops_on_a_short_page(self):
+        """No cursor or total-count field exists in the envelope (confirmed
+        live — see README.md); a page shorter than the requested `limit` is
+        the only stop signal, and a full page keeps going."""
+        rows = [
+            {"ticker": "BBBY", "date": f"2023-05-{i:02d}", "open": 1.0, "high": 1.0, "low": 1.0,
+             "close": 1.0, "volume": 1.0, "closeunadj": 1.0}
+            for i in range(1, 6)
+        ]
+        client = _StubClient(_sharadar_tables(stocks=rows))
+        plane = SharadarPricePlane(api_key="k", client=client, page_size=2)
+        bars = plane.daily_bars("BBBY")
+        self.assertEqual(len(bars), 5)
+        self.assertEqual([b.session_date.day for b in bars], [1, 2, 3, 4, 5])
+        stocks_calls = [c for c in client.calls if c[0] == "stocks"]
+        self.assertEqual([c[1]["offset"] for c in stocks_calls], [0, 2, 4])
+        self.assertEqual([c[1]["limit"] for c in stocks_calls], [2, 2, 2])
+
+    def test_pagination_gives_up_after_max_pages(self):
+        """A server that always returns a full page (or a stub that never
+        shrinks) must not loop forever."""
+        import data.prices.sharadar as sharadar_module
+
+        class _InfiniteClient:
+            def get(self, url, params=None, headers=None, timeout=None):
+                return _StubResponse({"count": 2, "data": [
+                    {"ticker": "BBBY", "date": "2023-05-01", "open": 1.0, "high": 1.0,
+                     "low": 1.0, "close": 1.0, "volume": 1.0, "closeunadj": 1.0},
+                    {"ticker": "BBBY", "date": "2023-05-02", "open": 1.0, "high": 1.0,
+                     "low": 1.0, "close": 1.0, "volume": 1.0, "closeunadj": 1.0},
+                ]})
+
+        saved = sharadar_module.MAX_PAGES
+        sharadar_module.MAX_PAGES = 3
+        self.addCleanup(setattr, sharadar_module, "MAX_PAGES", saved)
+        plane = SharadarPricePlane(api_key="k", client=_InfiniteClient(), page_size=2)
+        with self.assertRaises(PricePlaneSchemaError) as caught:
+            list(plane._rows("stocks", {}, STOCKS_COLUMNS))
+        self.assertIn("did not terminate", str(caught.exception))
+
+
+class SharadarBulkDownloadTests(unittest.TestCase):
+    """`bulk_download` and the two `load_bulk_*` parsers.
+
+    The 302-to-zip redirect itself could not be exercised live: the free
+    sample key 401s on the bulk path outright
+    (`tests/fixtures/sharadar_direct/error_401_bulk_no_key.json`), so these
+    run entirely against a stubbed transport and a synthetic zip.
+    """
+
+    @staticmethod
+    def _zip_bytes(name: str, csv_text: str) -> bytes:
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(name, csv_text)
+        return buffer.getvalue()
+
+    def test_bulk_download_streams_the_zip_to_disk(self):
+        content = self._zip_bytes("stocks.csv", "ticker,date\nBBBY,2023-05-02\n")
+        client = _StubClient(streams={"stocks": _StubStream(content=content)})
+        plane = SharadarPricePlane(api_key="test-key", client=client)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "bulk" / "stocks.zip"
+            result = plane.bulk_download("stocks", 10, dest)
+            self.assertEqual(result, dest)
+            self.assertEqual(dest.read_bytes(), content)
+
+        table, params, headers, follow_redirects = client.stream_calls[0]
+        self.assertEqual(table, "stocks")
+        self.assertEqual(params["years"], "10")
+        self.assertEqual(headers["x-api-key"], "test-key")
+        self.assertTrue(follow_redirects)
+
+    def test_bulk_download_rejects_an_unknown_years_value(self):
+        plane = SharadarPricePlane(api_key="k", client=_StubClient())
+        with self.assertRaises(PricePlaneConfigError):
+            plane.bulk_download("stocks", 7, "/tmp/whatever.zip")
+
+    def test_bulk_download_maps_401_to_auth_error(self):
+        """Observed live: `error_401_bulk_no_key.json`."""
+        client = _StubClient(streams={"stocks": _StubStream(
+            status_code=401,
+            error_payload={"error": "Unauthorized", "description": "A valid API key is required for bulk downloads."},
+        )})
+        plane = SharadarPricePlane(api_key="test-api-key", client=client)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(PricePlaneAuthError):
+                plane.bulk_download("stocks", 5, Path(tmp) / "x.zip")
+
+    def test_load_bulk_bars_parses_a_synthetic_zip(self):
+        csv_text = (
+            "ticker,date,open,high,low,close,volume,closeunadj\n"
+            "BBBY,2023-04-28,1.0,1.1,0.9,1.00,1000000,1.00\n"
+            "BBBY,2023-05-01,0.8,0.9,0.7,0.80,2000000,0.80\n"
+            "BBBY,2023-05-02,0.3,0.4,0.2,0.30,3000000,0.30\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "stocks-10y.zip"
+            zip_path.write_bytes(self._zip_bytes("SHARADAR_STOCKS.csv", csv_text))
+            plane = SharadarPricePlane(api_key="k", client=_StubClient())
+            bars_by_ticker = plane.load_bulk_bars(zip_path)
+
+        self.assertEqual(set(bars_by_ticker), {"BBBY"})
+        bars = bars_by_ticker["BBBY"]
+        self.assertEqual(len(bars), 3)
+        check_reconstruction(bars)
+        self.assertEqual(bars[-1].raw_close, 0.30)
+
+    def test_load_bulk_actions_parses_a_synthetic_zip(self):
+        csv_text = (
+            "date,action,ticker,value\n"
+            "2023-04-24,bankruptcy,BBBY,\n"
+            "2022-01-10,dividend,BBBY,0.10\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "actions-10y.zip"
+            zip_path.write_bytes(self._zip_bytes("SHARADAR_ACTIONS.csv", csv_text))
+            plane = SharadarPricePlane(api_key="k", client=_StubClient())
+            actions_by_ticker = plane.load_bulk_actions(zip_path)
+
+        self.assertEqual({a.action_type for a in actions_by_ticker["BBBY"]}, {"bankruptcy", "dividend"})
+
+    def test_a_zip_with_the_wrong_number_of_members_is_an_error(self):
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "empty.zip"
+            with zipfile.ZipFile(zip_path, "w"):
+                pass
+            plane = SharadarPricePlane(api_key="k", client=_StubClient())
+            with self.assertRaises(PricePlaneSchemaError):
+                plane.load_bulk_bars(zip_path)
+
+    def test_backfill_bulk_end_to_end_against_a_disposable_database(self):
+        """`scripts.price_backfill --bulk` — the whole path, stubbed transport."""
+        from scripts.price_backfill import backfill_bulk
+
+        db = init_test_db("sharadar_bulk_backfill")
+        self.addCleanup(db.cleanup)
+
+        stocks_csv = self._zip_bytes(
+            "SHARADAR_STOCKS.csv",
+            "ticker,date,open,high,low,close,volume,closeunadj\n"
+            "BBBY,2023-04-28,1.0,1.1,0.9,1.00,1000000,1.00\n"
+            "BBBY,2023-05-01,0.8,0.9,0.7,0.80,2000000,0.80\n"
+            "BBBY,2023-05-02,0.3,0.4,0.2,0.30,3000000,0.30\n"
+            "AAPL,2023-05-01,170.0,171.0,169.0,170.5,5000000,170.5\n"
+            "AAPL,2023-05-02,170.5,172.0,170.0,171.8,4500000,171.8\n",
+        )
+        actions_csv = self._zip_bytes(
+            "SHARADAR_ACTIONS.csv",
+            "date,action,ticker,value\n"
+            "2023-04-24,bankruptcy,BBBY,\n"
+            "2022-01-10,dividend,BBBY,0.10\n",
+        )
+        client = _StubClient(
+            tables=_sharadar_tables(tickers=[
+                {"table": "stocks", "permaticker": "199059", "ticker": "BBBY",
+                 "name": "Bed Bath & Beyond Inc", "exchange": "NASDAQ", "isdelisted": "Y",
+                 "firstpricedate": "1992-07-28", "lastpricedate": "2023-05-02"},
+                {"table": "stocks", "permaticker": "320193", "ticker": "AAPL",
+                 "name": "Apple Inc", "exchange": "NASDAQ", "isdelisted": "N",
+                 "firstpricedate": "1980-12-12", "lastpricedate": "2023-05-02"},
+            ]),
+            streams={
+                "stocks": _StubStream(content=stocks_csv),
+                "actions": _StubStream(content=actions_csv),
+            },
+        )
+        plane = SharadarPricePlane(api_key="test-key", client=client)
+
+        from database.db import get_session
+
+        summary = backfill_bulk(plane, "10", None, since=None, until=None, check=True)
+        self.assertEqual(summary["tickers_with_bars"], 2)
+        self.assertEqual(summary["bars_written"], 5)
+        self.assertEqual(summary["actions_written"], 2)
+        self.assertEqual(summary["securities_written"], 2)
+
+        with get_session() as session:
+            self.assertEqual(len(store.load_all_bars(session)), 2)
+
+        # Idempotent, like the per-ticker path.
+        again = backfill_bulk(plane, "10", None, since=None, until=None, check=True)
+        self.assertEqual(again["bars_written"], 5)
+        with get_session() as session:
+            self.assertEqual(
+                sum(len(b) for b in store.load_all_bars(session).values()), 5
+            )
+
+    def test_backfill_bulk_since_until_filters_and_tickers_narrows(self):
+        from scripts.price_backfill import backfill_bulk
+
+        db = init_test_db("sharadar_bulk_backfill_filtered")
+        self.addCleanup(db.cleanup)
+
+        stocks_csv = self._zip_bytes(
+            "SHARADAR_STOCKS.csv",
+            "ticker,date,open,high,low,close,volume,closeunadj\n"
+            "BBBY,2023-04-28,1.0,1.1,0.9,1.00,1000000,1.00\n"
+            "BBBY,2023-05-01,0.8,0.9,0.7,0.80,2000000,0.80\n"
+            "BBBY,2023-05-02,0.3,0.4,0.2,0.30,3000000,0.30\n"
+            "AAPL,2023-05-01,170.0,171.0,169.0,170.5,5000000,170.5\n",
+        )
+        actions_csv = self._zip_bytes("SHARADAR_ACTIONS.csv", "date,action,ticker,value\n")
+        client = _StubClient(
+            tables=_sharadar_tables(tickers=[
+                {"table": "stocks", "permaticker": "199059", "ticker": "BBBY",
+                 "name": "Bed Bath & Beyond Inc", "exchange": "NASDAQ", "isdelisted": "Y",
+                 "firstpricedate": "1992-07-28", "lastpricedate": "2023-05-02"},
+            ]),
+            streams={
+                "stocks": _StubStream(content=stocks_csv),
+                "actions": _StubStream(content=actions_csv),
+            },
+        )
+        plane = SharadarPricePlane(api_key="test-key", client=client)
+
+        summary = backfill_bulk(
+            plane, "10", ["BBBY"], since=date(2023, 5, 1), until=None, check=True,
+        )
+        self.assertEqual(summary["tickers_with_bars"], 1)
+        self.assertEqual(summary["bars_written"], 2)
 
 
 class FixturePlaneContractTests(unittest.TestCase):
@@ -769,7 +1095,7 @@ class NoNetworkTests(unittest.TestCase):
             self.assertGreater(len(sp500_history.membership_intervals()), 1000)
 
             # The vendor adapter parses stub payloads without a transport too.
-            SharadarPricePlane(api_key="k", client=_StubClient(_sharadar_payloads())).daily_bars("BBBY")
+            SharadarPricePlane(api_key="k", client=_StubClient(_sharadar_tables())).daily_bars("BBBY")
         finally:
             socket.socket, socket.create_connection, socket.getaddrinfo = saved
 

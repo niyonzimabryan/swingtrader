@@ -78,17 +78,25 @@ Owner action (the cloud build environment cannot reach `data.sec.gov`):
 |---|---|---|
 | `PRICE_PLANE_ENABLED` | bot service (job host) | `true` |
 | `PRICE_PLANE_SOURCE` | same | `sharadar` (or `fixture` for tests) |
-| `NASDAQ_DATA_LINK_API_KEY` | same | from the Sharadar "Prices" subscription |
+| `SHARADAR_API_KEY` | same | from https://sharadar.com/account, after buying the Prices subscription. `NASDAQ_DATA_LINK_API_KEY` is still read as a fallback if a deployment has not renamed the variable yet, but `SHARADAR_API_KEY` is the name going forward. |
 | `LIQUID_UNIVERSE_TOP_N`, `DELISTING_AUDIT_*` | same | defaults per `docs/PRICE_PLANE.md` |
 
 Owner actions: buy Sharadar Prices (**10-year tier, $19/month** — see `docs/vendors/sharadar.md`) (confirm what "from $19" gates and the
 redistribution terms), then `python -m scripts.audit_delisting_returns` before
-relying on any cohort, then `python -m scripts.price_backfill --source sharadar --since 2015-01-01`.
+relying on any cohort, then either:
 
-**Adapter port pending.** `data/prices/sharadar.py` was written against Nasdaq
-Data Link; a sharadar.com key must go to `https://api.sharadar.com/v1.0`
-(`docs/vendors/sharadar.md`). Until the port lands, `PRICE_PLANE_SOURCE=sharadar`
-will fail with a 4xx from the wrong host. The port is tracked in the handoff.
+- `python -m scripts.price_backfill --source sharadar --since 2015-01-01
+  --tickers AAPL,MSFT,...` for an incremental or small-universe refresh (pages
+  each ticker), or
+- `python -m scripts.price_backfill --source sharadar --bulk years=10` to load
+  the whole purchased history from Sharadar's bulk zip in one pass — the right
+  mode for a full backfill, since paging thousands of names one at a time
+  would take hours. `--tickers` still narrows a bulk run to a subset after the
+  zip is parsed.
+
+`data/prices/sharadar.py` targets the direct API
+(`https://api.sharadar.com/v1.0`, `docs/vendors/sharadar.md`), ported against
+payloads recorded live under `tests/fixtures/sharadar_direct/`.
 
 ## 7. Comparable setups (Phase 3c)
 

@@ -49,5 +49,15 @@ def build_plane(source: str | None = None, settings=None, fixture_root: Path | s
     if source == SOURCE_SHARADAR:
         from data.prices.sharadar import SharadarPricePlane
 
-        return SharadarPricePlane(getattr(settings, "nasdaq_data_link_api_key", "") or None)
+        # `sharadar_api_key` is the direct-API name; `nasdaq_data_link_api_key`
+        # is read too so a `Settings` that has not been renamed yet still
+        # works. Either way, `SharadarPricePlane` also falls back to reading
+        # `SHARADAR_API_KEY` / `NASDAQ_DATA_LINK_API_KEY` from the environment
+        # directly if `Settings` carries neither attribute.
+        key = (
+            getattr(settings, "sharadar_api_key", "")
+            or getattr(settings, "nasdaq_data_link_api_key", "")
+            or None
+        )
+        return SharadarPricePlane(key)
     raise PricePlaneConfigError(f"unknown price plane source {source!r}; expected one of {KNOWN_SOURCES}")
