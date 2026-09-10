@@ -198,7 +198,7 @@ class SafetyTestCase(unittest.TestCase):
     def default_settings(self, **overrides):
         if self.mode is ExecutionMode.LIVE:
             return fx.live_settings(**overrides)
-        return pf.settings(**overrides)
+        return fx.lab_settings(**overrides)
 
     def assertNoOrders(self):
         self.assertEqual(

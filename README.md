@@ -135,6 +135,7 @@ These are model/provider costs only. They do not include broker fees, market-dat
 - Phase 1 is long-only. Short-side parameters are not production-ready.
 - Swing horizon, roughly days to weeks. This is not a day-trading scalper.
 - Human approval is required. The bot should not be treated as an unattended live trader.
+- The Strategy Lab is off by default and its paper and live tiers are off separately. No agent, scheduled job, or code path promotes a strategy, approves an entry, or chooses a quantity; promotion and approval are owner-only, signed, expiring and single-use.
 - Model output can be wrong, stale, incomplete, or overconfident.
 - Scheduled-scan cost telemetry still has gaps. Use Langfuse or add a DB run ledger before making spend-sensitive changes.
 
@@ -162,6 +163,37 @@ flowchart TD
     M --> N[SQLite trade state]
 ```
 
+The Strategy Lab (Spec Q) sits beside that flow rather than inside it, and is off
+by default. A scan's output becomes a snapshot; every active arm of every *enabled*
+tier decides from that one snapshot; what happens to a decision then depends on the
+arm's immutable mode:
+
+```mermaid
+flowchart TD
+    S[Scan: scored candidates] --> SN[MarketSnapshot, one cutoff]
+    SN --> AR[Every active arm of every enabled tier]
+    AR --> D[strategy_decisions: reproducible, no portfolio state]
+    D --> M{Arm mode, immutable}
+    M -->|shadow| SH[Simulated fill from stored bars<br/>no broker import exists]
+    M -->|paper| PA[Explicit-mode entry point<br/>venue = alpaca_paper only]
+    M -->|live| LI[Explicit-mode entry point<br/>venue = robinhood_live only]
+    PA --> PR[proposed execution + signed approval card]
+    LI --> PR
+    PR --> OW{Owner taps Approve}
+    OW -->|yes| PL[Place entry, then read the stop back]
+    OW -->|no / expired| TERM[Terminal, nothing placed, nothing reserved]
+    SH --> SC[Scorecard: after costs, with sample size and uncertainty]
+    PL --> SC
+    SC --> PROM{Owner promotion?}
+    PROM -->|confirmed| NEWARM[A new inactive arm at the next tier is activated<br/>append-only promotion_events]
+    PROM -->|no| SC
+```
+
+Three things that diagram is making explicit: the mode is carried by the arm and
+never inferred from a global setting; a promotion activates a *different* arm
+rather than changing one; and neither a promotion nor a dispatch places an
+order — only an owner's per-entry approval does.
+
 Important code paths:
 
 - agents/: catalyst, fundamental, pattern, macro, discovery, web research, deep research
@@ -181,6 +213,15 @@ Important code paths:
   (`RESEARCH_WORKSPACE_ENABLED=false`). A triggered invalidator pages and moves
   a thesis to `weakened`; it never creates an order or a proposal.
   See [docs/RESEARCH_WORKSPACE.md](docs/RESEARCH_WORKSPACE.md).
+- strategy_lab/: versioned strategies, immutable experiment arms, the decision and
+  execution split, replay and the scorecard — off by default
+  (`STRATEGY_LAB_ENABLED=false`). It imports no broker, no database session
+  outside its own registry, and no model client at all. An arm's **mode**
+  (`shadow` / `paper` / `live`) is immutable and is what selects the broker
+  adapter; a paper arm reaches Alpaca paper whatever `EXECUTION_MODE` says, and a
+  tier change is an owner-confirmed, append-only `promotion_events` row.
+  See [docs/STRATEGY_LAB.md](docs/STRATEGY_LAB.md) and the operator runbook,
+  [docs/STRATEGY_LAB_RUNBOOK.md](docs/STRATEGY_LAB_RUNBOOK.md).
 
 ## Configuration knobs
 
@@ -204,6 +245,19 @@ Core required settings:
 | SCHEDULER_ENABLED | Start with false; set true only after `/eval` works |
 | PRICE_PLANE_ENABLED | Off by default. The Spec N price backbone (three price series, point-in-time universes, the delisting audit). See [docs/PRICE_PLANE.md](docs/PRICE_PLANE.md) |
 | COMPARABLE_SETUPS_ENABLED | Off by default. The Spec N cohort engine and its two read-only MCP tools (`compare_setups`, `cohort_detail`). Off means the tools are not registered at all. See [docs/COMPARABLE_SETUPS.md](docs/COMPARABLE_SETUPS.md) |
+
+Strategy Lab (Spec Q) — every one of these defaults to off, and each tier requires
+every tier below it. See [docs/STRATEGY_LAB_RUNBOOK.md](docs/STRATEGY_LAB_RUNBOOK.md)
+before changing any of them:
+
+| Variable | Default | Why it matters |
+|---|---:|---|
+| STRATEGY_LAB_ENABLED | false | Master switch: the read surface and the owner-only commands. Off means the commands answer "disabled" rather than reading a table |
+| STRATEGY_LAB_SHADOW_ENABLED | false | The post-scan shadow pass and the nightly maturation job. Shadow sends **no** broker order — structurally, not conditionally |
+| STRATEGY_LAB_UNIVERSE_ENABLED | false | The one cross-sectional snapshot per cutoff. Needs `PRICE_PLANE_ENABLED` and a populated `universe_membership` |
+| STRATEGY_LAB_PAPER_ENABLED | false | The paper dispatcher and the three execution jobs. A paper arm can reach only the Alpaca paper adapter, and a dispatch *proposes* — the placement needs your Approve |
+| STRATEGY_LAB_LIVE_ENABLED | false | The Strategy Lab's own live gate, on top of `ALLOW_LIVE_TRADING`, `EXECUTION_MODE=live`, the kill switch, a verified protective-exit capability, and an owner promotion of the one global champion |
+| STRATEGY_LAB_LIVE_RISK_BUDGET | 0.0 | A live champion's sizing. Zero is deliberate: the champion can exist and still place nothing until you set a number |
 
 Broker controls:
 

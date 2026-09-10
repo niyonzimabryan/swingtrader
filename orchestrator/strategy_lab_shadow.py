@@ -365,19 +365,55 @@ def ensure_experiment(session, settings):
 
 
 def active_shadow_arms(session, settings) -> tuple:
-    """The arms a run may use: active, shadow-mode, under this experiment.
+    """The arms the *maturation* job may settle: active, shadow-mode, this experiment.
 
-    A paused arm is excluded here as well as refused by the runner, so pausing
-    an arm stops the work rather than only the write.
+    Shadow-only, and that is not an oversight: maturation simulates a fill from
+    stored bars, which is the right thing to do to a hypothetical position and the
+    wrong thing to do to one that exists at a broker. A paper or live arm's
+    executions are settled by PR 5's state machine against the broker's own
+    answer, never by this job.
+
+    A paused arm is excluded here as well as refused by the runner, so pausing an
+    arm stops the work rather than only the write.
     """
+    return _arms_in_modes(session, settings, modes=("shadow",))
+
+
+def active_decision_arms(session, settings) -> tuple:
+    """The arms one *decision* pass runs: every active arm whose tier is enabled.
+
+    A ``StrategyDecision`` is a function of the snapshot and the strategy version
+    alone — it carries no portfolio state and no mode (Spec Q §6) — so a paper arm
+    needs decisions for exactly the same reason a shadow arm does, and both read
+    the same snapshot. The mode matters one step later, at execution: the shadow
+    arm's decision is simulated by ``strategy_lab/shadow.py`` and the paper arm's
+    is dispatched to Alpaca paper by ``orchestrator/strategy_lab_paper.py``.
+    That is what "shadow and paper tournaments run concurrently" means (Spec Q
+    §19), and the per-decision unique index is what keeps it free of duplicate
+    orders.
+
+    A tier whose flag is off contributes no arms, so turning ``paper`` off stops
+    the decisions as well as the dispatch and the arm simply stops producing
+    evidence rather than producing evidence nobody can act on.
+    """
+    modes = ["shadow"]
+    if bool(getattr(settings, "strategy_lab_paper_enabled", False)):
+        modes.append("paper")
+    if bool(getattr(settings, "strategy_lab_live_enabled", False)):
+        modes.append("live")
+    return _arms_in_modes(session, settings, modes=tuple(modes))
+
+
+def _arms_in_modes(session, settings, *, modes) -> tuple:
     from strategy_lab import registry
     from strategy_lab.domain import ArmStatus, ExecutionMode
 
+    wanted = {ExecutionMode(mode) for mode in modes}
     out = []
     for arm in registry.arms_for_experiment(
         session, _experiment_name(settings), statuses=(ArmStatus.ACTIVE,)
     ):
-        if ExecutionMode(arm.mode) is not ExecutionMode.SHADOW:
+        if ExecutionMode(arm.mode) not in wanted:
             continue
         version = registry.strategy_version_for_arm(session, arm.id)
         out.append((arm.id, version.slug, version.version))
@@ -446,7 +482,7 @@ def _run_shadow(settings, summary: ShadowRunSummary, *, names: Sequence[str], cu
             log.error("strategy_lab_registration_failed", error=str(exc)[:300])
             return
 
-        arms = active_shadow_arms(session, settings)
+        arms = active_decision_arms(session, settings)
         summary.arms = len(arms)
         if not arms:
             summary.skipped_reason = "no_active_shadow_arms"

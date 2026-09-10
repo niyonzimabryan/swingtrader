@@ -427,6 +427,38 @@ class TradingPipeline:
         # defect can cost is the experiment's own evidence. Default-off, and a
         # no-op with either flag false.
         self._run_strategy_lab_shadow(outcomes, run_id=scan_session_id)
+        self._run_strategy_lab_paper(run_id=scan_session_id)
+
+    def _run_strategy_lab_paper(self, *, run_id: str) -> None:
+        """Propose paper executions for the decisions the shadow pass just wrote.
+
+        After the shadow pass, for the obvious reason: a paper arm dispatches
+        decisions, and this scan's decisions exist only once that pass has
+        recorded them. Its own hook and its own guard so a dispatch failure
+        cannot cost the shadow evidence that was already written.
+
+        **This proposes; it places nothing.** Each proposal is a `proposed` row
+        plus an approval card carrying a signed, expiring, single-use owner
+        reference; the placement happens when the owner taps Approve (Spec L §6.3,
+        Spec Q §13). Default-off, and a no-op with either flag false.
+        """
+        if not bool(getattr(self.settings, "strategy_lab_paper_enabled", False)):
+            return
+        try:
+            from orchestrator import strategy_lab_paper
+            from strategy_lab.execution import PAPER_VENUE
+
+            strategy_lab_paper.dispatch_for_scan(
+                self.settings,
+                # The arm's mode chose this venue, not EXECUTION_MODE: the paper
+                # adapter is registered under the one venue a paper arm may reach,
+                # and `bind_adapter` refuses anything else (Spec Q §12 inv 11).
+                adapters={PAPER_VENUE: self.paper_broker},
+                run_id=run_id,
+                owner_id=str(getattr(self.settings, "telegram_chat_id", "") or ""),
+            )
+        except Exception as e:
+            log.error("strategy_lab_paper_hook_failed", error=str(e)[:300])
 
     def _run_strategy_lab_shadow(self, outcomes: list, *, run_id: str) -> None:
         """Run the registered shadow arms over the names this scan scored.

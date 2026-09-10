@@ -930,6 +930,49 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
                   remainder arrived later left a stop covering less than the
                   position; `resume` now cancels the undersized stop and
                   re-places it at the true size.
+      - [ ] **PR 6 — paper tournament, audited promotion, docs and the release
+            proof** — in review on `claude/strategy-lab-6-tournament`. The
+            Strategy Lab is complete and entirely disabled.
+            `STRATEGY_LAB_PAPER_ENABLED` and `STRATEGY_LAB_LIVE_ENABLED` arrive
+            here with the services that read them (PR 4 shipped neither on
+            purpose); `orchestrator/strategy_lab_paper.py` dispatches paper arms
+            through PR 5's explicit-mode entry point carrying `mode=paper`, sizes
+            them against the arm's own virtual paper book through PR 3's pure
+            `shadow.assess`, reserves a ticker across arms, tags every proposal
+            with its experiment, and places **nothing** — each proposal is a card
+            awaiting the owner's signed single-use approval.
+            `strategy_lab/promotion.py` binds the requested mode and budget on
+            top of PR 1's `authorize_promotion`, refuses evidence reuse for a
+            second target, and requires a complete evidence snapshot with its
+            warnings acknowledged and the tier's floor met;
+            `orchestrator/strategy_lab_promotion.py` adds the refusals that need
+            a deployment to see them (every flag, the kill switch, Phase 6's live
+            gates, the live adapter's declared exit capability), accumulated
+            rather than short-circuited. `/promote_arm`, `/demote_arm` and
+            `/promotions` render and confirm; the three jobs PR 5 deferred are
+            scheduled; `main.py` wires a second, venue-mapped execution service
+            so a lab approval cannot route through the global-mode router. No
+            migration (head stays `0011_comparable_subject_ticker`), no second
+            HMAC, no second kill switch.
+            - [ ] **A paper arm is still *bounded* by the production ledger.**
+                  Phase 6's `create_proposal` reads the `agent_placeable`
+                  account for equity, concentration and settled cash, which is
+                  the Robinhood Agentic account rather than the Alpaca paper one
+                  the order reaches. The virtual book decides the size and the
+                  real book can only shrink it, so it errs safe — but a
+                  self-contained paper ledger means teaching Phase 6's
+                  `read_context` to take a venue, which is a Phase 6 change with
+                  its own risk surface. Recorded in `docs/STRATEGY_LAB.md` §23.
+            - [ ] **Live remains impossible, by design, until the owner runs the
+                  real `gtc stop_market` probe** (`docs/EXECUTION_LIFECYCLE.md`
+                  §6). Until it passes, the capability gate refuses every
+                  Strategy Lab live entry before an order is formed — no flag to
+                  flip, no manual-exit fallback (Spec Q §12's closing paragraph).
+            - [ ] **The rollout checklist is drafted and not executed**
+                  (`docs/STRATEGY_LAB_RUNBOOK.md` §5): shadow → a 60-day/100-
+                  decision window → paper with one promoted arm → 30 closed paper
+                  executions → a Robinhood review-only canary → a separately
+                  authorized micro-live canary. No Railway variable was changed.
 - [ ] **Phase 6 — order proposal→approval→execution** — gated on Phases 0–3 **and** on
       documenting whether Robinhood can place a protective exit that survives our
       process. Human-in-the-loop, not an autonomous goal run.

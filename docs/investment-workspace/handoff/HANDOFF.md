@@ -6,16 +6,16 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-10 08:22 UTC, by the orchestrating session
+**Last updated:** 2026-09-10 11:25 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 
 ## 1. Where main is
 
 | | |
 |---|---|
-| `main` head | `ee5bb46` (#68) |
+| `main` head | `816e499` (#73) — #74 SL6 merging |
 | Alembic head | `0011_comparable_subject_ticker` (single) |
-| Tests | ~1,700 on SQLite (3 Postgres-only skips); CI: 4 shards per engine, ~7 min |
+| Tests | 1,793 on SQLite (3 Postgres-only skips); CI: 4 shards per engine, ~8 min |
 | CI | `.github/workflows/ci.yml` — sqlite + postgres matrix, Python **3.12** |
 
 Merged, in order: Phase 0a/0b, 3a, 3b-core, 3p, 1, 2, 4, P, Strategy Lab 1 (#54),
@@ -26,19 +26,13 @@ ENV_SETUP (#52), rulings (#55), **Phase 3c (#56), Phase 6 (#57), Strategy Lab 2
 
 | PR / branch | What | Session | State |
 |---|---|---|---|
-| `claude/strategy-lab-6-tournament` | Strategy Lab 6: paper tournament through PR 5's entry point, audited promotion, `STRATEGY_LAB_PAPER_ENABLED`/`_LIVE_ENABLED`, E2E release proof, rollout checklist | `session_01KjN1qSEpxSgJxpHmLSgUqV` (Opus) | building since 08:20Z |
+| #74 `claude/strategy-lab-6-tournament` | Strategy Lab 6: paper dispatcher on PR 5's entry point, audited promotion, two signed callbacks on one HMAC, the three deferred jobs scheduled, E2E + global-live-mode safety proof; one P0 and two P1s found by its own review and fixed | `session_01KjN1qSEpxSgJxpHmLSgUqV` | CI green; merging |
 
 ## 3. What is left, in order
 
-1. Merge SL6 when it opens (integrate per §4; it may add a migration off
-   `0011_comparable_subject_ticker`).
-2. Docs PR: Spec Q rulings log (a "Rulings log" section at the end of
-   `specs/investment-workspace/strategy-lab/strategy-lab-architecture.md`,
-   same shape as Spec N §12) covering SL3–SL6; refresh `docs/ENV_SETUP.md`
-   §10 and the order-of-operations list; note in Spec N §12 the Sharadar port's
-   mapping decisions if #70 did not already.
-3. The owner summary (§7 below is the skeleton).
-4. Owner-side, in `docs/OWNER_SETUP.md` order: link the repo to the Railway
+1. Docs PR: append PR 6's rulings to Spec Q §21.
+2. The owner summary (§7 below is the skeleton).
+3. Owner-side, in `docs/OWNER_SETUP.md` order: link the repo to the Railway
    `workspace` service (safe now that #68 is on `main`), the Postgres cutover,
    workspace variables + token, Sharadar backfill, paper trade submission.
 

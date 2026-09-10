@@ -19,6 +19,7 @@ from bot.handlers.proposals import live_kill_command
 from bot.handlers.strategy_lab import (
     experiments_command, strategies_command, strategy_command,
     pause_experiment_command, resume_experiment_command,
+    promote_arm_command, demote_arm_command, promotions_command,
 )
 from bot.handlers.trade_mgmt import close_command, adjust_command
 from bot.handlers.performance import performance_command, history_command, memo_command, attr_command
@@ -75,18 +76,21 @@ class SwingTraderBot:
         # Strategy Lab, owner-only (Spec Q §13). Registered unconditionally and
         # gated inside each handler: with STRATEGY_LAB_ENABLED false they answer
         # "disabled" instead of reading a table, which is a clearer failure than
-        # a command that silently does not exist. Promotion and live-tier
-        # controls are deliberately absent — their safety services are PR 5/6.
+        # a command that silently does not exist. The tier controls arrived with
+        # PR 6's promotion path; /live_kill above is still Phase 6's one switch.
         self.app.add_handler(CommandHandler("experiments", experiments_command))
         self.app.add_handler(CommandHandler("strategies", strategies_command))
         self.app.add_handler(CommandHandler("strategy", strategy_command))
         self.app.add_handler(CommandHandler("pause_experiment", pause_experiment_command))
         self.app.add_handler(CommandHandler("resume_experiment", resume_experiment_command))
+        self.app.add_handler(CommandHandler("promote_arm", promote_arm_command))
+        self.app.add_handler(CommandHandler("demote_arm", demote_arm_command))
+        self.app.add_handler(CommandHandler("promotions", promotions_command))
 
         # Inline keyboard callbacks
         self.app.add_handler(CallbackQueryHandler(handle_callback))
 
-        log.info("telegram_bot_built", commands=30)
+        log.info("telegram_bot_built", commands=33)
         return self.app
 
     async def start(self):

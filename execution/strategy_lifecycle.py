@@ -145,6 +145,10 @@ class ArmExecutionRequest:
     expected_hold_sessions: int | None = None
     target1_price: float | None = None
     target2_price: float | None = None
+    #: The experiment tag carried onto the proposal row and into the broker's
+    #: ``client_context`` (Spec Q §15 PR 6: "experiment tags"). Empty means "use
+    #: the arm id alone", which is what PR 5's own tests pass.
+    experiment_tag: str = ""
 
 
 @dataclass
@@ -240,6 +244,42 @@ class StrategyExecutionService:
 
     # -- the gates that must happen before a card exists --------------------
 
+    def _tier_flag_refusal(self, binding: slx.AdapterBinding) -> tuple[str, str] | None:
+        """The Strategy Lab's own per-tier flag (Spec Q §14, PR 6).
+
+        PR 4 shipped ``STRATEGY_LAB_ENABLED`` and ``STRATEGY_LAB_SHADOW_ENABLED``
+        and deliberately no paper or live flag, because nothing read one yet. PR 6
+        added both with the services that read them, and this is where they are
+        read: a tier whose flag is false cannot propose, whatever Phase 6's global
+        ``execution_mode`` says. Absence or invalidity of a flag means *not
+        enabled*, never live (Spec Q §12 invariant 1) — ``getattr`` defaults to
+        false and a missing setting therefore refuses.
+        """
+        if not bool(getattr(self.settings, "strategy_lab_enabled", False)):
+            return (
+                "strategy_lab_disabled",
+                "STRATEGY_LAB_ENABLED is false; no arm may propose an execution. "
+                "Each tier requires every gate below it (Spec Q §14).",
+            )
+        # Spec Q §14: each higher tier requires every lower tier's gate as well
+        # as its own. For the two *execution* tiers that means live requires paper,
+        # and the reason is operational rather than ceremonial: the three jobs that
+        # resume, expire and reconcile an execution are gated on the paper flag, so
+        # `live on, paper off` would be live positions that nothing recovers after a
+        # restart and nothing reconciles against the broker.
+        flags = ("strategy_lab_paper_enabled",)
+        if binding.is_live:
+            flags = ("strategy_lab_paper_enabled", "strategy_lab_live_enabled")
+        for flag in flags:
+            if not bool(getattr(self.settings, flag, False)):
+                return (
+                    f"{flag}_false",
+                    f"{flag.upper()} is false, so no {binding.mode.value} arm may "
+                    "propose an execution. Nothing was placed and nothing is "
+                    "reserved (Spec Q §14: each tier requires every tier below it).",
+                )
+        return None
+
     def _live_authorization(self, session, arm) -> tuple[str, str] | None:
         """Everything §12 invariant 2 requires of a *live* arm, or a refusal.
 
@@ -274,6 +314,50 @@ class StrategyExecutionService:
                 "authorized by an audited owner decision that binds its "
                 "evidence, never by a flag (Spec Q §8, §12 invariant 2).",
             )
+        return None
+
+    @staticmethod
+    def _ticker_reservation_refusal(session, *, mode, ticker: str, execution_id: str):
+        """Spec Q §11's ticker-level exposure reservation, at the entry point.
+
+        "A ticker-level exposure reservation prevents two arms from accidentally
+        creating duplicate live positions." The dispatcher checks this too, and
+        that check is a useful pre-filter, but a property enforced only by one
+        caller's loop is not a property of the system: a second dispatch pass, a
+        retried scan, or any future caller of :meth:`propose` would reintroduce
+        duplicate-ticker exposure with nothing to stop it. So the rule lives here,
+        read fresh inside the transaction that opens the row.
+
+        Scoped to the mode on purpose. A paper position at Alpaca and a live
+        position at Robinhood are different books; reserving across them would
+        make the tournament's exposure depend on the champion's.
+        """
+        from database import models
+        from strategy_lab.domain import TERMINAL_EXECUTION_STATES
+
+        symbol = (ticker or "").strip().upper()
+        terminal = sorted({state.value for state in TERMINAL_EXECUTION_STATES})
+        rows = (
+            session.query(models.StrategyTrade)
+            .filter(models.StrategyTrade.mode == ExecutionMode(mode).value)
+            .filter(models.StrategyTrade.status.notin_(terminal))
+            .filter(models.StrategyTrade.execution_id != execution_id)
+            .all()
+        )
+        for row in rows:
+            try:
+                held = registry.decision_row(session, row.decision_id).ticker
+            except registry.NotFound:  # pragma: no cover - a foreign key prevents it
+                continue
+            if (held or "").strip().upper() == symbol:
+                return (
+                    "ticker_reserved",
+                    f"{symbol} already carries a non-terminal "
+                    f"{ExecutionMode(mode).value} execution ({row.execution_id}) "
+                    f"on arm {row.arm_id}. One position per name per mode: a "
+                    "ticker-level reservation is what stops two arms opening the "
+                    "same position twice (Spec Q §11).",
+                )
         return None
 
     def _capability_refusal(self, binding: slx.AdapterBinding) -> tuple[str, str] | None:
@@ -387,11 +471,26 @@ class StrategyExecutionService:
                     ),
                 )
 
-            refusal = killswitch.entry_block(session)
+            refusal = self._ticker_reservation_refusal(
+                session,
+                mode=binding.mode,
+                ticker=request.ticker,
+                execution_id=trade.execution_id,
+            )
+            if refusal is None:
+                refusal = killswitch.entry_block(session)
             if refusal is None:
                 refusal = self._capability_refusal(binding)
             if refusal is None and binding.is_live:
                 refusal = self._live_authorization(session, arm)
+            # The Strategy Lab's own tier flag is checked *last*, deliberately.
+            # Every gate above it is a statement about the world — the switch is
+            # engaged, the broker cannot protect a position, this arm is not the
+            # champion — and those are what an operator needs told first. The flag
+            # is a statement about the deployment, and naming it before them would
+            # hide a real blocker behind "the feature is off".
+            if refusal is None:
+                refusal = self._tier_flag_refusal(binding)
             if refusal is not None:
                 return self._refuse(session, trade, refusal, now=now)
 
@@ -404,7 +503,7 @@ class StrategyExecutionService:
                 cohort_answer_id=request.cohort_answer_id,
                 expected_hold_sessions=request.expected_hold_sessions,
                 settings=self.settings,
-                requester_token_label=f"arm:{arm.id}",
+                requester_token_label=(request.experiment_tag or f"arm:{arm.id}")[:100],
                 owner_id=self.owner_id,
                 now=now,
                 resolver=self.resolver,
@@ -511,6 +610,46 @@ class StrategyExecutionService:
                     f"execution {execution_id} has no proposal to approve.",
                     execution_id,
                 )
+
+            # Re-run the two gates Phase 6 cannot see, from fresh state.
+            #
+            # Phase 6 re-checks what it owns at approval time — the switch, its
+            # own live flags, every risk guard — precisely because an approval
+            # card can sit in a chat while the world moves. The two gates it
+            # cannot re-check are the ones that are *ours*: the Strategy Lab's
+            # tier flag, and whether this arm is still an authorized live
+            # champion. Without this block, a card minted while paper was enabled
+            # would still place after the flag was turned off, and a live card
+            # would still place after its arm was paused, demoted, or replaced as
+            # champion — and Spec Q §12 invariant 2 is a condition on the
+            # *placement*, not on the proposal that preceded it.
+            #
+            # A refusal here deliberately does **not** consume the approval or
+            # move the row: nothing was placed and nothing was reserved, so the
+            # owner can clear the condition and tap the same card again. A card
+            # nobody clears is terminated by the hourly expiry job instead.
+            refusal = self._tier_flag_refusal(binding)
+            if refusal is None and binding.is_live:
+                refusal = self._live_authorization(session, arm)
+            if refusal is not None:
+                code, reason = refusal
+                self.pager(
+                    ARM_EXECUTION_BLOCKED,
+                    slx.redact({
+                        "execution_id": execution_id,
+                        "arm_id": trade.arm_id,
+                        "reason_code": code,
+                        "reason": reason,
+                        "recovery": (
+                            "The approval was refused at placement time, after "
+                            "the card was sent. Nothing was placed and nothing "
+                            "is reserved, and the card is still valid: clear the "
+                            "condition named above and approve it again, or let "
+                            "it expire."
+                        ),
+                    }),
+                )
+                raise ArmExecutionRefused(code, reason, execution_id)
         return self._service(binding).on_approval(
             proposal_id=proposal_id,
             presented_signature=presented_signature,
@@ -636,14 +775,36 @@ class StrategyExecutionService:
     def cancel(self, *, execution_id: str, by: str = "owner", reason: str = "", now=None) -> str:
         """Owner cancellation, before anything has been placed.
 
-        Legal only from ``proposed``: once an entry is at the broker, "cancel"
-        is a broker action a human takes in the broker's own app, and code that
-        cheerfully flattened a book during an outage would be the worst failure
-        available here (the same reasoning as :mod:`portfolio.killswitch`).
+        Legal only from ``proposed``, and that is now checked rather than
+        asserted. The §12 transition table permits ``submitted -> cancelled``
+        because :meth:`resume` has to be able to *record* a cancellation the
+        broker reports; it does that through :meth:`_set`, not through here. An
+        owner "reject" arriving while an approval is mid-flight would otherwise
+        walk a row that already has an order at the broker to a terminal
+        ``cancelled`` and release its reservation — the ledger would read
+        "nothing placed, nothing reserved" for a ticker that has a live order,
+        and the freed reservation would reopen the name to a second arm. That is
+        the duplicate-position failure Spec Q §11's reservation exists to
+        prevent, so it is refused here.
+
+        Once an entry is at the broker, "cancel" is a broker action a human takes
+        in the broker's own app; code that cheerfully flattened a book during an
+        outage would be the worst failure available here (the same reasoning as
+        :mod:`portfolio.killswitch`).
         """
         now = now or utcnow_naive()
         with self.session_factory() as session:
             trade = registry.execution_row(session, execution_id)
+            if trade.status != ExecutionState.PROPOSED.value:
+                raise ArmExecutionRefused(
+                    "not_cancellable",
+                    f"execution {execution_id} is {trade.status!r}, not "
+                    "'proposed'. An owner cancellation is only for an execution "
+                    "that has not been approved; past that point an order may "
+                    "exist at the broker and only the broker's own app may "
+                    "cancel it. Nothing was changed here.",
+                    execution_id,
+                )
             registry.advance_execution(
                 session, trade.execution_id, ExecutionState.CANCELLED,
                 reason=reason or f"cancelled_by:{by}", now=now,

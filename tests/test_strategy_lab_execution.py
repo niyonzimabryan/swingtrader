@@ -99,7 +99,7 @@ class ExecutionTestCase(unittest.TestCase):
     def settings_for(self, **overrides):
         if self.mode is ExecutionMode.LIVE:
             return fx.live_settings(**overrides)
-        return pf.settings(**overrides)
+        return fx.lab_settings(**overrides)
 
     def propose(self, **overrides):
         request = self.request

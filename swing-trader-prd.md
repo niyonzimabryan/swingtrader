@@ -64,6 +64,50 @@ flat, return to scoring design — not more autonomy.
 As specified in Section 13; the shadow ledger and closed-trade history built
 in Phase 1 are its training substrate.
 
+### Phase Q — The Strategy Lab *(shipped disabled, Spec Q, 2026-09)*
+
+The question Phases 1–3 answer is "does *this* pipeline's judgment predict
+returns". The Strategy Lab answers a different one: **which of several
+versioned, immutable strategies predicts returns, under one shared snapshot and
+one cost model, with enough evidence to act on.** It is not a replacement for the
+LLM pipeline — the existing composite is registered as
+`swingtrader_composite_v1`, the initial champion, and its outputs are unchanged.
+
+What it adds, all of it off by default (`STRATEGY_LAB_ENABLED=false`):
+
+- **Immutable strategy versions and experiment arms.** Any rule or parameter
+  change creates a new version and normally a new arm, so an experiment cannot be
+  rewritten after seeing its result. An arm's tier — `shadow`, `paper`, `live` —
+  is part of its identity, not a setting.
+- **Three tiers that run concurrently.** Shadow records exactly what a strategy
+  *would* do and can send no broker order (there is no broker import in the
+  package at all). Paper places at Alpaca paper, and only there, whatever the
+  application-wide execution mode says. Live is one global champion.
+- **Evaluation that refuses to flatter.** Results are after an explicit cost
+  model, beside their sample size, with a time-aware bootstrap interval, a
+  multiple-testing adjustment over every variant tried, drawdown, benchmark and
+  cross-arm overlap. `insufficient_evidence` is printed instead of a ranking when
+  the sample is too small, and clean replay is never combined with
+  reconstructed-archival results.
+- **Owner-only, audited promotion.** A tier change is an append-only
+  `promotion_events` row binding the source arm, its evidence snapshot, a separate
+  inactive target arm at the same immutable version, the requested mode and the
+  requested budget. The system may label evidence `ready_for_owner_review`; it
+  cannot promote. Live activation replaces the one global champion atomically.
+- **A promotion is not an entry approval.** Every proposed execution gets its own
+  signed, expiring, single-use, owner-bound callback, and the whole §12 execution
+  state machine — reservation, protective-stop read-back, partial-fill resizing,
+  reconciliation, restart recovery — sits between an approval and a position.
+
+Gate to turn any of it on: the rollout ladder in
+`docs/STRATEGY_LAB_RUNBOOK.md` — shadow, then a 60-day/100-decision observation
+window, then paper with one promoted arm, then 30 closed paper executions, then a
+Robinhood review-only canary, and only then a separately authorized micro-live
+canary. Live automation stays impossible until Robinhood's protective-exit
+primitive is verified against a live account; if it cannot be, the system says so
+and opens no live position rather than simulating safety with an in-process
+watcher.
+
 **Standing scope decisions:** intraday/day-trading is out of scope — the
 signal stack's edge is multi-day repricing of information, and labeled
 decisions come cheaper from shadow-scoring than from trading (see
@@ -1959,5 +2003,5 @@ Operator can also trigger manually via "🔬 Run Deep Research" button on any me
 
 ---
 
-*Last updated: February 21, 2026*
+*Last updated: September 10, 2026 (Section 2: Phase Q, the Strategy Lab)*
 *Version: 2.1 — Autonomous Operation (Order monitor, /scan, enhanced /performance, progress updates, scan notifications)*

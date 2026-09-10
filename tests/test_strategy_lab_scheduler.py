@@ -42,9 +42,21 @@ def _settings(**overrides):
         portfolio_sync_enabled=False,
         strategy_lab_enabled=False,
         strategy_lab_shadow_enabled=False,
+        strategy_lab_paper_enabled=False,
+        strategy_lab_live_enabled=False,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+#: PR 6's three jobs, with the triggers they are registered at. Same rule as
+#: `EXISTING_JOBS`: moving one of these is a production change and belongs in
+#: this table rather than in a diff nobody reads.
+PAPER_JOBS = {
+    "strategy_lab_resume": "hour='9-16', minute='*/30'",
+    "strategy_lab_expire": "minute='5'",
+    "strategy_lab_reconcile": "hour='16', minute='45'",
+}
 
 
 def _scheduler(settings) -> PipelineScheduler:
@@ -107,6 +119,117 @@ class SchedulerJobTests(unittest.IsolatedAsyncioTestCase):
 
         await scheduler._run_strategy_lab_maturation()
         self.assertEqual(called, [])
+
+
+class PaperExecutionJobTests(unittest.IsolatedAsyncioTestCase):
+    """Spec Q §12 invariant 5 and §15 PR 6: the three jobs PR 5 deferred.
+
+    PR 5 wrote ``resume``, ``expire_stale`` and ``reconcile`` and scheduled none
+    of them, because the flag that would gate the schedule did not exist. These
+    tests pin both halves: nothing is registered until the paper flag family is
+    on, and each job no-ops defensively when a flag is flipped off at runtime
+    without a restart.
+    """
+
+    def _start(self, settings):
+        scheduler = _scheduler(settings)
+        scheduler.start(enable_scans=True)
+        self.addCleanup(scheduler.scheduler.shutdown, False)
+        return {job.id: str(job.trigger) for job in scheduler.scheduler.get_jobs()}
+
+    def _on(self, **extra):
+        return _settings(
+            strategy_lab_enabled=True,
+            strategy_lab_shadow_enabled=True,
+            strategy_lab_paper_enabled=True,
+            **extra,
+        )
+
+    async def test_the_flags_off_register_none_of_the_three(self):
+        jobs = self._start(_settings())
+        for job_id in PAPER_JOBS:
+            self.assertNotIn(job_id, jobs)
+
+    async def test_the_master_switch_alone_registers_none_of_the_three(self):
+        jobs = self._start(_settings(strategy_lab_paper_enabled=True))
+        for job_id in PAPER_JOBS:
+            self.assertNotIn(job_id, jobs)
+
+    async def test_shadow_alone_registers_none_of_the_three(self):
+        jobs = self._start(
+            _settings(strategy_lab_enabled=True, strategy_lab_shadow_enabled=True)
+        )
+        for job_id in PAPER_JOBS:
+            self.assertNotIn(job_id, jobs)
+
+    async def test_the_paper_flag_registers_all_three_at_their_stated_times(self):
+        jobs = self._start(self._on())
+        for job_id, fragment in PAPER_JOBS.items():
+            self.assertIn(job_id, jobs)
+            self.assertIn(fragment, jobs[job_id], jobs[job_id])
+
+    async def test_the_existing_jobs_still_do_not_move(self):
+        jobs = self._start(self._on())
+        for job_id, fragment in EXISTING_JOBS.items():
+            self.assertIn(job_id, jobs, f"{job_id} disappeared")
+            self.assertIn(fragment, jobs[job_id], jobs[job_id])
+
+    async def test_each_job_no_ops_when_the_flag_is_flipped_off_at_runtime(self):
+        settings = self._on()
+        scheduler = _scheduler(settings)
+        settings.strategy_lab_paper_enabled = False
+
+        import orchestrator.strategy_lab_paper as module
+
+        called: list[str] = []
+        for name in ("resume_executions", "expire_stale_approvals", "reconcile"):
+            original = getattr(module, name)
+            setattr(
+                module, name,
+                lambda *a, _n=name, **k: called.append(_n),
+            )
+            self.addCleanup(lambda n=name, o=original: setattr(module, n, o))
+
+        await scheduler._run_strategy_lab_resume()
+        await scheduler._run_strategy_lab_expire()
+        await scheduler._run_strategy_lab_reconcile()
+        self.assertEqual(called, [])
+
+    async def test_the_adapter_map_registers_the_live_venue_only_when_declared(self):
+        """A router would reintroduce the global-mode inference §12 inv 11 removes."""
+        from strategy_lab.execution import LIVE_VENUE, PAPER_VENUE
+
+        settings = self._on()
+        undeclared = SimpleNamespace(name="router")
+        scheduler = PipelineScheduler(
+            pipeline=SimpleNamespace(
+                notification_manager=None,
+                paper_broker=SimpleNamespace(venue=PAPER_VENUE),
+                primary_broker=undeclared,
+            ),
+            settings=settings,
+        )
+        self.assertEqual(sorted(scheduler._strategy_lab_adapters()), [PAPER_VENUE])
+
+        scheduler.pipeline.primary_broker = SimpleNamespace(venue=LIVE_VENUE)
+        self.assertEqual(
+            sorted(scheduler._strategy_lab_adapters()), sorted([LIVE_VENUE, PAPER_VENUE])
+        )
+
+    async def test_a_job_failure_never_propagates(self):
+        settings = self._on()
+        scheduler = _scheduler(settings)
+
+        import orchestrator.strategy_lab_paper as module
+
+        original = module.resume_executions
+
+        def explode(*a, **k):
+            raise RuntimeError("the broker is down")
+
+        module.resume_executions = explode
+        self.addCleanup(lambda: setattr(module, "resume_executions", original))
+        await scheduler._run_strategy_lab_resume()  # must not raise
 
 
 class WeeklyReportSectionTests(unittest.TestCase):

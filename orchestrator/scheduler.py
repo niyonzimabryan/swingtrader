@@ -16,6 +16,25 @@ from utils.lifecycle import force_restart
 
 log = get_logger("scheduler")
 
+
+def _job_summary(result) -> str:
+    """One short, allowlist-safe line for a job's outcome.
+
+    Never the raw result: a reconciliation report and a resume action both carry
+    broker-shaped detail, and Spec Q §17 forbids logging a brokerage payload. A
+    count is what an operator reads anyway; the rows themselves are in the
+    database and the pages carry the recovery text.
+    """
+    if result is None:
+        return "skipped"
+    if isinstance(result, list):
+        return f"{len(result)} action(s)"
+    findings = getattr(result, "findings", None)
+    mismatches = getattr(result, "mismatches", None)
+    if findings is None and mismatches is None:
+        return type(result).__name__
+    return f"{len(findings or ())} finding(s), {len(mismatches or ())} mismatch(es)"
+
 # How long to wait before the single retry of a pre-market restart deferred by an
 # in-progress scan.
 DAILY_RESTART_RETRY_MINUTES = 15
@@ -126,6 +145,53 @@ class PipelineScheduler:
                 name="Strategy Lab shadow maturation (4:15 AM ET)",
             )
 
+        # Strategy Lab execution jobs (Spec Q §12 invariant 5, §15 PR 6). PR 5
+        # wrote `resume`, `expire_stale` and `reconcile` and deliberately did not
+        # schedule them, because the flag that would gate the schedule did not
+        # exist yet. These are the three, gated on the paper flag family:
+        #
+        #   resume       — at start-up and every 30 minutes in market hours. After
+        #                  a restart there is no in-memory state at all, so every
+        #                  non-terminal row is re-derived from the broker's own
+        #                  answer. It never places an entry; it may re-place a
+        #                  protective stop, which is the whole point of surviving
+        #                  a restart with an unprotected fill.
+        #   expire_stale — hourly. An approval that has lapsed cannot be used, so
+        #                  without this the row sits non-terminal forever holding
+        #                  its decision's one open-execution slot.
+        #   reconcile    — after the close. Every mismatch moves its execution to
+        #                  `reconciliation_required`, which blocks new entries
+        #                  through the existing kill switch rather than a second
+        #                  one, and pages with a recovery instruction.
+        strategy_lab_paper = bool(
+            getattr(self.settings, "strategy_lab_enabled", False)
+        ) and bool(getattr(self.settings, "strategy_lab_paper_enabled", False))
+        if strategy_lab_paper:
+            self.scheduler.add_job(
+                self._run_strategy_lab_resume,
+                CronTrigger(
+                    day_of_week="mon-fri", hour="9-16", minute="*/30",
+                    timezone="America/New_York",
+                ),
+                id="strategy_lab_resume",
+                name="Strategy Lab execution resume (every 30m, market hours)",
+            )
+            self.scheduler.add_job(
+                self._run_strategy_lab_expire,
+                CronTrigger(minute=5, timezone="America/New_York"),
+                id="strategy_lab_expire",
+                name="Strategy Lab stale-approval expiry (hourly)",
+            )
+            self.scheduler.add_job(
+                self._run_strategy_lab_reconcile,
+                CronTrigger(
+                    day_of_week="mon-fri", hour=16, minute=45,
+                    timezone="America/New_York",
+                ),
+                id="strategy_lab_reconcile",
+                name="Strategy Lab execution reconciliation (16:45 ET)",
+            )
+
         # Pattern backfill queue drain (daily 3 AM ET, off market hours). Gated on
         # enable_scans like the other jobs — it spends Gemini quota, so a paused
         # scheduler must not keep draining. Only scheduled when the analog engine
@@ -158,6 +224,7 @@ class PipelineScheduler:
             + (1 if enable_scans else 0)  # shadow_returns
             + (1 if pattern_backfill else 0)
             + (1 if strategy_lab_shadow else 0)
+            + (3 if strategy_lab_paper else 0)
             + len(portfolio_jobs)
         )
         log.info(
@@ -172,6 +239,11 @@ class PipelineScheduler:
             shadow_returns="03:30 ET" if enable_scans else "disabled",
             pattern_backfill="03:00 ET" if pattern_backfill else "disabled",
             strategy_lab_maturation="04:15 ET" if strategy_lab_shadow else "disabled",
+            strategy_lab_execution_jobs=(
+                "resume */30m, expire hourly, reconcile 16:45 ET"
+                if strategy_lab_paper
+                else "disabled"
+            ),
             portfolio_sync=portfolio_jobs or "disabled",
             daily_restart=self._restart_time_str() or "disabled",
         )
@@ -338,6 +410,71 @@ class PipelineScheduler:
             log.info("strategy_lab_maturation_job", **summary.as_log_fields())
         except Exception as e:
             log.error("strategy_lab_maturation_job_failed", error=str(e)[:300])
+
+    # ── Strategy Lab execution jobs (Spec Q §12, PR 6) ───────────────────────
+
+    def _strategy_lab_adapters(self) -> dict:
+        """``venue -> adapter``, from the brokers the pipeline already built.
+
+        A *map*, not a broker: the arm's mode picks the venue and the venue picks
+        the adapter, so a paper arm reaches Alpaca paper whatever
+        ``EXECUTION_MODE`` or ``BROKER_PRIMARY`` say (Spec Q §12 invariant 11).
+        The live venue is registered only when the primary broker declares itself
+        as that venue; registering a router here would reintroduce exactly the
+        global-mode inference the invariant forbids.
+        """
+        from strategy_lab.execution import LIVE_VENUE, PAPER_VENUE
+
+        adapters: dict = {PAPER_VENUE: getattr(self.pipeline, "paper_broker", None)}
+        primary = getattr(self.pipeline, "primary_broker", None)
+        if str(getattr(primary, "venue", "") or "").strip().lower() == LIVE_VENUE:
+            adapters[LIVE_VENUE] = primary
+        return adapters
+
+    async def _run_strategy_lab_job(self, name: str, fn) -> None:
+        """Run one Strategy Lab execution job off the loop, and never propagate.
+
+        Re-checks the flags inside as well as at registration, so a flag turned
+        off without a restart stops the work rather than only the next schedule.
+        """
+        if not (
+            getattr(self.settings, "strategy_lab_enabled", False)
+            and getattr(self.settings, "strategy_lab_paper_enabled", False)
+        ):
+            return
+        try:
+            from orchestrator import strategy_lab_paper
+
+            adapters = self._strategy_lab_adapters()
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: fn(strategy_lab_paper, adapters)
+            )
+            log.info(f"{name}_job", result=_job_summary(result))
+        except Exception as e:
+            log.error(f"{name}_job_failed", error=str(e)[:300])
+
+    async def _run_strategy_lab_resume(self):
+        await self._run_strategy_lab_job(
+            "strategy_lab_resume",
+            lambda module, adapters: module.resume_executions(
+                self.settings, adapters=adapters
+            ),
+        )
+
+    async def _run_strategy_lab_expire(self):
+        await self._run_strategy_lab_job(
+            "strategy_lab_expire",
+            lambda module, adapters: module.expire_stale_approvals(
+                self.settings, adapters=adapters
+            ),
+        )
+
+    async def _run_strategy_lab_reconcile(self):
+        await self._run_strategy_lab_job(
+            "strategy_lab_reconcile",
+            lambda module, adapters: module.reconcile(self.settings, adapters=adapters),
+        )
 
     async def _notify_system(self, message: str):
         """Send an operator Telegram message; never let a notifier failure propagate."""
