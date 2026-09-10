@@ -82,16 +82,24 @@ LOW_FLOORS = metrics.EvidenceFloors(matured=5, distinct_dates=3, closed=5)
 
 @dataclass(frozen=True)
 class StubUncertainty:
-    """A deterministic interval, so a gate test is about the gate."""
+    """A deterministic interval, so a gate test is about the gate.
+
+    The interval widens with the confidence level, the way a percentile
+    bootstrap does — a *tighter* interval at a stricter level would be
+    nonsense, and the multiplicity tests below depend on the widening being
+    real. The 10x factor is chosen so that the Šidák step from one trial to
+    forty moves the bound by ~0.15 rather than ~0.02: a gate that turns on a
+    margin near the float epsilon is not being tested, it is being coin-flipped
+    (this fixture once sat on a one-ULP tie and passed on 3.11 while failing on
+    3.12).
+    """
 
     half_width: float = 0.2
     shift: float = 0.0
 
     def interval(self, series, event_dates, *, horizon, level):
         estimate = sum(series) / len(series)
-        # A tighter interval at a stricter (higher) level would be nonsense; the
-        # stub widens with the level the way a percentile bootstrap does.
-        width = self.half_width * (1.0 + (level - 0.9))
+        width = self.half_width * (1.0 + 10.0 * (level - 0.9))
         return metrics.Interval(
             estimate=estimate,
             lower=estimate - width + self.shift,
@@ -518,31 +526,47 @@ class RankingTests(unittest.TestCase):
         self.assertTrue(any("no uncertainty interval" in r for r in board.reasons))
 
     def test_more_trials_widen_the_adjustment_and_can_remove_a_winner(self):
-        """The multiple-testing denominator is not decoration."""
-        rows_few, by_arm = self._rows(
+        """The multiple-testing denominator is not decoration.
+
+        Leader +0.30 against a rival at +0.05, with a stub half-width of 0.15:
+
+        * 1 trial  -> level 0.900000, adjusted lower 0.150000, clearing the
+          rival's point estimate by +0.100;
+        * 40 trials -> level 0.997369, adjusted lower 0.0039458, missing it by
+          -0.046 while still sitting above zero.
+
+        So it is the *separation* gate that removes the winner, not the
+        exclude-zero one, and both margins are ~14 orders of magnitude above
+        float noise so the verdict cannot turn on the interpreter's rounding.
+        """
+        settings = dict(
             leader_net=0.30, rival_net=0.05,
-            uncertainty=StubUncertainty(half_width=0.25),
-            multiplicity=StubMultiplicity(), n_trials=1,
+            uncertainty=StubUncertainty(half_width=0.15),
+            multiplicity=StubMultiplicity(),
         )
+        rows_few, by_arm = self._rows(**settings, n_trials=1)
         few = metrics.rank_arms(
             rows_few, by_arm=by_arm, floors=LOW_FLOORS,
             multiplicity=StubMultiplicity(), n_trials=1,
         )
-        rows_many, _ = self._rows(
-            leader_net=0.30, rival_net=0.05,
-            uncertainty=StubUncertainty(half_width=0.25),
-            multiplicity=StubMultiplicity(), n_trials=40,
-        )
+        rows_many, _ = self._rows(**settings, n_trials=40)
         many = metrics.rank_arms(
             rows_many, by_arm=by_arm, floors=LOW_FLOORS,
             multiplicity=StubMultiplicity(), n_trials=40,
         )
+        self.assertAlmostEqual(rows_few[0].adjusted_lower, 0.15, places=6)
+        self.assertAlmostEqual(rows_many[0].adjusted_lower, 0.0039458, places=6)
         self.assertGreater(
             rows_few[0].adjusted_lower, rows_many[0].adjusted_lower,
             "40 trials must not produce a tighter bound than 1",
         )
-        self.assertIsNotNone(few.winner)
+        self.assertGreater(
+            rows_many[0].adjusted_lower, 0.0,
+            "the 40-trial bound still excludes zero; separation is what fails",
+        )
+        self.assertEqual(few.winner, "leader")
         self.assertIsNone(many.winner)
+        self.assertTrue(any("has not separated" in r for r in many.reasons))
 
     def test_a_scoreboard_ranks_one_evidence_class_at_a_time(self):
         clean = metrics.evaluate_arm(
