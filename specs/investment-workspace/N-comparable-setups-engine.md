@@ -808,3 +808,45 @@ Ratified 2026-09-10 from the evidenced-budget closure (Spec L §6.6, §8):
   out of the middle of the response assembly and took the whole answer with it,
   which made `depth='full'` on any day a universe member qualified an error
   rather than an answer.
+
+Ratified 2026-09-10 from the Sharadar direct-API port:
+
+- **The vendor host and payload envelope changed; every column mapping did
+  not.** `data/prices/sharadar.py` targeted Nasdaq Data Link's
+  `datatable.columns` + array-of-arrays shape before any sharadar.com key
+  existed to check it against. Recorded live (`tests/fixtures/sharadar_direct/`,
+  public `test-api-key`): the direct API's envelope is `{"count": N, "data":
+  [{...}, ...]}` — rows are already objects — but `stocks.close`/`closeunadj`,
+  `actions.action`/`value`, and `tickers.isdelisted`/`firstpricedate`/
+  `lastpricedate` behave exactly as this ruling's Phase 3p entry already
+  described: `close` is split-adjusted only, `closeunadj` is raw, and the raw
+  OHLC reconstruction `field × (closeunadj / close)` is unchanged. Confirmed
+  from the vendor's own schema DDL (`GET /schema/stocks`), not a search
+  extract this time.
+- **`tickers` needs `table=stocks` or it triples every row.** Querying without
+  a `table` filter returns one row per plan a ticker is sold under (`stocks`,
+  `fundamentals`, `insiders`), confirmed live against AAPL. This was not
+  something the pre-port adapter (written with no live access) could have
+  discovered; `security_master` now always sends `table=stocks`.
+  `sp500`'s `current`/`historical` snapshot-row shape was independently
+  confirmed the same way; the `added`/`removed` change-event action values
+  the adapter maps to a membership open/close remain unverified, because the
+  one free-sample ticker (AAPL) never left the index in the sample window.
+- **Auth moved from a query-string `api_key` to an `x-api-key` header.** Both
+  work per the vendor docs; the header keeps the key off the bulk endpoint's
+  redirect `Referer` and out of URL-based logging. This is a real adapter
+  behavior change, not just a shape fix, and the transport test that used to
+  assert the key's query-string position now asserts its header instead.
+- **Pagination has no cursor or total-count field.** `count` in the envelope
+  is `len(data)` for that page, confirmed by comparing a `limit=3` response
+  against `limit=3&offset=3`. Paging is offset-based, stopping on the first
+  page shorter than the requested `limit` — same rule the pre-port adapter
+  used for Nasdaq Data Link's cursor, adapted to a source with no cursor.
+- **Bulk (`years=`) could not be exercised against a live redirect.** The free
+  sample key 401s outright on the bulk path
+  (`error_401_bulk_no_key.json`) — not the free-tier 403 the slice path gives
+  for a name outside the sample. `SharadarPricePlane.bulk_download` and the
+  two `load_bulk_*` CSV parsers are therefore tested only against a stubbed
+  transport and a synthetic zip; the zip's internal member name is read
+  dynamically (the one `.csv` entry present) rather than hardcoded, since the
+  real filename is unverified.
