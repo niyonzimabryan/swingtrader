@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
 
@@ -70,6 +70,13 @@ from strategy_lab.domain import (
     canonical_json,
     naive_utc,
     require_transition,
+)
+from strategy_lab.execution import (
+    BLOCKING_EXECUTION_STATES,
+    RESERVING_EXECUTION_STATES,
+    ExecutionConflict,
+    holds_reservation,
+    redact,
 )
 from strategy_lab.validation import verify_manifest
 from utils.logger import get_logger
@@ -1112,3 +1119,181 @@ def snapshot_row(session, snapshot_id: int):
     if row is None:
         raise NotFound(f"market snapshot {snapshot_id} does not exist")
     return row
+
+
+# --------------------------------------------------------------------------- #
+# The Phase 5 half of executions: reuse-on-race, the reservation, the blockers
+# --------------------------------------------------------------------------- #
+#
+# PR 3 put `record_execution`, `set_execution_state` and `open_execution_for`
+# above; PR 5 adds the four functions the Spec Q §12 live path needs on top of
+# them, here rather than in a second module, because this file is the service
+# boundary — "everything that writes an experiment table goes through here" —
+# and a second writer is exactly how two workers end up with two placements.
+#
+# The *rules* they enforce live in `strategy_lab/execution.py`, which holds no
+# session and cannot read a setting (Spec Q §12 invariant 11). This module
+# imports those rules; the dependency never points the other way.
+
+
+def open_execution(
+    session,
+    arm_id: int,
+    decision_id: int,
+    *,
+    mode,
+    portfolio_context_hash: str = "",
+    **columns,
+):
+    """:func:`record_execution`, but a lost race returns the winner's row.
+
+    `record_execution` raises when the partial unique index refuses a second
+    non-terminal execution, which is right for the shadow runner: there, a
+    collision means a bug in the caller's loop and should be loud. The live path
+    wants the other half of Spec Q §12 invariant 6 — "retries and concurrent
+    workers **reuse** or reject the existing `execution_id`" — because a retried
+    owner approval must resolve to the one placement rather than fail.
+
+    So the insert runs inside a SAVEPOINT: losing the race rolls back only the
+    failed insert, never the caller's transaction, and the row the constraint
+    protected is returned instead. The database is the arbiter either way; this
+    only chooses what to do with its answer.
+
+    ``mode`` is checked against the arm rather than written from the argument.
+    An arm's mode is its identity (Spec Q §8), and the check exists so a caller
+    that thinks it is executing a paper arm cannot quietly open a live one.
+    """
+    arm = require_arm(session, arm_id)
+    mode = ExecutionMode(mode)
+    if ExecutionMode(arm.mode) is not mode:
+        raise ExecutionConflict(
+            "mode_mismatch",
+            f"arm {arm_id} runs in {arm.mode!r}; an execution was requested in "
+            f"{mode.value!r}. The arm carries the mode (Spec Q §8, §12 "
+            "invariant 11).",
+        )
+
+    existing = open_execution_for(session, decision_id)
+    if existing is not None and ExecutionMode(existing.mode) is not mode:
+        raise ExecutionConflict(
+            "open_execution_mode_conflict",
+            f"decision {decision_id} already has a non-terminal execution "
+            f"{existing.execution_id} in {existing.mode!r}; it cannot also run "
+            f"in {mode.value!r}.",
+        )
+
+    try:
+        with session.begin_nested():
+            return record_execution(
+                session,
+                arm_id,
+                decision_id,
+                portfolio_context_hash=portfolio_context_hash,
+                **columns,
+            )
+    except (StrategyLabError, IntegrityError):
+        winner = open_execution_for(session, decision_id)
+        if winner is None:
+            raise
+        log.info(
+            "strategy_execution_race_lost",
+            decision_id=int(decision_id),
+            winner=winner.execution_id,
+        )
+        return winner
+
+
+def advance_execution(session, execution_id: str, status, *, reason: str = "", now=None, **columns):
+    """:func:`set_execution_state` plus the lifecycle timestamps and the reason.
+
+    Idempotent: re-asserting the state a row is already in updates the supplied
+    columns and returns, which is how a retry behaves
+    (:func:`strategy_lab.domain.require_transition` allows the no-op move).
+
+    The reservation needs no bookkeeping here. Release *is* the terminal
+    transition — see :data:`strategy_lab.execution.RESERVING_EXECUTION_STATES` —
+    and a terminal state has no outgoing edge, so it happens once. What this
+    does log is the release, so an audit can see where a notional went back.
+    """
+    moment = now or utcnow_naive()
+    row = execution_row(session, execution_id)
+    was = ExecutionState(row.status)
+    target = ExecutionState(status)
+
+    if reason:
+        columns.setdefault("blocked_reason", reason[:80])
+    if target is not was:
+        stamp = {
+            ExecutionState.OWNER_APPROVED: "approved_at",
+            ExecutionState.SUBMITTED: "submitted_at",
+            ExecutionState.FILLED: "filled_at",
+            ExecutionState.PARTIALLY_FILLED: "filled_at",
+            ExecutionState.CLOSED: "closed_at",
+        }.get(target)
+        if stamp and getattr(row, stamp, None) is None:
+            columns.setdefault(stamp, moment)
+
+    row = set_execution_state(session, execution_id, target, **columns)
+    if target is not was and target in TERMINAL_EXECUTION_STATES and holds_reservation(was):
+        log.info(
+            "strategy_reservation_released",
+            **redact({
+                "execution_id": execution_id,
+                "notional": float(row.notional or 0.0),
+                "state": target.value,
+                "reason": reason,
+            }),
+        )
+    return row
+
+
+def reserved_notional(session, *, mode, on_date=None) -> float:
+    """Notional this mode currently holds reserved, optionally for one day.
+
+    Counted from the status column, so an approval racing another one cannot
+    overspend the cap: the first to reach ``risk_reserved`` is visible to the
+    second the moment its transaction commits (Spec Q §12 invariant 6).
+    """
+    mode = ExecutionMode(mode).value
+    query = (
+        session.query(models.StrategyTrade)
+        .filter(models.StrategyTrade.mode == mode)
+        .filter(
+            models.StrategyTrade.status.in_(
+                [state.value for state in RESERVING_EXECUTION_STATES]
+            )
+        )
+    )
+    if on_date is not None:
+        start = datetime(on_date.year, on_date.month, on_date.day)
+        query = query.filter(
+            models.StrategyTrade.created_at >= start,
+            models.StrategyTrade.created_at < start + timedelta(days=1),
+        )
+    return sum(float(row.notional or 0.0) for row in query.all())
+
+
+def blocking_executions(session):
+    """Executions whose state blocks every further live entry, newest first."""
+    return (
+        session.query(models.StrategyTrade)
+        .filter(
+            models.StrategyTrade.status.in_(
+                [state.value for state in BLOCKING_EXECUTION_STATES]
+            )
+        )
+        .order_by(models.StrategyTrade.id.desc())
+        .all()
+    )
+
+
+def resumable_executions(session, *, mode=None):
+    """Non-terminal executions, oldest first — what a restart has to resolve."""
+    query = session.query(models.StrategyTrade).filter(
+        ~models.StrategyTrade.status.in_(
+            [state.value for state in TERMINAL_EXECUTION_STATES]
+        )
+    )
+    if mode is not None:
+        query = query.filter(models.StrategyTrade.mode == ExecutionMode(mode).value)
+    return query.order_by(models.StrategyTrade.id.asc()).all()

@@ -293,3 +293,46 @@ Robinhood adapter's request **shape** (`stop_market`, `gtc`, `regular_hours`,
 whole shares, `ref_id`) is asserted against the real adapter's own builder, and
 `read_open_orders` normalization against the recorded fixtures — but no assertion
 here has ever touched the live Robinhood server. That is §6's job.
+
+---
+
+## 8. Strategy Lab arms on this service (Phase 5, Spec Q §12)
+
+A Strategy Lab arm does not get its own execution path. It gets
+`execution/strategy_lifecycle.py`, which runs the pre-placement gates an arm
+needs and then calls the service documented above, with an observer attached.
+
+Three seams were added here for it, and all three are additive — with no
+observer injected, this service behaves exactly as Phase 6 shipped it:
+
+* **`observer`** — an optional `(event, proposal, detail) -> None`, notified
+  after the transaction that made each state change and before the next broker
+  call. Its exceptions are swallowed and logged, for the same reason
+  `_journal_fill` swallows its own: the position is real either way, and an
+  exception there would abandon a fill mid-protection to report a bookkeeping
+  problem.
+* **`partially_filled` vs `filled`** — this service already protected
+  `filled_quantity` rather than the requested size, so nothing about what is
+  placed changed. The distinction is reported so the §12 machine can resize
+  protection when the remainder fills later.
+* **`live_gate_refusal(settings)`** — the live-flag conjunction, extracted from
+  `_require_live_gates` so Phase 5 can run the same one a step earlier, before a
+  live card is minted. Two copies of "what makes live legal" is the kind of
+  drift this path cannot afford.
+
+One defect was fixed rather than added to. `_reconcile_unknown` previously
+returned `None` when an ambiguous placement's `ref_id` **was** found at the
+broker, and the caller then marked the proposal `failed` — releasing its
+reservation and telling the owner nothing was placed, while a real order sat at
+the broker. It now records the found order id and lands in
+`reconciliation_required` either way, with a recovery line that says which case
+it is. No test covered that branch before, because no fake could produce an
+ambiguous placement; `FakeExecutionBroker.placement_unknown` and
+`phantom_ref_ids` now can.
+
+What is exercised against fakes only is unchanged and now larger: every Phase 5
+path in `tests/test_strategy_lab_execution.py` and
+`tests/test_strategy_lab_safety.py` runs against `FakeExecutionBroker`. Several
+of those tests turn `ALLOW_LIVE_TRADING` and `EXECUTION_MODE=live` on; every one
+of them is pointed at a fake, and §6's owner probe is still the only thing that
+will ever touch the live server.

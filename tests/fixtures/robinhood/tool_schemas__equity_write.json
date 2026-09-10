@@ -1,0 +1,57 @@
+{
+  "_note": [
+    "The three equity write tools' input schemas, reconstructed from the",
+    "2026-09-08 tools/list dump described in Spec L section 5.1 and from the",
+    "request builder in execution/brokers/robinhood.py. Like every other file",
+    "in this directory it is a recorded *shape*, not a byte-identical capture:",
+    "the live dump is not committed to this repository. It exists so that",
+    "RobinhoodMCPBroker.inspect_order_capabilities has something to check",
+    "without a network, and so that a future dump that disagrees with it",
+    "produces a visible diff rather than a silent one."
+  ],
+  "place_equity_order": {
+    "type": "object",
+    "properties": {
+      "account_number": {"type": "string"},
+      "symbol": {"type": "string"},
+      "side": {"type": "string", "enum": ["buy", "sell"]},
+      "type": {"type": "string", "enum": ["market", "limit", "stop_market", "stop_limit"]},
+      "time_in_force": {"type": "string", "enum": ["gfd", "gtc"], "default": "gfd"},
+      "market_hours": {
+        "type": "string",
+        "enum": ["regular_hours", "extended_hours", "all_day_hours"],
+        "default": "regular_hours"
+      },
+      "quantity": {"type": "string"},
+      "dollar_amount": {"type": "string"},
+      "limit_price": {"type": "string"},
+      "stop_price": {"type": "string"},
+      "ref_id": {"type": "string"},
+      "tax_lots": {"type": "array", "items": {"type": "object"}}
+    },
+    "required": ["account_number", "symbol", "side", "type"]
+  },
+  "review_equity_order": {
+    "type": "object",
+    "properties": {
+      "account_number": {"type": "string"},
+      "symbol": {"type": "string"},
+      "side": {"type": "string", "enum": ["buy", "sell"]},
+      "type": {"type": "string", "enum": ["market", "limit", "stop_market", "stop_limit"]},
+      "time_in_force": {"type": "string", "enum": ["gfd", "gtc"], "default": "gfd"},
+      "quantity": {"type": "string"},
+      "limit_price": {"type": "string"},
+      "stop_price": {"type": "string"}
+    },
+    "required": ["account_number", "symbol", "side", "type"]
+  },
+  "get_equity_orders": {
+    "type": "object",
+    "properties": {
+      "account_number": {"type": "string"},
+      "order_id": {"type": "string"},
+      "state": {"type": "string"}
+    },
+    "required": ["account_number"]
+  }
+}

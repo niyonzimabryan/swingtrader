@@ -18,6 +18,12 @@ Two things block a new entry, and they are separate on purpose:
     live entry is refused while any existing one is unprotected. This one is not
     a switch anybody threw; it is the system refusing to open a second position
     while the first is uninsured.
+:func:`blocking_executions`
+    the same rule over the Spec Q §12 machine: a Strategy Lab execution sitting
+    in ``protection_failed``, ``placement_unknown``, or
+    ``reconciliation_required``. Phase 5 extends the *reasons* this function
+    already returns rather than adding a second switch — one gate, three
+    reasons, one place to look.
 
 Neither cancels anything already at the broker. Cancelling a live order is a
 human decision made in the broker's own app, and code that "helpfully" flattened
@@ -29,7 +35,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from database.models import PROPOSAL_BLOCKING_STATUSES, ExecutionKillSwitch, Proposal
+from database.models import (
+    PROPOSAL_BLOCKING_STATUSES,
+    STRATEGY_TRADE_BLOCKING_STATUSES,
+    ExecutionKillSwitch,
+    Proposal,
+    StrategyTrade,
+)
 from utils.timeutils import utcnow_naive
 
 #: The single row's primary key. There is one switch.
@@ -37,6 +49,11 @@ SWITCH_ID = 1
 
 KILL_SWITCH_ENGAGED = "kill_switch_engaged"
 UNPROTECTED_POSITION = "unprotected_position_blocks_entries"
+#: The Strategy Lab half of the same rule (Spec Q §12 invariants 3 and 6). A
+#: separate code because the recovery is different — the row to look at is a
+#: `strategy_trades` execution, not a proposal — but the *same* gate, checked in
+#: the same place. A second switch would be a second thing to forget.
+UNRESOLVED_EXECUTION = "unresolved_execution_blocks_entries"
 
 
 @dataclass(frozen=True)
@@ -114,6 +131,37 @@ def blocking_proposals(session) -> list:
     )
 
 
+def blocking_executions(session) -> list:
+    """Strategy Lab executions whose state blocks every further entry.
+
+    Spec Q §12 invariant 3 ("a new live entry is refused when any existing live
+    trade is ``protection_pending``, ``protection_failed``, or
+    ``reconciliation_required``") and invariant 6's unknown case. Read here, on
+    the ledger side, so that one function answers "may an entry proceed" for
+    both the Phase 6 proposal path and the Phase 5 arm path.
+
+    Shadow executions are excluded. The shadow executor walks the same machine
+    against a simulator, so a simulated row could in principle reach a blocking
+    state — and a simulated position must never block real capital. Spec Q §12
+    invariant 3 is about existing *live* trades.
+
+    ``protection_pending`` is deliberately **not** in the blocking set: it is the
+    few seconds between a fill and its stop being read back, and a row that is
+    still inside its protection window has not failed yet. The window's own
+    deadline resolves it to ``protected`` or ``protection_failed``, and only the
+    latter blocks. A row stuck in ``protection_pending`` past its window is moved
+    to ``protection_failed`` by the resume/reconcile pass, which is what makes
+    that distinction safe rather than a loophole.
+    """
+    return (
+        session.query(StrategyTrade)
+        .filter(StrategyTrade.status.in_(STRATEGY_TRADE_BLOCKING_STATUSES))
+        .filter(StrategyTrade.mode != "shadow")
+        .order_by(StrategyTrade.id.desc())
+        .all()
+    )
+
+
 def entry_block(session) -> tuple[str, str] | None:
     """``(code, reason)`` when a new entry may not proceed, else ``None``.
 
@@ -140,5 +188,17 @@ def entry_block(session) -> tuple[str, str] | None:
             "protective stop could not be verified at the broker, so every "
             "further entry is blocked until it is resolved (Spec L §5.1, "
             "Spec Q §12 invariant 3).",
+        )
+
+    executions = blocking_executions(session)
+    if executions:
+        first = executions[0]
+        return (
+            UNRESOLVED_EXECUTION,
+            f"strategy execution {first.execution_id} (arm {first.arm_id}) is "
+            f"{first.status}: it is neither protected nor resolved, so every "
+            "further entry is blocked until it is (Spec Q §12 invariants 3 and "
+            "6). Resolve it with the reconciliation pass, or by confirming at "
+            "the broker that no order exists for its ref_id.",
         )
     return None

@@ -17,6 +17,24 @@ The assertions:
 * ``execution/lifecycle.py`` is *not* reachable from the workspace, and the bot
   handler that calls it is not either — the approval callback can be triggered
   only from the Telegram path, never from an MCP tool or a REST route.
+
+Phase 5 (Spec Q §12) adds a second caller of ``on_approval``:
+``execution/strategy_lifecycle.py``, which runs a Strategy Lab arm through this
+same service. That does not widen the boundary and the test below does not
+pretend otherwise — it *narrows* the claim to the one that actually matters and
+then asserts more of it. The property is not "one file calls this method"; it is
+"nothing an agent can reach calls this method". So:
+
+* a caller outside ``execution/`` must be the out-of-band Telegram handler and
+  nothing else — the exact-list assertion, unchanged in force;
+* a caller inside ``execution/`` is allowed, and is separately asserted to be
+  unreachable from the workspace closure, which is the same guarantee
+  ``execution/lifecycle.py`` itself relies on;
+* the workspace still may not so much as *name* ``on_approval``.
+
+A new file under ``execution/`` therefore cannot quietly become an agent-facing
+approval path: it would have to first appear in the workspace closure, and the
+closure assertion would fail.
 """
 
 from __future__ import annotations
@@ -110,14 +128,7 @@ class ExecutionServiceIsUnreachableTests(unittest.TestCase):
             "out-of-band channel (Spec L §6.1).",
         )
 
-    def test_only_the_bot_handler_calls_on_approval(self):
-        """`on_approval` is invoked from the Telegram handler, nowhere else.
-
-        A grep-level control on top of the import graph: even if some module
-        could import the service, only the bot's proposal handler and the wiring
-        in main.py may *call* the entry point into placement. No workspace or
-        REST module may.
-        """
+    def _on_approval_callers(self) -> list[str]:
         callers = []
         for path in sorted(REPO_ROOT.rglob("*.py")):
             rel = path.relative_to(REPO_ROOT)
@@ -128,13 +139,48 @@ class ExecutionServiceIsUnreachableTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             if ".on_approval(" in text:
                 callers.append(rel.as_posix())
+        return sorted(callers)
+
+    def test_only_the_bot_handler_calls_on_approval_from_outside_execution(self):
+        """Outside `execution/`, the Telegram handler is the only caller.
+
+        A grep-level control on top of the import graph: even if some module
+        could import the service, only the bot's proposal handler and the wiring
+        in main.py may *call* the entry point into placement. No workspace or
+        REST module may.
+        """
+        outside = [c for c in self._on_approval_callers() if not c.startswith("execution/")]
         self.assertEqual(
-            sorted(callers),
+            outside,
             ["bot/handlers/proposals.py"],
             "on_approval is called from somewhere other than the bot's "
             "out-of-band approval handler; the approval callback must not be "
             "reachable from an MCP tool or a REST route.",
         )
+
+    def test_every_execution_side_caller_is_unreachable_from_the_workspace(self):
+        """The other half, and the one that carries the guarantee.
+
+        A caller inside `execution/` is fine *because* the workspace cannot
+        import `execution/` at all — the same argument `execution/lifecycle.py`
+        rests on. Asserted here rather than assumed, so that a new file under
+        `execution/` cannot become an agent-facing approval path without this
+        failing first.
+        """
+        closure = _workspace_closure()
+        inside = [c for c in self._on_approval_callers() if c.startswith("execution/")]
+        self.assertNotEqual(inside, [], "the control is stale: no execution-side caller found")
+        for caller in inside:
+            module = caller[: -len(".py")].replace("/", ".")
+            with self.subTest(module):
+                self.assertNotIn(
+                    module,
+                    closure,
+                    f"{caller} calls on_approval and is reachable from the "
+                    "workspace surface; placement must be callable only from "
+                    "the out-of-band channel (Spec L §6.1).",
+                )
+        self.assertIn("execution/strategy_lifecycle.py", inside)
 
     def test_no_workspace_module_names_on_approval(self):
         """The workspace never even names the placement entry point."""

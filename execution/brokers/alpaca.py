@@ -8,6 +8,35 @@ from execution.brokers.base import (
     BrokerOrderReview,
     OpenOrder,
 )
+from execution.brokers.capabilities import BrokerCapabilities
+
+#: What the Alpaca *paper* venue can do, declared in the same shape Robinhood
+#: declares (Spec L §5, §5.3). Two entries deserve their reason:
+#:
+#: ``can_place_attached_stop=False`` — Alpaca's own API does offer brackets, but
+#: this adapter does not use one. The paper venue exists to rehearse the live
+#: state machine (fill, place a standalone gtc stop, read it back, only then
+#: `protected`), and an adapter that declared an attached stop would let a
+#: capability gate pass in paper that must fail in live.
+#:
+#: ``stops_whole_shares_only`` / ``stops_regular_hours_only`` — likewise
+#: mirrored: `place_stop` below asserts whole shares rather than rounding, so
+#: the declaration has to say so or the gate and the adapter would disagree.
+ALPACA_PAPER_CAPABILITIES = BrokerCapabilities(
+    can_read_positions=True,
+    can_read_orders=True,
+    can_read_cash=True,
+    can_place_equity_market=True,
+    can_place_equity_limit=True,
+    can_place_attached_stop=False,
+    can_place_standalone_gtc_stop=True,
+    can_place_bracket=False,
+    supports_fractional=False,
+    stops_regular_hours_only=True,
+    stops_whole_shares_only=True,
+    market_hours_only=True,
+    supports_specified_lot_sale=False,
+)
 
 
 class AlpacaBroker:
@@ -16,8 +45,24 @@ class AlpacaBroker:
     supports_order_review = False
     live_trading = False
 
+    #: The Strategy Lab venue this adapter *is* (Spec Q §11, §12 invariant 11).
+    #: Declared on the adapter so that `strategy_lab.execution.bind_adapter`
+    #: catches a mis-registration rather than trusting the key it was filed
+    #: under. A paper arm may reach only this one, whatever the
+    #: application-wide broker setting says.
+    venue = "alpaca_paper"
+
     def __init__(self, alpaca_client):
         self.client = alpaca_client
+
+    def capabilities(self) -> BrokerCapabilities:
+        """What this adapter declares it can do. Read before an order is formed.
+
+        Static rather than probed, for the same reason Robinhood's is: the only
+        way to discover a *placement* capability empirically is to place
+        something.
+        """
+        return ALPACA_PAPER_CAPABILITIES
 
     def get_account_info(self) -> dict:
         return self.client.get_account_info()

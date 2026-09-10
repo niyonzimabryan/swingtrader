@@ -47,14 +47,20 @@ SIMULATOR_ALLOWED = {"replay.py"}
 #: value objects (Spec Q §6, PR 2 requirement 1).
 SESSION_ALLOWED = {"registry.py", "snapshot_builder.py"}
 
-#: The pure modules: Phase 2's SDK plus Phase 3's `metrics.py`. Every one of
-#: them is pure — a strategy receives an immutable snapshot and returns
-#: decisions, a measurement receives observations and returns numbers, and a
-#: helper either reaches must be equally unable to open a session. Named
-#: explicitly, on top of the whole-package sweeps below, so that deleting one
-#: from the package is a visible test failure rather than a silently narrower
-#: guarantee.
+#: The pure modules: Phase 2's SDK, Phase 3's `metrics.py`, and Phase 5's
+#: `execution.py`. Every one of them is pure — a strategy receives an immutable
+#: snapshot and returns decisions, a measurement receives observations and
+#: returns numbers, and `execution.py` answers "which venue may this mode reach"
+#: from its arguments alone. That last one is the load-bearing case: Spec Q §12
+#: invariant 11 says execution mode is an explicit immutable input and never
+#: inferred from a global setting, so the module holding that rule is exactly the
+#: module that must not be able to read one. Its `strategy_trades` writes live in
+#: `registry.py` with every other write to that table. A helper any of them
+#: reaches must be equally unable to open a session. Named explicitly, on top of
+#: the whole-package sweeps below, so that deleting one from the package is a
+#: visible test failure rather than a silently narrower guarantee.
 PURE_SDK_MODULES = {
+    "execution.py",
     "execution_policy.py",
     "indicators.py",
     "metrics.py",
