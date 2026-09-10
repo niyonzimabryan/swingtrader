@@ -22,6 +22,7 @@ venv/
 # mirror them, and tests/test_agent_layer.py parses the committed copies.
 .claude/*
 !.claude/agents/
+!.claude/skills/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

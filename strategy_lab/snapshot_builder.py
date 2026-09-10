@@ -82,6 +82,18 @@ DEFAULT_SESSION_WINDOW = 253
 #: 8-K, short enough that two quarters cannot be spliced together.
 EARNINGS_LOOKBACK_DAYS = 105
 
+#: How far *before* a ``scored_candidates`` row a ``memos`` row may sit and
+#: still belong to the same scan. The pipeline generates the memo first and
+#: writes the ledger row afterwards (`orchestrator/pipeline.py`), so the memo of
+#: a scan always predates its ledger row by the seconds or minutes between the
+#: two writes; requiring the memo to come *after* would pair a scored row with
+#: nothing and abstain the compatibility arm on every real scan. Two hours is
+#: wider than any scan and far narrower than the gap between the three daily
+#: scans (07:00, 12:00 and 17:00 ET), so it cannot reach the previous scan's
+#: memo. There is no run id on `memos` to join on; when one exists this window
+#: should be replaced by that join rather than widened.
+MEMO_PAIRING_WINDOW = timedelta(hours=2)
+
 
 # --------------------------------------------------------------------------- #
 # Prices and membership
@@ -293,6 +305,21 @@ def _earnings_record(session, ticker: str, cutoff: datetime) -> snapshots.Earnin
 # --------------------------------------------------------------------------- #
 
 
+#: The scoring pipeline records a *view* — `bullish`, `bearish`, `neutral`
+#: (`tracking/shadow_ledger.py`, `scoring/engine.py`) — and the Strategy Lab
+#: records a *side*: `long`, `short`, or neither. Translating between the two
+#: vocabularies is this adapter's job, and doing it anywhere else would mean
+#: either a strategy that knows the pipeline's words or a ledger row rewritten
+#: to suit the lab. An unrecognised value is passed through unchanged so it
+#: reaches the decision as "not long" rather than as a guess.
+_PIPELINE_DIRECTIONS = {"bullish": "long", "bearish": "short"}
+
+
+def _direction(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    return _PIPELINE_DIRECTIONS.get(raw, raw)
+
+
 def _composite_result(
     session, ticker: str, cutoff: datetime
 ) -> snapshots.CompositeScoringResult | None:
@@ -303,6 +330,19 @@ def _composite_result(
     writes for *every* ticker that reaches scoring. The classification, trade
     parameters and signal breakdown come from the ``memos`` row when the
     pipeline produced one, because that is where the full trade plan lives.
+
+    The two rows are paired by time within :data:`MEMO_PAIRING_WINDOW`, because
+    `memos` carries no run id to join on and the pipeline writes the memo
+    *before* the ledger row. The window is named and bounded rather than open,
+    and the memo id it resolved to travels on ``model_provenance`` so a reader
+    can check the pairing.
+
+    ``direction`` is translated from the pipeline's vocabulary into the lab's by
+    :func:`_direction`: the ledger records `bullish`/`bearish`/`neutral` and a
+    ``StrategyDecision`` is about a side, so `bullish` becomes `long`. Without
+    that translation the compatibility arm never fires — it tests
+    ``direction == "long"`` and the pipeline never writes that word — and the
+    champion silently produces nothing but `flat`.
 
     ``portfolio_context_hash`` is a hash of the sizing context the scorer
     actually recorded — regime multiplier, conviction multiplier, volatility
@@ -328,7 +368,7 @@ def _composite_result(
         .where(
             models.Ticker.symbol == ticker,
             models.Memo.created_at <= cutoff,
-            models.Memo.created_at >= scored.scored_at,
+            models.Memo.created_at >= scored.scored_at - MEMO_PAIRING_WINDOW,
         )
         .order_by(models.Memo.created_at.desc(), models.Memo.id.desc())
         .limit(1)
@@ -353,7 +393,7 @@ def _composite_result(
         run_id=scored.run_id or "",
         final_score=float(scored.final_score or 0.0),
         classification=(memo.classification if memo is not None else "") or "",
-        direction=scored.direction or "",
+        direction=_direction(scored.direction),
         cohort=scored.cohort or "",
         memo_generated=bool(scored.memo_generated),
         signal_breakdown=signal_breakdown,

@@ -229,6 +229,62 @@ class Settings(BaseSettings):
     proposal_max_position_pct: float = 0.10
     proposal_max_sector_pct: float = 0.30
 
+    # --- Strategy Lab (Spec Q §14, PR 4) ---
+    # Two gates, both off. `strategy_lab_enabled` is the master switch: with it
+    # false nothing in `strategy_lab/` is imported by the pipeline, no scheduled
+    # job runs, and the owner-only Telegram commands answer "disabled" rather
+    # than reading a table. `strategy_lab_shadow_enabled` is the second gate on
+    # the one path that writes — the post-scan shadow hook. A tier above shadow
+    # needs its own flag *and* the safety services PR 5/PR 6 own; there is no
+    # paper or live flag here because nothing in this PR would read one, and a
+    # flag nothing reads is a flag nobody can trust.
+    strategy_lab_enabled: bool = False
+    strategy_lab_shadow_enabled: bool = False
+    # The pre-registered experiment the shadow arms run under. Its plan is a
+    # constant in `orchestrator/strategy_lab_shadow.py`, not a setting: Spec Q
+    # §8 freezes the question at registration, so changing the roster or the
+    # planned variant count means registering a *new* experiment name here, and
+    # re-registering this one with a different plan is refused.
+    strategy_lab_experiment: str = "shadow_roster_v1"
+    strategy_lab_experiment_owner: str = "bryan"
+    # Cross-sectional arms need `universe_membership` rows and a populated
+    # price plane, so the universe snapshot is its own opt-in even when shadow
+    # is on: building one is a 500-name read and is worthless while the price
+    # plane is empty (PRICE_PLANE_ENABLED).
+    strategy_lab_universe_enabled: bool = False
+    strategy_lab_universe_slug: str = "liquid_us_equity_v1"
+    # Hard cap on ticker snapshots built per scan, applied after the scan's own
+    # ordering. A scan that scored 400 names must not turn into 400 snapshot
+    # builds inside the same run.
+    strategy_lab_max_tickers_per_scan: int = 40
+    # The shadow book. Independent virtual budgets (Spec Q §11): these numbers
+    # never touch broker capital and exist so a percentage return and an R
+    # multiple are computable. Percentages are what the scorecard ranks on
+    # precisely because they do not depend on the virtual budget.
+    strategy_lab_shadow_equity: float = 100_000.0
+    strategy_lab_shadow_risk_budget: float = 0.01
+    strategy_lab_shadow_max_open_positions: int = 10
+    strategy_lab_shadow_max_position_fraction: float = 0.2
+    # Nightly maturation: how many (arm, snapshot) pairs one run may settle.
+    strategy_lab_maturation_max_snapshots: int = 200
+    # Explicit cost assumptions. `metrics.py` blocks an arm's return metrics
+    # outright when a matured trade has no cost model, which is the correct
+    # refusal — a zero-cost backtest is not a cheap one, it is a wrong one.
+    strategy_lab_slippage_bps: float = 10.0
+    strategy_lab_half_spread_bps: float = 5.0
+    strategy_lab_commission_bps: float = 0.0
+    # Evidence floors (Spec Q §10 operational minimums) printed beside every
+    # number the scoreboard shows.
+    strategy_lab_floor_matured: int = 100
+    strategy_lab_floor_distinct_dates: int = 20
+    strategy_lab_floor_closed: int = 30
+    strategy_lab_confidence_level: float = 0.90
+    # Bootstrap replications and seed for the operator-facing scorecard. Lower
+    # than the CLI's default because a Telegram card is read in seconds; the
+    # seed is printed so the same card is reproducible from the CLI.
+    strategy_lab_report_bootstrap_reps: int = 1000
+    strategy_lab_report_seed: int = 20260910
+
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
     scoring_model: str = "claude-opus-4-6"
