@@ -63,6 +63,11 @@ N_SESSIONS = 420
 N_GAP_DATES = 26
 NAMES_PER_GAP = 3
 
+#: How many sessions an optional post-gap drift runs for. Inside the execution
+#: policy's 14-calendar-day cap, so the drift is something the simulated trade
+#: could actually have captured rather than something it would have timed out of.
+FOLLOWTHROUGH_SESSIONS = 10
+
 #: The delisted and merged names, by index.
 DELISTED_INDEX = 27
 MERGED_INDEX = 28
@@ -130,12 +135,28 @@ def session_close_utc(day: date) -> datetime:
 # --------------------------------------------------------------------------- #
 
 
-def _paths(sessions: list[date]) -> tuple[dict[str, list[float]], list[date]]:
+def _paths(
+    sessions: list[date],
+    *,
+    gap_followthrough: float = 0.0,
+    followthrough_sessions: int = FOLLOWTHROUGH_SESSIONS,
+) -> tuple[dict[str, list[float]], list[date]]:
     """A deterministic close path per security, with gaps injected on schedule.
 
     Upward drift, because `gap_and_go_v1` requires the close to sit above its
     50-session average and a fixture that never satisfies its own setup tests
     only the refusal path.
+
+    `gap_followthrough` adds that much extra daily return for
+    `followthrough_sessions` after each injected gap, so a cohort built on this
+    world has a **positive policy-simulated net return whose lower 90% bound
+    excludes zero** — the one shape Spec L §6.6 calls evidenced, and therefore
+    the shape an end-to-end evidenced test needs to exist somewhere.
+
+    It defaults to `0.0`, and at `0.0` the arithmetic is a `+ 0.0` on a finite
+    float: every bar in every other test's world is byte-identical to what it
+    was, and no draw moves in the PRNG sequence. That is the point of adding a
+    term rather than a branch.
     """
     rng = random.Random(20260909)
     n = len(sessions)
@@ -155,12 +176,15 @@ def _paths(sessions: list[date]) -> tuple[dict[str, list[float]], list[date]]:
             gi for k, gi in enumerate(gap_indices)
             if (k + index) % N_SECURITIES < NAMES_PER_GAP
         }
+        boost_until = -1
         for i in range(n):
             if i in gapping:
                 open_ = level * 1.05
+                boost_until = i + followthrough_sessions
             else:
                 open_ = level * (1.0 + rng.uniform(-0.002, 0.002))
-            close = open_ * (1.0 + 0.0016 + rng.uniform(-0.006, 0.006))
+            boost = gap_followthrough if i <= boost_until else 0.0
+            close = open_ * (1.0 + 0.0016 + rng.uniform(-0.006, 0.006) + boost)
             o.append(round(open_, 4))
             c.append(round(close, 4))
             level = close
@@ -212,8 +236,9 @@ def _bar(uid: str, ticker: str, day: date, open_: float, close: float,
 
 
 def seed_prices(session, *, sessions: list[date], delisting_date: date,
-                merger_date: date) -> tuple[dict, list[date]]:
-    paths, gap_sessions = _paths(sessions)
+                merger_date: date,
+                gap_followthrough: float = 0.0) -> tuple[dict, list[date]]:
+    paths, gap_sessions = _paths(sessions, gap_followthrough=gap_followthrough)
     opens, closes = paths["open"], paths["close"]
 
     securities: list[SecurityMasterRow] = []
@@ -463,6 +488,7 @@ def seed_world(
     with_filings: bool = True,
     with_share_counts: bool = True,
     snapshot_slug: str = SNAPSHOT_SLUG,
+    gap_followthrough: float = 0.0,
 ) -> World:
     """Build the stored world and return the handles a test needs.
 
@@ -470,6 +496,11 @@ def seed_world(
     piece: no membership rows caps the tier (`test_universe_is_stored_not_computed`),
     no recorded audit caps it too (`test_delisting_audit_recorded`), and no share
     count refuses `market_cap_decile` (`test_market_cap_has_share_source`).
+
+    `gap_followthrough` is the one flag that adds something rather than removing
+    it: a real post-gap drift, so the evidenced half of Spec L §6.6 has a world
+    in which it can actually fire. `0.0` — the default every other test uses —
+    leaves the bars bit-for-bit as they were.
     """
     sessions = business_days(start, n_sessions)
     delisting_date = sessions[int(n_sessions * 0.72)]
@@ -477,7 +508,7 @@ def seed_world(
 
     _paths_unused, gap_sessions = seed_prices(
         session, sessions=sessions, delisting_date=delisting_date,
-        merger_date=merger_date,
+        merger_date=merger_date, gap_followthrough=gap_followthrough,
     )
     if with_universe:
         seed_universe(session, sessions)

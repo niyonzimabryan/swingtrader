@@ -81,9 +81,14 @@ Owner action (the cloud build environment cannot reach `data.sec.gov`):
 | `NASDAQ_DATA_LINK_API_KEY` | same | from the Sharadar "Prices" subscription |
 | `LIQUID_UNIVERSE_TOP_N`, `DELISTING_AUDIT_*` | same | defaults per `docs/PRICE_PLANE.md` |
 
-Owner actions: buy Sharadar Prices (confirm what "from $9" gates and the
+Owner actions: buy Sharadar Prices (**10-year tier, $19/month** — see `docs/vendors/sharadar.md`) (confirm what "from $19" gates and the
 redistribution terms), then `python -m scripts.audit_delisting_returns` before
 relying on any cohort, then `python -m scripts.price_backfill --source sharadar --since 2015-01-01`.
+
+**Adapter port pending.** `data/prices/sharadar.py` was written against Nasdaq
+Data Link; a sharadar.com key must go to `https://api.sharadar.com/v1.0`
+(`docs/vendors/sharadar.md`). Until the port lands, `PRICE_PLANE_SOURCE=sharadar`
+will fail with a 4xx from the wrong host. The port is tracked in the handoff.
 
 ## 7. Comparable setups (Phase 3c)
 

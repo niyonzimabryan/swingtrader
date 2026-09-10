@@ -6,37 +6,36 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-10 05:20 UTC, by the orchestrating session
+**Last updated:** 2026-09-10 05:35 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 
 ## 1. Where main is
 
 | | |
 |---|---|
-| `main` head | `0fe3cd5` (#59) |
+| `main` head | `fb0127c` (#60) |
 | Alembic head | `0010_merge_execution_lifecycle` (single) |
-| Tests | 1,461 on SQLite (3 Postgres-only skips), 1,469 in CI with `TEST_POSTGRES_URL` |
+| Tests | ~1,596 on SQLite (3 Postgres-only skips); CI adds 8 with `TEST_POSTGRES_URL` |
 | CI | `.github/workflows/ci.yml` — sqlite + postgres matrix, Python **3.12** |
 
 Merged, in order: Phase 0a/0b, 3a, 3b-core, 3p, 1, 2, 4, P, Strategy Lab 1 (#54),
 ENV_SETUP (#52), rulings (#55), **Phase 3c (#56), Phase 6 (#57), Strategy Lab 2
-(#58), rulings (#59)**.
+(#58), rulings (#59), handoff (#62), Strategy Lab 3 (#60)**.
 
 ## 2. What is in flight
 
 | PR / branch | What | Session | State |
 |---|---|---|---|
-| #60 `claude/strategy-lab-3-runner` | Strategy Lab 3: runner, replay, metrics, scoreboard CLI | `session_01UNdRVrZctC4BRu9opP2Uhn` | open; CI re-running after a gate-boundary test fix and the CI timeout raise (20→40 min) |
-| #61 `claude/evidenced-budget-closure` | 3c↔6 closure: `net_ci` on the policy leg, `subject_ticker`, gate reads the stored answer; migration `0011_comparable_subject_ticker`; also fixes a full-depth `compare_setups` crash | `session_01BefiFz4eSRyjHT3wUpxxgC` | open; CI running |
+| #61 `claude/evidenced-budget-closure` | 3c↔6 closure: `net_ci` on the policy leg, `subject_ticker`, gate reads the stored answer; migration `0011_comparable_subject_ticker`; also fixes a full-depth `compare_setups` crash | `session_01BefiFz4eSRyjHT3wUpxxgC` | open; SQLite CI + local 3.12 green; Postgres CI was cancelled at the old 20-min cap, re-running after main (40-min cap) was merged in |
+| `claude/strategy-lab-4-integration` | Strategy Lab 4: shadow hook, flags, owner-only Telegram | `session_018v2CF9dZuYupY7w6iXq3PV` (Opus) | building since 05:30Z |
 | `claude/strategy-lab-5-live-closure` | Strategy Lab 5: §12 execution state machine **on** Phase 6's `ExecutionService` | `session_01Gc5Z2SZAoLiUnssSjHLYrM` (Opus) | building since 05:13Z |
 | `claude/ci-test-speed` | shard the CI matrix, reuse schemas and MCP servers across tests | `session_01RN9ppgNtXgCHcMaKL1f4Td` (Sonnet) | building since 05:12Z |
 
 ## 3. What is left, in order
 
-1. Merge #61 (closure) and #60 (SL3) — disjoint files; either order.
-2. **Spawn Strategy Lab 4** from `main` once #60 is merged, with
-   `briefs/strategy-lab-4.md` verbatim (branch `claude/strategy-lab-4-integration`).
-3. Merge SL5 and the CI-speed PR when they open.
+1. Merge #61 (closure) once Postgres CI is green on its merged head.
+2. Merge SL4, SL5 and the CI-speed PR when they open (SL4 and SL5 both touch
+   `bot/` and possibly `config/settings.py` — union at merge).
 4. **Spawn Strategy Lab 6** once SL4 and SL5 are merged, with
    `briefs/strategy-lab-6.md` verbatim (branch `claude/strategy-lab-6-tournament`).
 5. Merge SL6. Then a docs PR: rulings from SL3–SL6 into Spec Q (add a "Rulings
@@ -44,7 +43,16 @@ ENV_SETUP (#52), rulings (#55), **Phase 3c (#56), Phase 6 (#57), Strategy Lab 2
    `specs/investment-workspace/strategy-lab/strategy-lab-architecture.md`, same
    shape as Spec N §12), and refresh `docs/ENV_SETUP.md` §10 (Strategy Lab
    flags) and the order-of-operations list.
-6. Write the owner summary (§7 below is the skeleton).
+6. **Port `data/prices/sharadar.py` to the direct API** (`docs/vendors/sharadar.md`):
+   base `https://api.sharadar.com/v1.0/data/{table}`, `x-api-key` header,
+   `ticker`/`from`/`to`/`fields`/`limit`/`offset`, tables `stocks` (SEP),
+   `actions`, `tickers`, `sp500`; keep the fixture path and every existing test;
+   record the real JSON shape from the owner's laptop
+   (`curl "https://api.sharadar.com/v1.0/data/stocks?api_key=test-api-key&ticker=AAPL&limit=3&format=json"`,
+   same for `actions` and `tickers`) into `tests/fixtures/sharadar_direct/`
+   before writing the parser — the build sandbox cannot reach sharadar.com.
+   Small enough for a Sonnet session.
+7. Write the owner summary (§7 below is the skeleton).
 
 Each spawn: Claude Code cloud session, model `claude-opus-5`, source
 `niyonzimabryan/swingtrader` @ `main`, outcome branch as named in the brief.
@@ -106,8 +114,9 @@ the brief and tell it the branch already carries N commits.
 
 ## 6. Gotchas learned tonight
 
-- Pushes from the orchestrating session do **not** trigger CI; pushes from
-  cloud child sessions do. Local validation is the gate for orchestrator pushes.
+- Pushes to a PR branch trigger the `pull_request` workflow whoever pushes
+  them (earlier note to the contrary was wrong); `workflow_dispatch` is also
+  enabled. Local validation on 3.12 stays the first gate.
 - The Postgres CI job was cancelled at exactly the 20-minute cap on #60; the
   cap is 40 now. The real fix is the CI-speed PR.
 - `pkill -f` with the test command string kills your own shell.
@@ -130,3 +139,5 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
 
 - 2026-09-10 05:20Z — created, after #56–#59 merged; #60/#61 open; SL5 and
   CI-speed building.
+- 2026-09-10 05:35Z — #62 (this file) and #60 merged; SL4 spawned; #61 waiting
+  on a Postgres CI run under the 40-minute cap.

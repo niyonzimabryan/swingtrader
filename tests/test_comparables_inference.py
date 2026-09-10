@@ -15,6 +15,7 @@ from comparables.inference import (
     iid_bootstrap_ci,
     method_of_moments_shrinkage,
     optimal_block_length_for,
+    overlapping_events_block,
     romano_wolf_stepm,
     shrinkage_for_family,
     sidak_adjusted,
@@ -111,6 +112,60 @@ class BlockBootstrapTests(unittest.TestCase):
         d_blocked = stationary_bootstrap_ci(disjoint, d_block.used, reps=2000, seed=SEED)
         d_naive = iid_bootstrap_ci(disjoint, reps=2000, seed=SEED)
         self.assertLess(d_blocked.width / d_naive.width, blocked.width / naive.width)
+
+
+class EventUnitBlockFloorTests(unittest.TestCase):
+    """The block floor for a series indexed by event rather than by session.
+
+    §6.1 floors the block at the horizon because one step of the calendar-time
+    series is one session, so `horizon` steps is exactly one event window. The
+    per-event policy-net series Spec L §6.6 sizes from is indexed by *event*,
+    where the same rule reads "the most events whose windows overlap".
+    """
+
+    def test_events_a_year_apart_are_independent_at_any_horizon(self):
+        yearly = [0, 252, 504, 756]
+        self.assertEqual(overlapping_events_block(yearly, horizon=20), 1)
+        self.assertEqual(overlapping_events_block(yearly, horizon=1), 1)
+
+    def test_a_clustered_cohort_says_so(self):
+        """Five names on one date, three on another: the floor is five."""
+        clustered = [10] * 5 + [11] * 3
+        self.assertEqual(overlapping_events_block(clustered, horizon=1), 5)
+        # At a horizon that spans both dates, all eight windows overlap.
+        self.assertEqual(overlapping_events_block(clustered, horizon=5), 8)
+
+    def test_the_window_is_half_open_at_the_horizon(self):
+        """An event exactly `horizon` sessions later does not overlap the first."""
+        self.assertEqual(overlapping_events_block([0, 10], horizon=10), 1)
+        self.assertEqual(overlapping_events_block([0, 9], horizon=10), 2)
+
+    def test_order_does_not_matter_and_the_floor_is_never_zero(self):
+        self.assertEqual(
+            overlapping_events_block([30, 0, 15], horizon=20),
+            overlapping_events_block([0, 15, 30], horizon=20),
+        )
+        self.assertEqual(overlapping_events_block([], horizon=20), 1)
+        self.assertEqual(overlapping_events_block([7], horizon=0), 1)
+
+    def test_it_feeds_the_estimator_as_a_floor_like_the_horizon_does(self):
+        """A cohort of independent events must not be blocked at the horizon.
+
+        With 40 events spread a year apart, a horizon floor of 20 would resample
+        them in blocks of 20 — half the cohort at a time — and call the result a
+        confidence interval. The event-unit floor is 1, so `arch`'s estimate is
+        what decides.
+        """
+        rng = np.random.default_rng(11)
+        nets = [float(v) for v in rng.normal(0.01, 0.05, 40)]
+        spread = [i * 252 for i in range(40)]
+
+        floor = overlapping_events_block(spread, horizon=20)
+        self.assertEqual(floor, 1)
+        event_units = optimal_block_length_for(nets, floor)
+        session_units = optimal_block_length_for(nets, 20)
+        self.assertLess(event_units.used, session_units.used)
+        self.assertEqual(session_units.used, 20)
 
 
 class EffectiveSampleSizeTests(unittest.TestCase):

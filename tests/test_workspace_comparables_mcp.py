@@ -243,6 +243,82 @@ class CompareSetupsTests(ComparableToolsTestCase):
         self.assertEqual(second["family_slug"], first["family_slug"])
         self.assertEqual(second["answer"]["trials_against_this_pattern"], 2)
 
+    def test_subject_ticker_is_recorded_on_the_query_and_the_answer(self):
+        """Spec L §6.6's "same ticker", over the wire (Spec N §4.0, §12).
+
+        A setup is a pattern and carries no name, so the ticker a question is
+        *about* is either recorded when the question is asked or it does not
+        exist. The engine runs that one name through the same qualification the
+        cohort members went through and stores the verdict beside the answer,
+        which is what makes an evidenced proposal checkable rather than
+        self-declared.
+        """
+        gap_day = self.world.gap_sessions[-1]
+        args = {
+            "setup": "gap_and_go_v1",
+            "parameters": {"horizons_sessions": [5, 10]},
+            "as_of": gap_day.isoformat(),
+            "depth": "quick",
+        }
+        qualifying = _payload(self.call(
+            "compare_setups", dict(args, subject_ticker="sy05")
+        ))
+        self.assertEqual(qualifying["subject"]["ticker"], "SY05",
+                         "the subject is normalised, not echoed")
+        self.assertTrue(qualifying["subject"]["qualifies"])
+        self.assertEqual(qualifying["subject"]["reason"], "qualified")
+        self.assertEqual(qualifying["subject"]["event_date"], gap_day.isoformat())
+
+        # A name that did not meet the conditions is a stored `false`, with the
+        # condition that failed named. It is a real answer about a pattern this
+        # name is not an instance of, not a refusal.
+        other = _payload(self.call("compare_setups", dict(args, subject_ticker="SY00")))
+        self.assertEqual(other["status"], qualifying["status"])
+        self.assertFalse(other["subject"]["qualifies"])
+        self.assertIn("condition_failed", other["subject"]["reason"])
+
+        # Two subjects, two stored answers and two citation ids over one set of
+        # statistics: an id that resolved to whichever subject was asked about
+        # last would re-point a citation already written into the journal.
+        self.assertNotEqual(qualifying["citation_id"], other["citation_id"])
+        self.assertEqual(qualifying["answer"], other["answer"])
+
+        # A question asked about no name at all says so, rather than defaulting.
+        anonymous = _payload(self.call("compare_setups", args))
+        self.assertIsNone(anonymous["subject"])
+        self.assertNotEqual(anonymous["citation_id"], qualifying["citation_id"])
+
+        from database.db import get_session
+
+        from comparables import citations, registry
+
+        with get_session() as session:
+            row = registry.query(session, qualifying["query_id"])
+            self.assertEqual(row.subject_ticker, "SY05")
+            self.assertTrue(row.subject_qualifies)
+            self.assertEqual(row.subject_event_date, gap_day)
+
+            resolved = citations.resolve(
+                session, qualifying["citation_id"], require_citable=False
+            )
+            self.assertEqual(resolved.subject_ticker, "SY05")
+            self.assertTrue(resolved.subject_qualifies)
+            self.assertEqual(resolved.citable_for, "SY05")
+            payload = citations.citation_payload(resolved)
+            self.assertEqual(payload["subject_ticker"], "SY05")
+            self.assertIs(payload["subject_qualifies"], True)
+
+            refused = citations.resolve(
+                session, other["citation_id"], require_citable=False
+            )
+            self.assertEqual(refused.subject_ticker, "SY00")
+            self.assertFalse(refused.subject_qualifies)
+            self.assertEqual(
+                refused.citable_for, "",
+                "an answer whose subject did not qualify backs no evidenced "
+                "proposal in that name",
+            )
+
     def test_an_unknown_setup_names_the_roster(self):
         result = self.call("compare_setups", {"setup": "not_a_setup_v1"})
         self.assertTrue(result.isError)
