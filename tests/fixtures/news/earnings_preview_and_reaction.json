@@ -1,0 +1,50 @@
+{
+ "news": [
+  {
+   "id": "preview-01",
+   "headline": "What to watch when Fictional Example Corp reports third-quarter results",
+   "summary": "Fictional Example Corp reports third-quarter results after the close on Tuesday. Investors will focus on commentary about the pending Placeholder Systems integration and on segment disclosure changes flagged at the last investor day.",
+   "content": "Fictional Example Corp reports third-quarter results after the close on Tuesday. Investors will focus on commentary about the pending Placeholder Systems integration and on segment disclosure changes flagged at the last investor day.",
+   "author": "",
+   "source": "Reuters",
+   "url": "https://example.invalid/preview-01",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-07-28T07:00:00Z",
+   "updated_at": "2026-07-28T07:00:00Z",
+   "images": []
+  },
+  {
+   "id": "flash-01",
+   "headline": "Fictional Example Corp Reports Third-Quarter Results",
+   "summary": "Fictional Example Corp reported adjusted earnings per share of $1.34 for the third quarter, with the industrial software unit expanding operating margin for a fourth consecutive period.",
+   "content": "Fictional Example Corp reported adjusted earnings per share of $1.34 for the third quarter, with the industrial software unit expanding operating margin for a fourth consecutive period.",
+   "author": "",
+   "source": "Business Wire",
+   "url": "https://example.invalid/flash-01",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-07-28T16:30:00Z",
+   "updated_at": "2026-07-28T16:30:00Z",
+   "images": []
+  },
+  {
+   "id": "reaction-01",
+   "headline": "Fictional Example Corp Reports Third-Quarter Results, Tops Estimates",
+   "summary": "Fictional Example Corp reported adjusted earnings per share of $1.34 for the third quarter, with the industrial software unit expanding operating margin for a fourth consecutive period. The company beat the $1.23 consensus estimate.",
+   "content": "Fictional Example Corp reported adjusted earnings per share of $1.34 for the third quarter, with the industrial software unit expanding operating margin for a fourth consecutive period. The company beat the $1.23 consensus estimate.",
+   "author": "",
+   "source": "Bloomberg",
+   "url": "https://example.invalid/reaction-01",
+   "symbols": [
+    "FCTX"
+   ],
+   "created_at": "2026-07-28T16:45:00Z",
+   "updated_at": "2026-07-28T16:45:00Z",
+   "images": []
+  }
+ ],
+ "next_page_token": null
+}

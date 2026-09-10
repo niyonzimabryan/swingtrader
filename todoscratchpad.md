@@ -669,7 +669,23 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
       **Needs Bryan (owner actions, not done):** provision Postgres, set
       `DATABASE_URL` + `DATA_DIR`, run the migration, create the second Railway
       service. Runbook: `docs/POSTGRES_CUTOVER_RUNBOOK.md`. Blocks Phases 1, 2, 4.
-- [ ] **Phase 1 — portfolio ledger + read-only tool surface** (`L`, `K` §4)
+- [ ] **Phase 1 — portfolio ledger + read-only tool surface** (`L`, `K` §4) — code
+      landed on `claude/phase-1-portfolio-ledger`: the seven Spec L §3 tables in
+      `0004_portfolio_ledger`, the append-only sync with its three failure
+      policies (never zero on error, fail closed above 50% deletion, reconcile
+      and page), the `BrokerCapabilities` contract + fake broker + contract
+      tests, the freshness/provenance split (reads flag, proposal paths refuse),
+      the wash-sale window flag, T+1 settlement on the cash Agentic account,
+      reconstructed-and-flagged dividends, and `portfolio_overview` /
+      `position_detail` / `orders_open` on the workspace service at scope
+      `read`. `PORTFOLIO_SYNC_ENABLED=false`. Docs: `docs/PORTFOLIO_LEDGER.md`,
+      `docs/ROBINHOOD_INTEGRATION_PLAN.md`.
+      **Needs Bryan (owner actions, not done):** run
+      `python -m scripts.record_robinhood_fixtures` on the desktop that holds the
+      token store (the committed fixtures are recorded-*shape*, not live), then
+      flip `PORTFOLIO_SYNC_ENABLED=true` on Railway to start the 30-day
+      unattended token-refresh log. The `gtc` `stop_market` protection probe
+      stays closed until Phase 6.
 - [ ] **Phase 2 — research workspace: dossiers, theses, invalidators, git mirror** (`M`)
 - [x] **Independent plan review folded in — v0.4 (2026-09-06)** — 11 should-fixes, 2 cuts
       taken; README §11 changelog. Sizing default for uncited proposals (half cap,
@@ -763,6 +779,20 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
 - [ ] **Phase 4 — evidence planes: filings (13F/13D/G/Form 4), vintage-correct macro,
       timestamped news** (`O`)
 - [ ] **Phase 5 — Strategy Lab** (`Q`) — ships on its own six-PR plan and prompts.
+      - [ ] **PR 1 — domain + experiment persistence** — in review on
+            `claude/strategy-lab-1-domain`: the eight remaining Spec Q §8 tables in
+            `0007_strategy_lab` (`source_observations` reused from Phase 3a, not
+            duplicated), `strategy_lab/domain.py` (frozen content-hashed
+            `StrategyVersion` / `ExperimentSpec` / `MarketSnapshot` /
+            `StrategyDecision`, the four lifecycles, the §12 execution vocabulary,
+            the promotion bindings) and `strategy_lab/registry.py` (immutability and
+            idempotency at the service boundary). Two partial unique indexes carry
+            the invariants the application cannot: one globally active live arm, one
+            non-terminal execution per decision — proven on SQLite and Postgres in
+            one run. No flag, no pipeline hook, no broker; `config` is not importable
+            from the package. Docs: `docs/STRATEGY_LAB.md`.
+            `STRATEGY_LAB_ENABLED` arrives with PR 4, which owns the flags and the
+            hook they gate.
 - [ ] **Phase 6 — order proposal→approval→execution** — gated on Phases 0–3 **and** on
       documenting whether Robinhood can place a protective exit that survives our
       process. Human-in-the-loop, not an autonomous goal run.

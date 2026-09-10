@@ -150,6 +150,42 @@ class Settings(BaseSettings):
     # resource metadata and nothing else changes.
     workspace_oauth_enabled: bool = False
 
+    # --- Research workspace (Spec M) ---
+    # Dossiers, theses, invalidators, the decision journal, and the Markdown
+    # mirror. Off by default: with the flag false the five research tools are
+    # not registered on the MCP surface at all (advertising a tool that
+    # refuses is worse than not advertising it), the daily invalidator check
+    # is a no-op, and the mirror script refuses to write.
+    research_workspace_enabled: bool = False
+    # Spec M §6: a dossier section older than this is marked `stale` in every
+    # response that includes it. Marked, never hidden.
+    research_section_stale_days: int = 90
+    # Spec M §5: where `scripts/sync_research_mirror.py` writes. Relative
+    # paths resolve against the repository root.
+    research_mirror_dir: str = "research"
+    # Spec M §6 small-n floors. A Brier score needs ten resolved theses; the
+    # calibration table needs forty, and uses three coarse buckets below a
+    # hundred. Below the floor the answer is `insufficient`, not a number.
+    research_brier_min_resolved: int = 10
+    research_calibration_min_resolved: int = 40
+    research_calibration_coarse_below: int = 100
+    # --- Portfolio ledger and broker sync (Spec L) ---
+    # Off by default, like every new capability. With the flag false the tables
+    # exist, the read tools answer from whatever is in them (nothing, at first,
+    # and they say so through `provenance.stale`), and no scheduled job runs.
+    portfolio_sync_enabled: bool = False
+    # Spec L section 4: 60 minutes intraday. Past it every tool response carries
+    # stale=true, and any path feeding a proposal refuses rather than serves.
+    portfolio_freshness_budget_minutes: int = 60
+    # Hourly during market hours, plus one pre-market and one after the close.
+    portfolio_sync_interval_minutes: int = 60
+    portfolio_sync_pre_market_hour: int = 8
+    portfolio_sync_post_close_hour: int = 16
+    portfolio_sync_post_close_minute: int = 30
+    # Spec L section 4 failure policy: a sync that would drop more than this
+    # fraction of an account's known holdings writes nothing and pages.
+    portfolio_mass_deletion_threshold: float = 0.5
+
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
     scoring_model: str = "claude-opus-4-6"
@@ -312,6 +348,42 @@ class Settings(BaseSettings):
     sec_max_requests_per_second: float = 10.0
     sec_request_timeout_s: float = 30.0
     sec_max_retries: int = 4
+
+    # --- Spec O Phase 4: the three evidence planes ---
+    # All off by default. When false the plane's ingest refuses to run; reads
+    # of whatever is already stored are unaffected, because a table is not a
+    # capability.
+    plane_filings_enabled: bool = False
+    plane_macro_vintage_enabled: bool = False
+    plane_news_enabled: bool = False
+
+    # OpenFIGI — CUSIP -> FIGI -> ticker for ownership tables (Spec O section
+    # 3.2). Free. Without a key: 25 requests/minute, 10 jobs per request; with
+    # one: 25 requests per 6 seconds, 100 jobs (verification claim 15). The
+    # client picks the right pair from whether the key is set.
+    openfigi_api_key: str = ""
+    openfigi_timeout_s: float = 30.0
+
+    # Alpaca News (Benzinga-sourced) — the primary timestamped news source.
+    # Credentials are the existing ALPACA_API_KEY / ALPACA_SECRET_KEY.
+    # 200 requests/minute on the free market-data plan (verification claim 11,
+    # strong secondary); lower it if Alpaca starts returning 429.
+    alpaca_news_base_url: str = "https://data.alpaca.markets"
+    alpaca_news_requests_per_minute: int = 200
+    alpaca_news_timeout_s: float = 30.0
+
+    # Finnhub is the cross-check for the earliest-timestamp rule, not a
+    # primary. 60 requests/minute on the free tier.
+    finnhub_news_requests_per_minute: int = 60
+
+    # MinHash/LSH near-duplicate clustering (Spec O section 5.2). 128
+    # permutations at a Jaccard threshold of 0.6 over 5-word shingles of
+    # title-plus-lead. Changing any of these changes which stories merge, so
+    # they are settings rather than literals — but they are *not* per-run
+    # knobs: a cluster id is only comparable across runs at fixed parameters.
+    news_minhash_permutations: int = 128
+    news_cluster_jaccard_threshold: float = 0.5
+    news_shingle_size: int = 5
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

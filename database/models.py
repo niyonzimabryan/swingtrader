@@ -3,11 +3,26 @@ from datetime import date
 from utils.timeutils import utcnow_naive
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, Text, Date,
-    ForeignKey, Enum, UniqueConstraint, Index, create_engine
+    CheckConstraint, ForeignKey, Enum, UniqueConstraint, Index, create_engine, text
 )
 from sqlalchemy.orm import declarative_base, relationship
 
 from database.types import UtcDateTime
+
+# Persistence depends on the Strategy Lab domain vocabulary, never the other
+# way round: `strategy_lab/domain.py` is pure stdlib and imports nothing from
+# this package (Spec Q §5, `tests/test_strategy_lab_import_graph.py`).
+from strategy_lab.domain import (
+    ArmStatus,
+    DecisionAction,
+    ExecutionMode,
+    ExecutionState,
+    ExperimentStatus,
+    PromotionKind,
+    SnapshotScope,
+    StrategyVersionStatus,
+    TERMINAL_EXECUTION_STATES,
+)
 
 Base = declarative_base()
 
@@ -962,6 +977,1304 @@ class SourceObservation(Base):
         except (ValueError, TypeError):
             return []
         return loaded if isinstance(loaded, list) else []
+
+
+class EntityHistory(Base):
+    """CIK ↔ ticker ↔ name, **with the date range each mapping applied to**.
+
+    Spec O section 3.2. EDGAR's ``company_tickers.json`` and the ``tickers``
+    array on a ``submissions`` document are *current* snapshots. Tickers get
+    reused and companies rename, so a snapshot joined to a 2019 event resolves
+    to whoever holds the symbol today — silently, and in whichever direction
+    the reuse happened.
+
+    This table is not foldable into ``source_observations``: an observation
+    carries one ``valid_at`` instant, and what resolution needs is a half-open
+    *interval* (``valid_from`` <= t < ``valid_to``) that can be closed later
+    when a change is observed. A range is a different shape from a point, and
+    faking it with two rows makes every read a self-join.
+
+    ``basis`` records how the interval was obtained, because the two sources
+    are not equally good:
+
+    ``submissions_former_names``
+        EDGAR states the ``from``/``to`` dates itself. A real dated range.
+    ``snapshot_observed``
+        We saw this value in a snapshot on this date and a different one in a
+        later snapshot. The range is bounded by *our observations*, so its
+        ``valid_from`` is an upper bound on when the mapping actually started.
+        ``valid_from_is_first_observation`` says so, and a resolver asked about
+        a date before it answers ``None`` rather than guessing.
+    """
+
+    __tablename__ = "entity_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "entity_cik", "attribute", "value", "valid_from",
+            name="uq_entity_history_interval",
+        ),
+        Index("ix_entity_history_cik_attr", "entity_cik", "attribute", "valid_from"),
+        Index("ix_entity_history_value", "attribute", "value", "valid_from"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_cik = Column(String(10), nullable=False)
+    #: ``ticker`` | ``name``
+    attribute = Column(String(20), nullable=False)
+    value = Column(String(200), nullable=False)
+    #: Half-open: valid_from <= t < valid_to. ``valid_to`` NULL means "still".
+    valid_from = Column(Date, nullable=False)
+    valid_to = Column(Date, nullable=True)
+    valid_from_is_first_observation = Column(Boolean, nullable=False, default=False)
+    basis = Column(String(40), nullable=False)
+    exchange = Column(String(40), nullable=True)
+    source = Column(String(60), nullable=False)
+    source_url = Column(Text, nullable=False, default="")
+    known_at_utc = Column(UtcDateTime, nullable=False)
+    first_observed_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    last_observed_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    ingested_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class NewsCluster(Base):
+    """One *story*, however many outlets ran it — Spec O section 5.2.
+
+    The cluster's ``known_at_utc`` is the minimum publisher timestamp across
+    its members and applies to **the story event only**. A fact extracted from
+    one member carries that member's own timestamp (section 5.1); conflating
+    the two is how a number that first appeared in a 16:45 reaction piece
+    becomes available at the 07:00 preview's time.
+    """
+
+    __tablename__ = "news_clusters"
+    __table_args__ = (
+        UniqueConstraint("cluster_id", name="uq_news_cluster_id"),
+        Index("ix_news_cluster_known_at", "known_at_utc"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    #: Deterministic: the ``article_uid`` of the earliest-published member.
+    cluster_id = Column(String(64), nullable=False)
+    headline = Column(Text, nullable=False, default="")
+    #: Minimum publisher timestamp across members. NULL when no member has one.
+    known_at_utc = Column(UtcDateTime, nullable=True)
+    member_count = Column(Integer, nullable=False, default=0)
+    #: Fraction of this story's structured facts absent from the prior story
+    #: for the same symbols. Computed from extracted facts, never from a model.
+    novelty_score = Column(Float, nullable=True)
+    novelty_basis = Column(Text, nullable=False, default="{}")
+    symbols = Column(Text, nullable=False, default="[]")
+    replay_eligible = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+class NewsArticle(Base):
+    """One article, with its publisher timestamp and the tier it was found at.
+
+    **This table is the licence boundary.** Alpaca's market-data terms bar
+    sharing or publishing the data "or any derived products" (verification
+    claim 11), so article text and everything computed from it stays in
+    Postgres and never reaches the ``research/`` mirror. Keeping bodies in
+    their own table makes that rule checkable at the table level instead of by
+    filtering payloads out of a ledger that is otherwise mirror-eligible.
+
+    An article whose publication time cannot be established is stored with
+    ``replay_eligible=False`` — it is quarantined, not discarded, because
+    "we saw this and could not date it" is a fact worth keeping.
+    """
+
+    __tablename__ = "news_articles"
+    __table_args__ = (
+        UniqueConstraint("article_uid", name="uq_news_article_uid"),
+        Index("ix_news_article_cluster", "cluster_id"),
+        Index("ix_news_article_published", "published_at_utc"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    #: sha256 over (source, provider id | canonical url, revision hash).
+    article_uid = Column(String(64), nullable=False)
+    cluster_id = Column(String(64), nullable=True)
+    source = Column(String(40), nullable=False)
+    provider_id = Column(String(80), nullable=True)
+    publisher = Column(String(120), nullable=False, default="")
+    #: ``primary`` | ``established`` | ``aggregator`` | ``unattributed``
+    tier = Column(String(20), nullable=False)
+    canonical_url = Column(Text, nullable=False, default="")
+    url = Column(Text, nullable=False, default="")
+    headline = Column(Text, nullable=False, default="")
+    lead = Column(Text, nullable=False, default="")
+    body = Column(Text, nullable=False, default="")
+    symbols = Column(Text, nullable=False, default="[]")
+    published_at_utc = Column(UtcDateTime, nullable=True)
+    first_seen_at_utc = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    #: sha256 of the normalised body — a revision is a new row, not an update.
+    content_hash = Column(String(64), nullable=False)
+    revision_of_uid = Column(String(64), nullable=True)
+    replay_eligible = Column(Boolean, nullable=False, default=False)
+    provenance_class = Column(String(30), nullable=False)
+    quality_warnings = Column(Text, nullable=False, default="[]")
+    ingested_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    @property
+    def symbol_list(self) -> list:
+        try:
+            loaded = json.loads(self.symbols or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
+# ---------------------------------------------------------------------------
+# Portfolio ledger — Spec L §3 (Phase 1)
+#
+# Seven tables, no foreign key to any other phase's table, so the integration
+# merge revision stays a no-op join. `broker_orders.execution_id` links to
+# `strategy_trades.execution_id` (Spec Q, Phase 5) as a plain string for the
+# same reason: the column can be populated before the table it names exists.
+#
+# Every ledger table that a sync writes carries `sync_id` and is **append-only**:
+# a later sync inserts new rows and stamps `superseded_at` on the ones it
+# replaces. Nothing is updated in place and nothing is deleted, so "what did I
+# hold on date D" stays answerable (Spec L §3, `test_sync_is_append_only`).
+# ---------------------------------------------------------------------------
+
+#: `tax_lots.booking_method` / `brokerage_accounts.booking_method`. Vocabulary
+#: borrowed from beancount: STRICT means a sale must name its lots; NONE means
+#: the broker does not track lots at all.
+BOOKING_METHODS = ("STRICT", "FIFO", "LIFO", "AVERAGE", "NONE")
+
+#: `holdings.instrument_type`. Only `equity` is modelled for analysis; every
+#: other value is rendered as `unsupported_instrument_present` with its
+#: notional and is never omitted from an overview (Spec L §3).
+INSTRUMENT_TYPES = ("equity", "option", "crypto", "other")
+
+#: `brokerage_accounts.account_type`. The Robinhood Agentic account is `cash`
+#: by owner decision (Spec L §5.1), which is what makes T+1 settlement a
+#: modelled constraint rather than a footnote.
+ACCOUNT_TYPES = ("cash", "margin", "ira")
+
+
+class BrokerageAccount(Base):
+    """One account at one broker, and what the agent may do with it.
+
+    ``agent_placeable`` is the flag Spec L §5.1 requires: reads span every
+    account the Robinhood token can see, placement is confined to the Agentic
+    account, and a proposal that targets a read-only account must be created
+    ``risk_rejected`` with that reason rather than failing later at placement.
+    Nothing in this repository places an order in Phase 1; the column exists so
+    the refusal is a property of the data rather than of a code path.
+
+    ``capabilities_json`` is the adapter's declared
+    :class:`execution.brokers.capabilities.BrokerCapabilities`, recorded at the
+    daily probe. Callers check capabilities before intent (Spec L §5).
+    """
+
+    __tablename__ = "brokerage_accounts"
+    __table_args__ = (
+        UniqueConstraint("broker", "external_account_id", name="uq_brokerage_account"),
+        Index("ix_brokerage_accounts_enabled", "enabled"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    broker = Column(String(40), nullable=False)
+    # Stored masked (`****1234`). The full account number is a credential-like
+    # identifier and the ledger has no use for it: the sync matches on the
+    # masked form it also writes.
+    external_account_id = Column(String(64), nullable=False)
+    label = Column(String(100), nullable=False, default="")
+    account_type = Column(String(10), nullable=False, default="cash")
+    currency = Column(String(10), nullable=False, default="USD")
+    booking_method = Column(String(10), nullable=False, default="NONE")
+
+    agent_placeable = Column(Boolean, nullable=False, default=False)
+    enabled = Column(Boolean, nullable=False, default=False)
+
+    capabilities_json = Column(Text, nullable=False, default="{}")
+    capabilities_probed_at = Column(UtcDateTime, nullable=True)
+
+    last_sync_id = Column(String(36), nullable=True)
+    last_sync_at = Column(UtcDateTime, nullable=True)
+    last_sync_error = Column(Text, nullable=False, default="")
+    last_sync_error_at = Column(UtcDateTime, nullable=True)
+
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+    @property
+    def capabilities(self) -> dict:
+        try:
+            loaded = json.loads(self.capabilities_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+
+class Holding(Base):
+    """A position as one sync saw it. Point-in-time by append, never by update.
+
+    ``average_cost`` and ``cost_basis`` are **null when the broker does not
+    supply them**, and null means *unknown*. No consumer may read a null basis
+    as zero (`test_unknown_basis_is_null_not_zero`); the helpers in
+    ``portfolio/guards.py`` raise instead.
+
+    A non-equity position is stored here too, with ``instrument_type`` set and
+    ``notional`` carrying its exposure. A portfolio view that silently omits a
+    short put is the worst failure this table has, so options are stored and
+    surfaced as a warning rather than filtered out.
+    """
+
+    __tablename__ = "holdings"
+    __table_args__ = (
+        Index("ix_holdings_account_symbol_asof", "account_id", "symbol", "as_of_utc"),
+        Index("ix_holdings_sync", "sync_id"),
+        Index("ix_holdings_current", "account_id", "superseded_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sync_id = Column(String(36), nullable=False)
+    account_id = Column(Integer, ForeignKey("brokerage_accounts.id"), nullable=False)
+
+    symbol = Column(String(32), nullable=False)
+    instrument_type = Column(String(16), nullable=False, default="equity")
+    # Option/crypto leg detail: strike, expiry, right, multiplier. Free-form
+    # because the ledger does not model them yet and inventing columns for a
+    # model that does not exist would be worse than carrying the payload.
+    instrument_detail_json = Column(Text, nullable=False, default="{}")
+
+    quantity = Column(Float, nullable=False, default=0.0)
+    average_cost = Column(Float, nullable=True)
+    cost_basis = Column(Float, nullable=True)
+    last_price = Column(Float, nullable=True)
+    market_value = Column(Float, nullable=True)
+    # Signed exposure for anything that is not a plain long equity position.
+    notional = Column(Float, nullable=True)
+    currency = Column(String(10), nullable=False, default="USD")
+
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    source = Column(String(60), nullable=False, default="")
+    superseded_at = Column(UtcDateTime, nullable=True)
+    superseded_by_sync_id = Column(String(36), nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    @property
+    def instrument_detail(self) -> dict:
+        try:
+            loaded = json.loads(self.instrument_detail_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+
+class TaxLot(Base):
+    """An open lot as the broker reports it, where the broker reports lots.
+
+    ``cost_basis`` null means the broker did not expose it. ``booking_method``
+    records how a sale from this account books, so a ledger row says which
+    method produced a realised figure instead of leaving it to be inferred.
+    Basis here is informational: this system does not compute taxes.
+    """
+
+    __tablename__ = "tax_lots"
+    __table_args__ = (
+        Index("ix_tax_lots_account_symbol", "account_id", "symbol"),
+        Index("ix_tax_lots_sync", "sync_id"),
+        Index("ix_tax_lots_current", "account_id", "superseded_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sync_id = Column(String(36), nullable=False)
+    account_id = Column(Integer, ForeignKey("brokerage_accounts.id"), nullable=False)
+
+    symbol = Column(String(32), nullable=False)
+    broker_lot_id = Column(String(64), nullable=True)
+    open_date = Column(Date, nullable=True)
+    quantity = Column(Float, nullable=False, default=0.0)
+    cost_basis = Column(Float, nullable=True)
+    # `short` / `long` / `unknown` — never guessed from open_date when the
+    # broker is silent, because the holding-period rules have exceptions this
+    # ledger does not model.
+    term = Column(String(10), nullable=False, default="unknown")
+    booking_method = Column(String(10), nullable=False, default="NONE")
+
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    source = Column(String(60), nullable=False, default="")
+    superseded_at = Column(UtcDateTime, nullable=True)
+    superseded_by_sync_id = Column(String(36), nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class CashBalance(Base):
+    """Settled versus unsettled cash, and what is redeployable when.
+
+    The Agentic account is a cash account (Spec L §5.1): proceeds from a Monday
+    close are not redeployable until Tuesday. ``pending_settlements_json`` is a
+    list of ``{"amount": float, "settles_on": "YYYY-MM-DD", "source": str}``
+    so a proposal that would need T+1 proceeds can be refused *with the
+    settlement date*, which is the part that makes the refusal actionable.
+    """
+
+    __tablename__ = "cash_balances"
+    __table_args__ = (
+        Index("ix_cash_balances_account_asof", "account_id", "as_of_utc"),
+        Index("ix_cash_balances_sync", "sync_id"),
+        Index("ix_cash_balances_current", "account_id", "superseded_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sync_id = Column(String(36), nullable=False)
+    account_id = Column(Integer, ForeignKey("brokerage_accounts.id"), nullable=False)
+
+    settled_cash = Column(Float, nullable=True)
+    unsettled_cash = Column(Float, nullable=True)
+    buying_power = Column(Float, nullable=True)
+    currency = Column(String(10), nullable=False, default="USD")
+    pending_settlements_json = Column(Text, nullable=False, default="[]")
+
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    source = Column(String(60), nullable=False, default="")
+    superseded_at = Column(UtcDateTime, nullable=True)
+    superseded_by_sync_id = Column(String(36), nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    @property
+    def pending_settlements(self) -> list:
+        try:
+            loaded = json.loads(self.pending_settlements_json or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
+
+
+class BrokerOrder(Base):
+    """Every order at the broker, whoever placed it.
+
+    ``origin`` is ``'external'`` for an order Bryan placed in the Robinhood app
+    — it appears here with a null ``execution_id``. ``origin='system'`` orders
+    carry the ``strategy_trades.execution_id`` that produced them. Phase 1
+    writes ``external`` rows only: nothing here places an order.
+
+    Not append-only. An order has a broker-side lifecycle (queued → filled) and
+    the row tracks it; the append-only rule is about *positions*, where the
+    history is the point.
+    """
+
+    __tablename__ = "broker_orders"
+    __table_args__ = (
+        UniqueConstraint("account_id", "broker_order_id", name="uq_broker_order"),
+        Index("ix_broker_orders_account_status", "account_id", "status"),
+        Index("ix_broker_orders_symbol", "symbol"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("brokerage_accounts.id"), nullable=False)
+    broker_order_id = Column(String(80), nullable=False)
+    # The client idempotency key the upstream deduplicates on (Spec L §5.1).
+    ref_id = Column(String(80), nullable=True)
+
+    symbol = Column(String(32), nullable=False)
+    side = Column(String(10), nullable=False, default="")
+    quantity = Column(Float, nullable=True)
+    order_type = Column(String(20), nullable=False, default="")
+    time_in_force = Column(String(10), nullable=False, default="")
+    limit_price = Column(Float, nullable=True)
+    stop_price = Column(Float, nullable=True)
+    status = Column(String(30), nullable=False, default="")
+
+    submitted_at = Column(UtcDateTime, nullable=True)
+    filled_at = Column(UtcDateTime, nullable=True)
+    filled_quantity = Column(Float, nullable=True)
+    average_fill_price = Column(Float, nullable=True)
+
+    #: `external` (placed in the broker's own app) or `system`.
+    origin = Column(String(20), nullable=False, default="external")
+    #: `strategy_trades.execution_id` (Spec Q, Phase 5). Deliberately not a
+    #: foreign key: cross-phase FKs make the integration merge non-trivial.
+    execution_id = Column(String(64), nullable=True)
+
+    sync_id = Column(String(36), nullable=False, default="")
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    source = Column(String(60), nullable=False, default="")
+    raw_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+class PortfolioSnapshot(Base):
+    """The daily rollup, plus the risk figures that sector codes cannot express.
+
+    Beta, realized volatility, and the **maximum and average pairwise**
+    correlation among the largest positions are computed deterministically from
+    stored daily returns — no vendor risk model and no model call. Every figure
+    carries the lookback and the ``n`` it was computed over, because six
+    "different" names at 0.8 pairwise correlation are one position and a figure
+    without its sample size cannot say so.
+
+    A statistic whose inputs are insufficient is stored **null with a reason**
+    in ``metrics_notes_json`` rather than computed from a short window.
+    """
+
+    __tablename__ = "portfolio_snapshots"
+    __table_args__ = (
+        UniqueConstraint("snapshot_date", name="uq_portfolio_snapshot_date"),
+        Index("ix_portfolio_snapshots_date", "snapshot_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_date = Column(Date, nullable=False)
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    sync_id = Column(String(36), nullable=False, default="")
+
+    total_value = Column(Float, nullable=True)
+    cash_total = Column(Float, nullable=True)
+    settled_cash = Column(Float, nullable=True)
+    unsettled_cash = Column(Float, nullable=True)
+    gross_exposure = Column(Float, nullable=True)
+    net_exposure = Column(Float, nullable=True)
+
+    sector_weights_json = Column(Text, nullable=False, default="{}")
+    name_weights_json = Column(Text, nullable=False, default="{}")
+    largest_positions_json = Column(Text, nullable=False, default="[]")
+    largest_position_weight = Column(Float, nullable=True)
+    concentration_hhi = Column(Float, nullable=True)
+
+    beta_60 = Column(Float, nullable=True)
+    beta_60_n = Column(Integer, nullable=True)
+    beta_250 = Column(Float, nullable=True)
+    beta_250_n = Column(Integer, nullable=True)
+    realized_volatility = Column(Float, nullable=True)
+    realized_volatility_n = Column(Integer, nullable=True)
+    max_pairwise_correlation = Column(Float, nullable=True)
+    avg_pairwise_correlation = Column(Float, nullable=True)
+    correlation_lookback_sessions = Column(Integer, nullable=True)
+    correlation_names = Column(Integer, nullable=True)
+    metrics_notes_json = Column(Text, nullable=False, default="{}")
+
+    #: Hash of the inputs the row was computed from, so a snapshot is
+    #: reproducible and a changed input is visible rather than silent.
+    inputs_hash = Column(String(64), nullable=False, default="")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class ExposureTag(Base):
+    """Exposure by narrative — ``ai-infra``, ``rate-sensitive``, ``china-revenue``.
+
+    Sourced from dossiers (Spec M, Phase 2) and attached by symbol rather than
+    by holding row: holdings are re-written every sync, and a tag that had to be
+    re-attached each hour would be a tag nobody trusted. ``retired_at`` retires
+    a tag without deleting the fact that it once applied.
+    """
+
+    __tablename__ = "exposure_tags"
+    __table_args__ = (
+        UniqueConstraint("symbol", "tag", "source", name="uq_exposure_tag"),
+        Index("ix_exposure_tags_tag", "tag"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(32), nullable=False)
+    tag = Column(String(60), nullable=False)
+    source = Column(String(60), nullable=False, default="manual")
+    #: Identifier of the dossier/thesis row the tag came from, when it came
+    #: from one. A plain string for the same cross-phase reason as above.
+    source_ref = Column(String(120), nullable=True)
+    note = Column(Text, nullable=False, default="")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    retired_at = Column(UtcDateTime, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Research workspace — Spec M §3
+#
+# Five tables: `dossiers` and its append-only `dossier_sections`, `theses` and
+# its `thesis_invalidators`, plus `decision_journal` and `research_questions`.
+# No foreign key leaves this group, so the Phase 1 integration merge revision
+# is a no-op join (migrations/README.md).
+# ---------------------------------------------------------------------------
+
+#: Spec M §3: draft -> active -> weakened -> invalidated -> closed.
+THESIS_STATUSES = ("draft", "active", "weakened", "invalidated", "closed")
+
+#: Spec M §4. The first four are machine-checkable; `qualitative` is not, and a
+#: thesis made of nothing but `qualitative` rows cannot reach `active`.
+INVALIDATOR_TYPES = (
+    "metric_threshold",
+    "price_level",
+    "event",
+    "time_decay",
+    "qualitative",
+)
+MACHINE_CHECKABLE_INVALIDATOR_TYPES = (
+    "metric_threshold",
+    "price_level",
+    "event",
+    "time_decay",
+)
+
+#: Spec M §3 `decision_journal`.
+DECISION_KINDS = ("opened", "added", "trimmed", "closed", "passed")
+
+#: Spec L §6.6: two budgets, recorded separately so "how do my judgment trades
+#: do versus my evidenced trades" is a query.
+DECISION_BUDGETS = ("evidenced", "discretionary")
+
+
+class Dossier(Base):
+    """One per ticker: structured metadata plus versioned sections (Spec M §3).
+
+    Everything narrative lives in :class:`DossierSection`, keyed by
+    ``section_key``, including the fields Spec M names as structured metadata
+    (business model, revenue drivers, key customers, competitive position,
+    capital structure). Only ``sector`` is a column: it is the one field that is
+    a filter rather than prose, and a section carries the sources and the
+    revision history that a scalar column would throw away.
+    """
+
+    __tablename__ = "dossiers"
+    __table_args__ = (
+        UniqueConstraint("ticker", name="uq_dossiers_ticker"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(20), nullable=False, index=True)
+    company_name = Column(String(200), nullable=False, default="")
+    sector = Column(String(100), nullable=False, default="")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class DossierSection(Base):
+    """Append-only dossier revisions (Spec M §3). Nothing is ever overwritten.
+
+    An update writes a new row whose ``supersedes_id`` points at the row it
+    replaces; the prior body stays readable, so "what did we believe in July" is
+    a query rather than an archaeology project.
+
+    ``unsourced`` is stored rather than derived so that "every surface that
+    renders this section renders the warning" is one column read, and so a
+    section written without sources cannot be laundered into a sourced one by a
+    later reader's interpretation of ``sources_json``.
+    """
+
+    __tablename__ = "dossier_sections"
+    __table_args__ = (
+        Index("ix_dossier_sections_current", "dossier_id", "section_key", "superseded"),
+        Index("ix_dossier_sections_created", "dossier_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dossier_id = Column(Integer, ForeignKey("dossiers.id"), nullable=False)
+    section_key = Column(String(80), nullable=False)
+    body_md = Column(Text, nullable=False, default="")
+    # A JSON list of {"url", "tier", "title", "as_of"} objects. Tier is the
+    # Spec K §3.3 / Spec P §5 vocabulary in research_workspace/trust.py.
+    sources_json = Column(Text, nullable=False, default="[]")
+    # "human" or a model id ("claude-opus-4-6"). `author_kind` is the coarse
+    # split Spec M §7 requires to be visibly distinct.
+    author = Column(String(120), nullable=False, default="human")
+    author_kind = Column(String(20), nullable=False, default="human")
+    unsourced = Column(Boolean, nullable=False, default=False)
+    # Spec P §5: set only by a human asserting authorship, and the only way a
+    # section whose sources are all untrusted-tier may be written.
+    human_authored = Column(Boolean, nullable=False, default=False)
+    supersedes_id = Column(Integer, ForeignKey("dossier_sections.id"), nullable=True)
+    # Denormalised "this row is not the current one for its key". Written when
+    # the successor is inserted; the row itself is never otherwise touched.
+    superseded = Column(Boolean, nullable=False, default=False)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    @property
+    def sources(self) -> list:
+        try:
+            loaded = json.loads(self.sources_json or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
+
+
+class Thesis(Base):
+    """What we believe, and what would prove it wrong (Spec M §3).
+
+    The two database checks are the parts that can be expressed in DDL on both
+    engines:
+
+    * a probability, when present, is a probability;
+    * ``active`` requires a stated probability, a ``resolution_at``, and a
+      non-zero ``machine_checkable_invalidators`` count.
+
+    The count is denormalised precisely so the second check can exist at all —
+    a CHECK constraint cannot count rows in another table. The application
+    keeps it true (``research_workspace.store``), and
+    ``test_machine_checkable_required`` covers the code path; the constraint is
+    the backstop that stops a hand-written ``UPDATE theses SET status='active'``
+    from producing an unfalsifiable thesis.
+
+    ``probability`` may be revised; ``original_probability`` is the number the
+    Brier score uses forever (Spec M §6), and ``probability_history_json``
+    keeps the revisions.
+    """
+
+    __tablename__ = "theses"
+    __table_args__ = (
+        Index("ix_theses_ticker_status", "ticker", "status"),
+        Index("ix_theses_next_review", "next_review_at"),
+        CheckConstraint(
+            "status IN ('draft','active','weakened','invalidated','closed')",
+            name="ck_theses_status",
+        ),
+        CheckConstraint(
+            "probability IS NULL OR (probability >= 0.0 AND probability <= 1.0)",
+            name="ck_theses_probability_range",
+        ),
+        CheckConstraint(
+            "status <> 'active' OR (probability IS NOT NULL "
+            "AND resolution_at IS NOT NULL "
+            "AND machine_checkable_invalidators >= 1)",
+            name="ck_theses_active_is_falsifiable",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(20), nullable=False, index=True)
+    slug = Column(String(160), nullable=False, default="")
+    title = Column(String(300), nullable=False)
+    claim = Column(Text, nullable=False, default="")
+    direction = Column(String(20), nullable=False, default="long")
+    horizon_days = Column(Integer, nullable=True)
+
+    # --- the falsifiable part ---
+    probability = Column(Float, nullable=True)
+    original_probability = Column(Float, nullable=True)
+    probability_history_json = Column(Text, nullable=False, default="[]")
+    resolution_at = Column(Date, nullable=True)
+    resolution_observable = Column(Text, nullable=False, default="")
+
+    # --- the argument ---
+    # A JSON list of {"n", "claim", "evidence": [...]} objects.
+    argument_json = Column(Text, nullable=False, default="[]")
+    # Required and non-empty before `active` (Spec M §3). Written by the
+    # thesis-critic subagent (Spec P §4) and attributed, never merged into the
+    # bull argument.
+    bear_case = Column(Text, nullable=False, default="")
+    bear_case_author = Column(String(120), nullable=False, default="")
+
+    status = Column(String(20), nullable=False, default="draft")
+    machine_checkable_invalidators = Column(Integer, nullable=False, default=0)
+
+    # Spec L and Spec N are parallel phases: these are references, not foreign
+    # keys, so the integration merge stays a no-op join.
+    linked_position_ref = Column(String(120), nullable=False, default="")
+    position_opened_at = Column(UtcDateTime, nullable=True)
+    cohort_answer_ids_json = Column(Text, nullable=False, default="[]")
+
+    next_review_at = Column(Date, nullable=True)
+    author = Column(String(120), nullable=False, default="human")
+    author_kind = Column(String(20), nullable=False, default="human")
+
+    # --- resolution, for §6 scoring ---
+    outcome = Column(String(20), nullable=True)  # "true" | "false"
+    resolved_at = Column(UtcDateTime, nullable=True)
+    # Spec M §6: invalidated-versus-quietly-abandoned is an honesty metric, so
+    # the two closes are different rows, not one "closed" bucket.
+    close_reason = Column(String(40), nullable=False, default="")
+
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    activated_at = Column(UtcDateTime, nullable=True)
+    weakened_at = Column(UtcDateTime, nullable=True)
+    closed_at = Column(UtcDateTime, nullable=True)
+
+    @property
+    def argument(self) -> list:
+        try:
+            loaded = json.loads(self.argument_json or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
+
+    @property
+    def probability_history(self) -> list:
+        try:
+            loaded = json.loads(self.probability_history_json or "[]")
+        except (ValueError, TypeError):
+            return []
+        return loaded if isinstance(loaded, list) else []
+
+
+class ThesisInvalidator(Base):
+    """The load-bearing table (Spec M §4).
+
+    ``params_json`` carries the machine-checkable parameters for its type; the
+    vocabulary and the evaluation are in ``research_workspace/invalidators.py``.
+    ``post_hoc`` is set at write time by comparing ``created_at`` against the
+    thesis's ``position_opened_at``: an invalidator added after entry is kept,
+    flagged, and excluded from the honesty metrics rather than deleted.
+    """
+
+    __tablename__ = "thesis_invalidators"
+    __table_args__ = (
+        Index("ix_thesis_invalidators_thesis", "thesis_id", "status"),
+        CheckConstraint(
+            "type IN ('metric_threshold','price_level','event','time_decay',"
+            "'qualitative')",
+            name="ck_thesis_invalidators_type",
+        ),
+        CheckConstraint(
+            "status IN ('armed','triggered','needs_human_review','retired')",
+            name="ck_thesis_invalidators_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    thesis_id = Column(Integer, ForeignKey("theses.id"), nullable=False)
+    description = Column(Text, nullable=False)
+    type = Column(String(30), nullable=False)
+    params_json = Column(Text, nullable=False, default="{}")
+    machine_checkable = Column(Boolean, nullable=False, default=False)
+    post_hoc = Column(Boolean, nullable=False, default=False)
+    status = Column(String(30), nullable=False, default="armed")
+    last_checked_at = Column(UtcDateTime, nullable=True)
+    last_check_detail = Column(Text, nullable=False, default="")
+    triggered_at = Column(UtcDateTime, nullable=True)
+    triggered_reason = Column(Text, nullable=False, default="")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    author = Column(String(120), nullable=False, default="human")
+
+    @property
+    def params(self) -> dict:
+        try:
+            loaded = json.loads(self.params_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+
+class DecisionJournalEntry(Base):
+    """Append-only decision record (Spec M §3), including the decision to pass.
+
+    ``thesis_hash`` and ``cohort_evidence_hash`` freeze *what was believed and
+    what was cited at the time*, so a later revision of either cannot rewrite
+    the record of the decision. ``budget`` is Spec L §6.6's evidenced/
+    discretionary split, recorded here because the journal is where "how do my
+    judgment trades do versus my evidenced trades" is answered.
+
+    ``outcome_*`` is filled in later by a job, never at write time.
+    """
+
+    __tablename__ = "decision_journal"
+    __table_args__ = (
+        Index("ix_decision_journal_occurred", "occurred_on"),
+        Index("ix_decision_journal_tickers", "tickers"),
+        CheckConstraint(
+            "decision IN ('opened','added','trimmed','closed','passed')",
+            name="ck_decision_journal_decision",
+        ),
+        CheckConstraint(
+            "budget IN ('evidenced','discretionary')",
+            name="ck_decision_journal_budget",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    occurred_on = Column(Date, nullable=False)
+    # Comma-separated, uppercase. A decision can touch more than one name and
+    # this table is read far more often than it is joined.
+    tickers = Column(String(200), nullable=False, default="")
+    decision = Column(String(20), nullable=False)
+    thesis_id = Column(Integer, ForeignKey("theses.id"), nullable=True)
+    thesis_hash = Column(String(64), nullable=False, default="")
+    # Spec N identifies an answer by its setup hash and as-of date; the id
+    # recorded here is that pair, and the hash is over the answer's canonical
+    # JSON so a re-run that differs is detectable.
+    cohort_answer_id = Column(String(120), nullable=False, default="")
+    cohort_evidence_hash = Column(String(64), nullable=False, default="")
+    budget = Column(String(20), nullable=False, default="discretionary")
+    sizing_rationale = Column(Text, nullable=False, default="")
+    expected_holding_days = Column(Integer, nullable=True)
+    note_md = Column(Text, nullable=False, default="")
+    author = Column(String(120), nullable=False, default="human")
+    author_kind = Column(String(20), nullable=False, default="human")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    # --- filled in later, by a job, never at write time ---
+    outcome_note = Column(Text, nullable=False, default="")
+    outcome_return_pct = Column(Float, nullable=True)
+    outcome_exit_reason = Column(String(80), nullable=False, default="")
+    outcome_matched_reason = Column(Boolean, nullable=True)
+    outcome_recorded_at = Column(UtcDateTime, nullable=True)
+
+
+class ResearchQuestion(Base):
+    """What an agent could not resolve, written down instead of guessed at."""
+
+    __tablename__ = "research_questions"
+    __table_args__ = (
+        Index("ix_research_questions_status", "status"),
+        CheckConstraint(
+            "status IN ('open','answered','abandoned')",
+            name="ck_research_questions_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    question = Column(Text, nullable=False)
+    ticker = Column(String(20), nullable=False, default="")
+    status = Column(String(20), nullable=False, default="open")
+    asked_by = Column(String(120), nullable=False, default="human")
+    answer_md = Column(Text, nullable=False, default="")
+    answered_at = Column(UtcDateTime, nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+# ---------------------------------------------------------------------------
+# Strategy Lab — Spec Q §8 (Phase 5, PR 1)
+#
+# Eight tables. `source_observations` above is the ninth and already exists
+# (Phase 3a); this group references its ids as plain integers inside
+# `market_snapshots.source_observation_ids_json` rather than by foreign key,
+# and `strategy_trades.execution_id` is likewise the plain value that Phase 1's
+# `broker_orders.execution_id` already carries. Cross-phase foreign keys are
+# what turn an integration merge revision into a real migration
+# (migrations/README.md), and Phases 3c, 4 and P are landing beside this one.
+#
+# The vocabularies and the state machines live in `strategy_lab/domain.py`,
+# which is pure stdlib and imports nothing from here. Persistence depends on
+# the domain, never the other way round, so the CHECK constraints below and the
+# enums a strategy validates against cannot drift apart.
+# ---------------------------------------------------------------------------
+
+def _sql_values(values) -> str:
+    return ",".join(f"'{value}'" for value in sorted(values))
+
+
+def _in_check(column: str, enum_cls) -> str:
+    """``column IN (...)`` over an enum's whole vocabulary, sorted for stability."""
+    return f"{column} IN ({_sql_values(member.value for member in enum_cls)})"
+
+
+#: The terminal half of the Spec Q §12 lifecycle, as DDL. The partial unique
+#: index below is written as NOT IN this set rather than IN the non-terminal
+#: set on purpose: if a future state is added to the enum and someone forgets
+#: the migration, it lands on the *constrained* side and the invariant "at most
+#: one non-terminal execution per decision" still holds. The inclusive spelling
+#: would have failed open.
+_TERMINAL_TRADE_SQL = _sql_values(state.value for state in TERMINAL_EXECUTION_STATES)
+
+#: Both engines accept a `WHERE` clause on a unique index (SQLite >= 3.8.0,
+#: Postgres since forever), so the two spellings below are the same DDL and are
+#: given per dialect only because SQLAlchemy namespaces the keyword.
+_LIVE_CHAMPION_WHERE = text("mode = 'live' AND status = 'active'")
+_ACTIVE_ARM_WHERE = text("status = 'active'")
+_OPEN_EXECUTION_WHERE = text(f"status NOT IN ({_TERMINAL_TRADE_SQL})")
+
+
+class StrategyVersion(Base):
+    """One immutable strategy identity: rules, config, and the code that runs it.
+
+    Nothing on this row that affects a decision may ever be updated. `status`
+    may (`draft -> shadow -> paper -> live_eligible -> retired`), which is
+    exactly why `content_hash` is taken over the frozen fields and not over the
+    status — see `strategy_lab.domain.StrategyVersion.canonical`. The registry
+    refuses a re-registration whose content hash differs and tells you to cut a
+    new version (Spec Q §3, §6).
+
+    `implementation_manifest_hash` is the transitive manifest Phase 2 recomputes
+    before every run; a mismatch fails closed rather than running changed code
+    under an old version's name.
+    """
+
+    __tablename__ = "strategy_versions"
+    __table_args__ = (
+        UniqueConstraint("slug", "version", name="uq_strategy_versions_slug_version"),
+        CheckConstraint(_in_check("status", StrategyVersionStatus), name="ck_strategy_versions_status"),
+        CheckConstraint("expected_holding_days >= 1", name="ck_strategy_versions_holding_days"),
+        CheckConstraint(
+            "max_data_staleness_seconds >= 0", name="ck_strategy_versions_staleness"
+        ),
+        Index("ix_strategy_versions_status", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    slug = Column(String(80), nullable=False)
+    version = Column(String(20), nullable=False)
+    hypothesis = Column(Text, nullable=False, default="")
+    universe = Column(String(80), nullable=False, default="")
+    direction = Column(String(20), nullable=False, default="long")
+    #: JSON list. The fields a snapshot must carry for this version to evaluate;
+    #: anything missing or stale is an abstain, never an imputed value.
+    required_snapshot_fields_json = Column(Text, nullable=False, default="[]")
+    execution_policy_version = Column(String(80), nullable=False, default="")
+    expected_holding_days = Column(Integer, nullable=False, default=1)
+    max_data_staleness_seconds = Column(Integer, nullable=False, default=0)
+    historically_replayable = Column(Boolean, nullable=False, default=False)
+    #: Always populated, in both directions: "why can this be replayed" is as
+    #: much a part of the record as "why can it not".
+    replayability_reason = Column(Text, nullable=False, default="")
+    implementation_manifest_json = Column(Text, nullable=False, default="{}")
+    implementation_manifest_hash = Column(String(64), nullable=False, default="")
+    config_json = Column(Text, nullable=False, default="{}")
+    dependencies_json = Column(Text, nullable=False, default="[]")
+    content_hash = Column(String(64), nullable=False, default="")
+    status = Column(String(20), nullable=False, default="draft")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+class Experiment(Base):
+    """A registered hypothesis with its analysis plan frozen (Spec Q §8, §10).
+
+    No arm may run until `status='registered'`. What registration freezes —
+    metrics, universe, benchmarks, end criteria, planned variant count — is
+    hashed into `content_hash`, so a later edit is visible rather than a quiet
+    rewrite of the question after seeing the answer.
+    """
+
+    __tablename__ = "experiments"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_experiments_name"),
+        CheckConstraint(_in_check("status", ExperimentStatus), name="ck_experiments_status"),
+        CheckConstraint("planned_variants >= 1", name="ck_experiments_planned_variants"),
+        Index("ix_experiments_status", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), nullable=False)
+    hypothesis = Column(Text, nullable=False, default="")
+    status = Column(String(20), nullable=False, default="draft")
+    universe_spec = Column(String(120), nullable=False, default="")
+    data_cutoff_utc = Column(UtcDateTime, nullable=True)
+    primary_metric = Column(String(80), nullable=False, default="")
+    benchmarks_json = Column(Text, nullable=False, default="[]")
+    guardrail_metrics_json = Column(Text, nullable=False, default="[]")
+    start_criteria_json = Column(Text, nullable=False, default="{}")
+    end_criteria_json = Column(Text, nullable=False, default="{}")
+    preregistration_json = Column(Text, nullable=False, default="{}")
+    #: The multiple-testing denominator (Spec Q §10). Every variant tried counts.
+    planned_variants = Column(Integer, nullable=False, default=1)
+    owner = Column(String(120), nullable=False, default="")
+    owner_decision = Column(String(40), nullable=False, default="")
+    owner_decision_at = Column(UtcDateTime, nullable=True)
+    owner_notes = Column(Text, nullable=False, default="")
+    content_hash = Column(String(64), nullable=False, default="")
+    registered_at = Column(UtcDateTime, nullable=True)
+    started_at = Column(UtcDateTime, nullable=True)
+    ended_at = Column(UtcDateTime, nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+class ExperimentArm(Base):
+    """One strategy version running in one immutable mode (Spec Q §8, §11).
+
+    `mode` is the arm's identity, not a setting: every execution call carries it
+    so that a paper arm selects the Alpaca paper adapter even when the
+    application-wide broker is Robinhood and global execution mode is live
+    (Spec Q §11, §12 invariant 11). Changing an arm's tier means creating
+    another arm and recording a `promotion_event`, never updating this column.
+
+    Two partial unique indexes carry the invariants:
+
+    * `uq_experiment_arms_active` — one active arm per experiment, strategy
+      version and mode, which is what makes arm activation idempotent.
+    * `uq_experiment_arms_single_live_champion` — a unique index on `mode`
+      restricted to `mode='live' AND status='active'`. Since every row it
+      indexes has the same value in that column, at most one such row can
+      exist *in the whole table*: the one global live champion of Spec Q §3.
+      Indexing a literal constant would say the same thing, but SQLite will not
+      index a constant expression, and a real column costs nothing.
+    """
+
+    __tablename__ = "experiment_arms"
+    __table_args__ = (
+        CheckConstraint(_in_check("mode", ExecutionMode), name="ck_experiment_arms_mode"),
+        CheckConstraint(_in_check("status", ArmStatus), name="ck_experiment_arms_status"),
+        CheckConstraint("risk_budget >= 0", name="ck_experiment_arms_risk_budget"),
+        Index(
+            "uq_experiment_arms_active",
+            "experiment_id", "strategy_version_id", "mode",
+            unique=True,
+            sqlite_where=_ACTIVE_ARM_WHERE,
+            postgresql_where=_ACTIVE_ARM_WHERE,
+        ),
+        Index(
+            "uq_experiment_arms_single_live_champion",
+            "mode",
+            unique=True,
+            sqlite_where=_LIVE_CHAMPION_WHERE,
+            postgresql_where=_LIVE_CHAMPION_WHERE,
+        ),
+        Index("ix_experiment_arms_experiment_status", "experiment_id", "status"),
+        Index("ix_experiment_arms_mode_status", "mode", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    experiment_id = Column(Integer, ForeignKey("experiments.id"), nullable=False)
+    strategy_version_id = Column(Integer, ForeignKey("strategy_versions.id"), nullable=False)
+    mode = Column(String(20), nullable=False)
+    #: The arm's own virtual (shadow/paper) or authorised (live) budget. Shadow
+    #: and paper arms get independent virtual budgets; only the live champion
+    #: gets real capital (Spec Q §11).
+    risk_budget = Column(Float, nullable=False, default=0.0)
+    status = Column(String(20), nullable=False, default="inactive")
+    #: The arm this one was promoted from, so a tier history is a walk up the
+    #: chain rather than a join through the event log.
+    promoted_from_arm_id = Column(Integer, ForeignKey("experiment_arms.id"), nullable=True)
+    started_at = Column(UtcDateTime, nullable=True)
+    ended_at = Column(UtcDateTime, nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+class MarketSnapshot(Base):
+    """The immutable input bundle a decision is reproducible from (Spec Q §6, §8).
+
+    A `universe`-scoped row holds the whole constituent set under one cutoff, so
+    every cross-sectional rank in a rebalance references one snapshot id. A
+    `ticker`-scoped row holds one name. The CHECK enforces that split: a
+    universe row with a ticker, or a ticker row without one, is the shape that
+    lets ranks quietly mix cutoffs.
+
+    `content_hash` is unique, which makes snapshot recording idempotent: the
+    same inputs under the same cutoff are the same snapshot, whoever builds it.
+    """
+
+    __tablename__ = "market_snapshots"
+    __table_args__ = (
+        UniqueConstraint("content_hash", name="uq_market_snapshots_content_hash"),
+        CheckConstraint(_in_check("scope", SnapshotScope), name="ck_market_snapshots_scope"),
+        CheckConstraint(
+            "(scope = 'ticker' AND ticker IS NOT NULL) OR "
+            "(scope = 'universe' AND ticker IS NULL)",
+            name="ck_market_snapshots_scope_shape",
+        ),
+        Index("ix_market_snapshots_scope_as_of", "scope", "as_of_utc"),
+        Index("ix_market_snapshots_ticker_as_of", "ticker", "as_of_utc"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope = Column(String(20), nullable=False)
+    ticker = Column(String(20), nullable=True)
+    universe_version = Column(String(120), nullable=True)
+    as_of_utc = Column(UtcDateTime, nullable=False)
+    data_cutoff_utc = Column(UtcDateTime, nullable=False)
+    normalized_inputs_json = Column(Text, nullable=False, default="{}")
+    constituents_json = Column(Text, nullable=False, default="[]")
+    #: JSON list of `source_observations.id`. Plain values, not a foreign key —
+    #: Phase 3a owns that table and this phase must merge into it cleanly.
+    source_observation_ids_json = Column(Text, nullable=False, default="[]")
+    provenance_json = Column(Text, nullable=False, default="{}")
+    #: `{"warnings": [...]}` from `strategy_lab.domain.QUALITY_WARNINGS`.
+    #: `not_point_in_time` or `archival_reconstructed` here means the snapshot
+    #: is exploratory evidence only and can never satisfy a promotion gate.
+    data_quality_json = Column(Text, nullable=False, default="{}")
+    content_hash = Column(String(64), nullable=False)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class StrategyDecision(Base):
+    """One arm's decision about one ticker under one snapshot (Spec Q §6, §8).
+
+    Unique on `(arm_id, snapshot_id, ticker)`: re-running an arm over a snapshot
+    it has already decided is a no-op, and a universe strategy writes one row
+    per constituent — `long`, `flat`, or `abstain` — under the shared snapshot
+    id rather than one row for the names it happened to select.
+
+    `decision_hash` covers the strategy version, the snapshot content and the
+    ticker, and deliberately not the arm or any portfolio state, so the same
+    version over the same snapshot hashes identically in shadow, paper and live.
+    """
+
+    __tablename__ = "strategy_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "arm_id", "snapshot_id", "ticker", name="uq_strategy_decisions_arm_snapshot_ticker"
+        ),
+        CheckConstraint(_in_check("action", DecisionAction), name="ck_strategy_decisions_action"),
+        CheckConstraint("ticker <> ''", name="ck_strategy_decisions_ticker_present"),
+        Index("ix_strategy_decisions_arm_created", "arm_id", "created_at"),
+        Index("ix_strategy_decisions_hash", "decision_hash"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    arm_id = Column(Integer, ForeignKey("experiment_arms.id"), nullable=False)
+    snapshot_id = Column(Integer, ForeignKey("market_snapshots.id"), nullable=False)
+    ticker = Column(String(20), nullable=False)
+    action = Column(String(20), nullable=False)
+    reason_codes_json = Column(Text, nullable=False, default="[]")
+    signal_strength = Column(Float, nullable=True)
+    #: Optional, and never evidence by itself (Spec Q §6).
+    confidence = Column(Float, nullable=True)
+    decision_json = Column(Text, nullable=False, default="{}")
+    decision_hash = Column(String(64), nullable=False)
+    #: Signal-generation blocks only: stale data, missing dependency, invalid
+    #: point-in-time input. A portfolio or broker block lives on the trade row.
+    blocked_reasons_json = Column(Text, nullable=False, default="[]")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class StrategyTrade(Base):
+    """The canonical execution intent for a decision, in every mode (Spec Q §8, §12).
+
+    `execution_id` is generated and committed *before* any risk reservation or
+    broker call, so a retry after a crash resolves the same row rather than
+    placing a second order. The partial unique index on `decision_id` is the
+    database half of that: at most one non-terminal execution per decision, held
+    by the database rather than by an in-process lock that a second worker or a
+    restart would not see (Spec Q §12 invariant 6).
+
+    Phase 5 implements the state machine; this row is its persistence. Phase 1
+    writes nothing here — the table exists so that Phase 5 does not have to
+    reopen the migration graph, and so the constraint can be proven now.
+    """
+
+    __tablename__ = "strategy_trades"
+    __table_args__ = (
+        UniqueConstraint("execution_id", name="uq_strategy_trades_execution_id"),
+        CheckConstraint(_in_check("mode", ExecutionMode), name="ck_strategy_trades_mode"),
+        CheckConstraint(_in_check("status", ExecutionState), name="ck_strategy_trades_status"),
+        Index(
+            "uq_strategy_trades_open_execution",
+            "decision_id",
+            unique=True,
+            sqlite_where=_OPEN_EXECUTION_WHERE,
+            postgresql_where=_OPEN_EXECUTION_WHERE,
+        ),
+        Index("ix_strategy_trades_arm_status", "arm_id", "status"),
+        Index("ix_strategy_trades_status", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    #: The idempotency key. `broker_orders.execution_id` carries it back.
+    execution_id = Column(String(64), nullable=False)
+    arm_id = Column(Integer, ForeignKey("experiment_arms.id"), nullable=False)
+    decision_id = Column(Integer, ForeignKey("strategy_decisions.id"), nullable=False)
+    #: Copied from the arm at creation and never inferred from global settings.
+    mode = Column(String(20), nullable=False)
+    status = Column(String(30), nullable=False, default="proposed")
+    #: Hash of the portfolio/risk context this attempt was judged against.
+    #: Recomputed per attempt; never reused from the decision (Spec Q §8).
+    portfolio_context_hash = Column(String(64), nullable=False, default="")
+    #: `trades.id` when a broker executed it. A plain value, not a foreign key.
+    legacy_trade_id = Column(Integer, nullable=True)
+
+    intended_entry_price = Column(Float, nullable=True)
+    filled_entry_price = Column(Float, nullable=True)
+    stop_price = Column(Float, nullable=True)
+    target1_price = Column(Float, nullable=True)
+    target2_price = Column(Float, nullable=True)
+    quantity = Column(Float, nullable=True)
+    notional = Column(Float, nullable=True)
+    costs = Column(Float, nullable=True)
+    exit_price = Column(Float, nullable=True)
+    realized_pnl = Column(Float, nullable=True)
+    exit_reason = Column(String(40), nullable=False, default="")
+    #: Why a risk or capability gate refused it, when it never reached a broker.
+    blocked_reason = Column(String(80), nullable=False, default="")
+    reconciliation_state = Column(String(30), nullable=False, default="none")
+
+    proposed_at = Column(UtcDateTime, nullable=True)
+    approved_at = Column(UtcDateTime, nullable=True)
+    submitted_at = Column(UtcDateTime, nullable=True)
+    filled_at = Column(UtcDateTime, nullable=True)
+    closed_at = Column(UtcDateTime, nullable=True)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+class ExperimentMetricSnapshot(Base):
+    """An arm's immutable evaluation output at one cutoff (Spec Q §8, §10).
+
+    Unique on `(arm_id, evaluation_cutoff_utc)`: an evaluation is a function of
+    the arm and the cutoff, so recomputing it is idempotent and re-running it
+    after a bad week cannot silently produce a second, friendlier answer.
+
+    `n_decisions`/`n_matured`/`n_closed` are columns rather than JSON because
+    Spec Q §10 forbids showing a win rate or a profit factor without its sample
+    size, and a number that must always be displayed should not be buried in a
+    blob. `warnings_acknowledged` is what a promotion binds against: a tier
+    change requires the evidence's warnings to have been read.
+    """
+
+    __tablename__ = "experiment_metric_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "arm_id", "evaluation_cutoff_utc", name="uq_experiment_metric_snapshots_arm_cutoff"
+        ),
+        Index("ix_experiment_metric_snapshots_arm", "arm_id", "evaluation_cutoff_utc"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    arm_id = Column(Integer, ForeignKey("experiment_arms.id"), nullable=False)
+    evaluation_cutoff_utc = Column(UtcDateTime, nullable=False)
+
+    n_decisions = Column(Integer, nullable=False, default=0)
+    n_matured = Column(Integer, nullable=False, default=0)
+    n_closed = Column(Integer, nullable=False, default=0)
+
+    exposure = Column(Float, nullable=True)
+    turnover = Column(Float, nullable=True)
+    return_after_costs = Column(Float, nullable=True)
+    benchmark = Column(String(80), nullable=False, default="")
+    benchmark_relative_return = Column(Float, nullable=True)
+    max_drawdown = Column(Float, nullable=True)
+    profit_factor = Column(Float, nullable=True)
+    win_rate = Column(Float, nullable=True)
+    mean_r = Column(Float, nullable=True)
+    median_r = Column(Float, nullable=True)
+
+    uncertainty_json = Column(Text, nullable=False, default="{}")
+    cost_assumptions_json = Column(Text, nullable=False, default="{}")
+    warnings_json = Column(Text, nullable=False, default="[]")
+    metrics_json = Column(Text, nullable=False, default="{}")
+
+    warnings_acknowledged = Column(Boolean, nullable=False, default=False)
+    acknowledged_by = Column(String(120), nullable=False, default="")
+    acknowledged_at = Column(UtcDateTime, nullable=True)
+
+    content_hash = Column(String(64), nullable=False, default="")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+class PromotionEvent(Base):
+    """An owner's audited tier change. Append-only (Spec Q §8, §13).
+
+    The row is the authorization, and it binds three things at once: the source
+    arm whose evidence was read, that evidence snapshot, and a *distinct*
+    inactive target arm carrying the same immutable strategy version. Spec Q §8
+    is explicit that no strategy-version-only authorization is valid — evidence
+    collected by one arm may not authorize another arm's capital, and live
+    execution must match the exact promoted target arm id, version, mode and
+    budget.
+
+    Promotion is still not entry approval: every proposed live execution gets
+    its own signed, expiring owner callback (Spec Q §13). Phase 5 and Phase 6
+    build both; this table is what they append to.
+    """
+
+    __tablename__ = "promotion_events"
+    __table_args__ = (
+        CheckConstraint(_in_check("kind", PromotionKind), name="ck_promotion_events_kind"),
+        CheckConstraint(_in_check("from_mode", ExecutionMode), name="ck_promotion_events_from_mode"),
+        CheckConstraint(_in_check("to_mode", ExecutionMode), name="ck_promotion_events_to_mode"),
+        CheckConstraint(
+            "source_arm_id <> target_arm_id", name="ck_promotion_events_distinct_arms"
+        ),
+        Index("ix_promotion_events_target", "target_arm_id", "created_at"),
+        Index("ix_promotion_events_source", "source_arm_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_arm_id = Column(Integer, ForeignKey("experiment_arms.id"), nullable=False)
+    target_arm_id = Column(Integer, ForeignKey("experiment_arms.id"), nullable=False)
+    strategy_version_id = Column(Integer, ForeignKey("strategy_versions.id"), nullable=False)
+    evidence_metric_snapshot_id = Column(
+        Integer, ForeignKey("experiment_metric_snapshots.id"), nullable=False
+    )
+    from_mode = Column(String(20), nullable=False)
+    to_mode = Column(String(20), nullable=False)
+    kind = Column(String(20), nullable=False, default="promotion")
+    owner = Column(String(120), nullable=False)
+    reason = Column(Text, nullable=False, default="")
+    previous_risk_budget = Column(Float, nullable=False, default=0.0)
+    new_risk_budget = Column(Float, nullable=False, default=0.0)
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
 
 
 # --------------------------------------------------------------------------- #

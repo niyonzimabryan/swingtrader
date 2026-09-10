@@ -37,12 +37,20 @@ FIRST_PARTY = {
     "evals",
     "execution",
     "filings",
+    "macro",
     "memo",
+    "news",
     "orchestrator",
+    "research_workspace",
+    "portfolio",
     "scanning",
     "scoring",
     "screening",
     "scripts",
+    # `database.models` imports the Strategy Lab domain vocabulary (Spec Q §8),
+    # so the walker has to follow it or the closure below would silently stop
+    # at `database` and assert less than it claims.
+    "strategy_lab",
     "tools",
     "tracking",
     "utils",
@@ -58,15 +66,27 @@ FIRST_PARTY_ROOT_MODULES = {"main"}
 FORBIDDEN_ROOTS = {"execution", "bot", "orchestrator", "agents"}
 
 #: The workspace entry points. Everything reachable from these is the surface.
+#: Phase 1 added ``portfolio`` to FIRST_PARTY above, so the walker follows the
+#: ledger package the tool surface now imports; without it the closure would
+#: stop at ``workspace/`` and this assertion would be vacuous.
 WORKSPACE_ENTRY_POINTS = (
     "workspace.app",
     "workspace.server",
     "workspace.tools",
+    "workspace.research_tools",
     "workspace.auth",
     "workspace.tokens",
     "workspace.scopes",
     "workspace.ratelimit",
     "workspace.oauth",
+    # Phase 2 (Spec M). The research workspace is reachable from the MCP tool
+    # surface, so it is inside the boundary and its own imports are walked:
+    # a triggered invalidator pages, and must not be able to do anything else.
+    "research_workspace.store",
+    "research_workspace.invalidators",
+    "research_workspace.mirror",
+    "research_workspace.jobs",
+    "scripts.sync_research_mirror",
 )
 
 

@@ -1,0 +1,193 @@
+"""Spec Q §5: `strategy_lab/` cannot reach a broker, a session, or a model.
+
+"No strategy module may import a broker, database session, Telegram client, or
+LLM client. It receives an immutable snapshot and returns a decision." That is a
+structural claim, so it is tested structurally — the same shape as
+`tests/test_no_execute_scope.py` and `tests/test_comparables_import_graph.py`.
+
+Two boundaries, not one:
+
+* the **package** may reach `strategy_lab`, `utils`, and — from `registry.py`
+  alone — `database`. Nothing else, first-party or third-party;
+* `domain.py` may reach **nothing** first-party at all. It is the module every
+  Phase 2 strategy will import, and a strategy that cannot reach a session
+  cannot be tempted to open one.
+
+`config` is on the forbidden list deliberately. Spec Q §12 invariant 11 and
+shared rule 13 require execution mode to be an immutable input carried by the
+experiment arm; a module that can read a global setting can infer a mode from
+one, and the fastest way to make that impossible is to make the import fail.
+"""
+
+from __future__ import annotations
+
+import ast
+import os
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE = REPO_ROOT / "strategy_lab"
+
+#: First-party packages the whole Strategy Lab package may reach.
+ALLOWED_FIRST_PARTY = {"strategy_lab", "utils"}
+
+#: `registry.py` is the service boundary and the only module allowed a session.
+SESSION_ALLOWED = {"registry.py"}
+
+#: Pure stdlib, and staying that way: this is what a strategy imports.
+NO_FIRST_PARTY_AT_ALL = {"domain.py"}
+
+#: Every first-party package the Strategy Lab must not reach. `config` is here
+#: for the reason in the module docstring; `backtest` is absent from the
+#: allowlist rather than forbidden because Phase 3 will reuse its simulator and
+#: should widen the allowlist deliberately when it does.
+FORBIDDEN_FIRST_PARTY = {
+    "agents", "bot", "comparables", "config", "data", "evals", "execution",
+    "filings", "main", "memo", "orchestrator", "portfolio", "research",
+    "research_workspace", "scanning", "scoring", "screening", "scripts",
+    "tools", "tracking", "workspace",
+}
+
+#: Brokers, model clients, messaging, and network transports, by import name.
+FORBIDDEN_THIRD_PARTY = {
+    "aiohttp", "alpaca", "alpaca_trade_api", "anthropic", "cohere", "finnhub",
+    "firecrawl", "fredapi", "google", "httpx", "langfuse", "mcp", "openai",
+    "requests", "telegram", "urllib3", "yfinance",
+}
+
+
+def _module_files() -> list[Path]:
+    return sorted(p for p in PACKAGE.rglob("*.py") if "__pycache__" not in p.parts)
+
+
+def _imported_roots(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                roots.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:  # relative: stays inside the package
+                continue
+            if node.module:
+                roots.add(node.module.split(".")[0])
+    return roots
+
+
+def _first_party_roots() -> set[str]:
+    return {
+        entry
+        for entry in os.listdir(REPO_ROOT)
+        if (REPO_ROOT / entry / "__init__.py").exists() or (
+            (REPO_ROOT / entry).is_dir() and not entry.startswith(".")
+            and any((REPO_ROOT / entry).glob("*.py"))
+        )
+    }
+
+
+class StrategyLabImportGraphTests(unittest.TestCase):
+    def test_the_package_reaches_no_broker_session_or_model_client(self):
+        offenders = []
+        for path in _module_files():
+            for root in sorted(_imported_roots(path)):
+                if root in FORBIDDEN_FIRST_PARTY or root in FORBIDDEN_THIRD_PARTY:
+                    offenders.append(f"{path.name} imports {root}")
+        self.assertEqual(
+            offenders,
+            [],
+            "strategy_lab/ must not import a broker, the bot, the orchestrator, "
+            "a model client, or config — Spec Q §5, §12 invariant 11.",
+        )
+
+    def test_the_only_first_party_dependencies_are_the_allowlisted_ones(self):
+        first_party = _first_party_roots()
+        offenders = {}
+        for path in _module_files():
+            reached = _imported_roots(path) & first_party
+            allowed = set(ALLOWED_FIRST_PARTY)
+            if path.name in SESSION_ALLOWED:
+                allowed.add("database")
+            unexpected = sorted(reached - allowed)
+            if unexpected:
+                offenders[path.name] = unexpected
+        self.assertEqual(
+            offenders,
+            {},
+            "widening the Strategy Lab's first-party imports is a deliberate "
+            "act; add the package to ALLOWED_FIRST_PARTY with a reason.",
+        )
+
+    def test_only_the_registry_can_reach_a_database_session(self):
+        offenders = []
+        for path in _module_files():
+            if path.name in SESSION_ALLOWED:
+                continue
+            reached = _imported_roots(path)
+            if "database" in reached or "sqlalchemy" in reached:
+                offenders.append(path.name)
+        self.assertEqual(
+            offenders,
+            [],
+            "registry.py is the service boundary; no other Strategy Lab module "
+            "may hold a database session (Spec Q §5, §6).",
+        )
+
+    def test_domain_imports_nothing_first_party(self):
+        first_party = _first_party_roots()
+        for name in NO_FIRST_PARTY_AT_ALL:
+            with self.subTest(name):
+                reached = sorted(_imported_roots(PACKAGE / name) & first_party)
+                self.assertEqual(
+                    reached,
+                    [],
+                    f"{name} is what every strategy imports; it stays stdlib-only.",
+                )
+
+    def test_importing_the_domain_pulls_in_no_runtime_dependency(self):
+        """A fresh interpreter, because the rest of the suite imports these."""
+        program = (
+            "import strategy_lab.domain, sys;"
+            "bad=sorted({m.split('.')[0] for m in sys.modules} & "
+            "{'sqlalchemy','anthropic','openai','google','langfuse','firecrawl',"
+            "'finnhub','alpaca','telegram','yfinance','httpx','aiohttp','mcp'});"
+            "print(','.join(bad))"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", program], cwd=REPO_ROOT,
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(
+            out.stdout.strip(), "",
+            "importing strategy_lab.domain pulled in a runtime dependency",
+        )
+
+    def test_the_guard_would_catch_a_real_violation(self):
+        """A negative control: the checker sees an import when there is one."""
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+            handle.write("from execution.order_manager import OrderManager\nimport anthropic\n")
+            path = Path(handle.name)
+        self.addCleanup(path.unlink)
+        roots = _imported_roots(path)
+        self.assertIn("execution", roots & FORBIDDEN_FIRST_PARTY)
+        self.assertIn("anthropic", roots & FORBIDDEN_THIRD_PARTY)
+
+    def test_no_strategy_lab_module_names_an_order_placement_call(self):
+        """Belt and braces: the words, not only the imports."""
+        forbidden = ("place_order", "submit_order", "place_equity_order", "create_order")
+        offenders = [
+            f"{path.name}: {needle}"
+            for path in _module_files()
+            for needle in forbidden
+            if needle in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(offenders, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

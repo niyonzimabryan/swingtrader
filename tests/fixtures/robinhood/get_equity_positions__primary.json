@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "account_number": "****7788",
+      "symbol": "AMD",
+      "quantity": "45.00000000",
+      "average_cost": "98.40",
+      "current_price": "151.20",
+      "market_value": "6804.00"
+    },
+    {
+      "account_number": "****7788",
+      "symbol": "MSFT",
+      "quantity": "22.00000000",
+      "average_cost": "402.11",
+      "current_price": "528.01",
+      "market_value": "11616.22"
+    }
+  ]
+}

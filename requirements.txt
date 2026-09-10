@@ -24,6 +24,8 @@ firecrawl-py>=2.0
 mcp>=1.27.2,<2  # 2.x renamed streamablehttp_client -> streamable_http_client; breaks execution/brokers/robinhood.py and scripts/robinhood_auth.py
 fastapi>=0.115  # workspace service (Spec K section 4); the bot does not import it
 uvicorn>=0.30  # ASGI server for the workspace service only
+pyyaml>=6  # Spec M section 5: YAML front matter on the research/ Markdown mirror
 cryptography>=42,<47
 arch>=8.0,<9  # Spec N §6.1/§7: stationary block bootstrap, optimal_block_length (Politis-White 2004 + PPW 2009) and StepM. Tested against 8.0.0; capped below the next major because a major bump can rename the bootstrap API, and an unbounded pin was already a live bug once (mcp 2.x).
 statsmodels>=0.14.2,<0.16  # Spec N §6.2: two-way clustered (event date x ticker) covariance via OLS cov_type='cluster', cov_kwds={'groups': 2-column array}. Tested against 0.15.0; floor and cap are a deliberate narrow window because cov_kwds is the one API here with no stability guarantee.
+datasketch>=1.6,<2  # Spec O §5.2: MinHash/LSH near-duplicate story clustering (MIT). LSH is the candidate index only — news/clustering.py confirms every candidate pair with an exact Jaccard, so the permutation count cannot change which stories merge. Capped below the next major because a major bump can change MinHash's default seeding, which would move every stored cluster id.

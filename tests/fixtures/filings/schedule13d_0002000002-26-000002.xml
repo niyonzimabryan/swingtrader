@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<edgarSubmission>
+  <coverPageHeader>
+    <issuerName>Schedule Thirteen Target Inc</issuerName>
+    <issuerCUSIP>00020000A</issuerCUSIP>
+    <dateOfEvent>2026-05-04</dateOfEvent>
+  </coverPageHeader>
+  <reportingPerson>
+    <reportingPersonName>Fictional Activist Partners LP</reportingPersonName>
+    <reportingPersonCik>0002200001</reportingPersonCik>
+    <aggregateAmountOwned>8100000</aggregateAmountOwned>
+    <percentOfClass>9.3</percentOfClass>
+    <soleVotingPower>8100000</soleVotingPower>
+    <sharedVotingPower>0</sharedVotingPower>
+    <soleDispositivePower>8100000</soleDispositivePower>
+    <sharedDispositivePower>0</sharedDispositivePower>
+  </reportingPerson>
+</edgarSubmission>

@@ -43,8 +43,8 @@ MCP_INSTRUCTIONS = (
 )
 
 
-def build_mcp(settings=None) -> tuple[FastMCP, tuple[str, ...]]:
-    """A stateless streamable-HTTP MCP server carrying this phase's tools.
+def build_mcp(settings=None) -> FastMCP:
+    """A stateless streamable-HTTP MCP server carrying the Phase 0b tools.
 
     ``stateless_http`` because nothing here holds per-session state and a
     stateless server survives a proxy dropping an idle connection, which is the
@@ -61,8 +61,8 @@ def build_mcp(settings=None) -> tuple[FastMCP, tuple[str, ...]]:
         instructions=MCP_INSTRUCTIONS,
         stateless_http=True,
     )
-    registered = tool_module.register(mcp, settings)
-    return mcp, registered
+    tool_module.register(mcp, settings)
+    return mcp
 
 
 def mount_mcp_endpoint(app: FastAPI, mcp: FastMCP) -> None:
@@ -80,6 +80,35 @@ def mount_mcp_endpoint(app: FastAPI, mcp: FastMCP) -> None:
     asgi = StreamableHTTPASGIApp(mcp.session_manager)
     for path in ("/mcp", "/mcp/"):
         app.router.routes.append(Route(path, endpoint=asgi))
+
+
+def _portfolio_sync_health(settings) -> dict:
+    """Last-sync age for ``/health`` (Spec K §6).
+
+    Reports the age of the **stalest** enabled account, because an overview is
+    only as fresh as its worst account and a maximum would let one healthy
+    account mask one that has been failing all day. Reads the ledger tables
+    only; it cannot reach a broker.
+    """
+    from portfolio.freshness import budget_from_settings
+
+    budget = budget_from_settings(settings)
+    payload = {"enabled": bool(getattr(settings, "portfolio_sync_enabled", False)),
+               "freshness_budget_minutes": budget}
+    try:
+        from database.db import get_session
+        from portfolio import ledger
+
+        with get_session() as session:
+            age = ledger.last_sync_age_seconds(session)
+    except Exception as exc:  # pragma: no cover - a broken database is already reported
+        payload["detail"] = f"{type(exc).__name__}: {exc}"
+        return payload
+    payload["last_sync_age_seconds"] = None if age is None else round(age, 1)
+    payload["stale"] = True if age is None else age > budget * 60
+    if age is None:
+        payload["detail"] = "no portfolio sync has ever completed."
+    return payload
 
 
 def _database_health() -> dict:
@@ -140,7 +169,7 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
         session_factory=get_session,
     )
 
-    mcp, registered_tools = build_mcp(settings)
+    mcp = build_mcp(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -153,7 +182,7 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
             "workspace_starting",
             enabled=bool(settings.workspace_api_enabled),
             oauth_enabled=bool(settings.workspace_oauth_enabled),
-            tools=list(registered_tools),
+            tools=list(tool_module.registered_tools(settings)),
         )
         async with mcp.session_manager.run():
             yield
@@ -168,19 +197,21 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
     )
     app.state.workspace_auth = auth
     app.state.mcp = mcp
-    app.state.registered_tools = registered_tools
+    app.state.registered_tools = tool_module.registered_tools(settings)
 
     @app.get("/health")
     def health():
         """Liveness plus what the workspace depends on.
 
-        Spec K §6 also wants the portfolio-sync and cohort-maturation ages here.
-        Those jobs arrive in Phases 1 and 3; reporting a field whose value would
-        be invented is worse than reporting the ones that exist, so they are
-        listed as pending rather than faked.
+        Spec K §6 wants the portfolio-sync and cohort-maturation ages here.
+        The portfolio sync arrives with Phase 1 and is reported; cohort
+        maturation arrives with Phase 3 and is still listed as pending, because
+        reporting a field whose value would be invented is worse than reporting
+        the ones that exist.
         """
         database = _database_health()
         ok = database["reachable"]
+        portfolio_sync = _portfolio_sync_health(settings) if ok else {"detail": "database unreachable"}
         return JSONResponse(
             {
                 "status": "ok" if ok else "degraded",
@@ -190,13 +221,16 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
                 "mcp": {
                     "path": "/mcp",
                     "transport": "streamable-http",
-                    "tools": list(registered_tools),
+                    "tools": list(tool_module.registered_tools(settings)),
                 },
+                "research_workspace_enabled": bool(
+                    getattr(settings, "research_workspace_enabled", False)
+                ),
                 "comparable_setups_enabled": bool(
                     getattr(settings, "comparable_setups_enabled", False)
                 ),
+                "portfolio_sync": portfolio_sync,
                 "pending_checks": [
-                    "last_portfolio_sync_age (Spec L, Phase 1)",
                     "last_cohort_maturation_age (Spec N, Phase 3)",
                 ],
             },

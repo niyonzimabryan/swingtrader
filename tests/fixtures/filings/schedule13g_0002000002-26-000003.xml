@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<edgarSubmission>
+  <coverPageHeader>
+    <issuerName>Schedule Thirteen Target Inc</issuerName>
+    <issuerCUSIP>00020000A</issuerCUSIP>
+    <dateOfEvent>2025-12-31</dateOfEvent>
+  </coverPageHeader>
+  <reportingPerson>
+    <reportingPersonName>Fictional Index Trust</reportingPersonName>
+    <reportingPersonCik>0002200002</reportingPersonCik>
+    <aggregateAmountOwned>9900000</aggregateAmountOwned>
+    <percentOfClass>11.2</percentOfClass>
+    <soleVotingPower>9900000</soleVotingPower>
+    <sharedVotingPower>0</sharedVotingPower>
+    <soleDispositivePower>9900000</soleDispositivePower>
+    <sharedDispositivePower>0</sharedDispositivePower>
+  </reportingPerson>
+</edgarSubmission>
