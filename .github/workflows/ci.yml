@@ -93,7 +93,8 @@ jobs:
           python -m compileall -q \
             agents backtest bot comparables config data database evals execution \
             filings macro memo migrations news orchestrator portfolio scanning \
-            scoring screening scripts tests tracking utils workspace main.py
+            scoring screening scripts strategy_lab tests tracking utils \
+            workspace main.py
 
       - name: Resolve the target database URL
         id: db
