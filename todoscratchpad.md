@@ -778,6 +778,7 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
             counts.** v1 is liquidity-only, versioned so the cap leg is a new slug.
 - [ ] **Phase 4 — evidence planes: filings (13F/13D/G/Form 4), vintage-correct macro,
       timestamped news** (`O`)
+- [ ] **Build handoff** — `docs/investment-workspace/handoff/HANDOFF.md` is the live state of the Investment Workspace build (what is merged, what is in flight, the integration recipe, the briefs for unbuilt PRs). Updated in every integration commit.
 - [ ] **Phase 5 — Strategy Lab** (`Q`) — ships on its own six-PR plan and prompts.
       - [x] **PR 1 — domain + experiment persistence — MERGED** ([PR #54](https://github.com/niyonzimabryan/swingtrader/pull/54), `3da5acb`): the eight remaining Spec Q §8 tables in
             `0007_strategy_lab` (`source_observations` reused from Phase 3a, not
