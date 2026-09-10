@@ -208,3 +208,9 @@ Ratified 2026-09-09 from the Phase 2 build (PR #50):
   tiers: a scraped page is third-party copyrighted prose in a public repo.
 - The evidenced budget is unusable until Phase 3c registers cohort answers with the
   citation seam; every journal entry until then is honestly `discretionary`.
+  *Update 2026-09-10 (PR #56):* Phase 3c now binds a resolver into
+  `register_answer_resolver`, and `cite_cohort_answer` accepts a stored
+  `ResolvedCitation` on the same rule as an in-memory answer, hashing the stored
+  JSON as written. A journal entry can now cite `cohort:<id>`; the *sizing*
+  side still lands `discretionary` until the evidenced-budget closure lands
+  (Spec L §10).
