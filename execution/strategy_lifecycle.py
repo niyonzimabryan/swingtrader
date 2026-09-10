@@ -729,7 +729,19 @@ class StrategyExecutionService:
         now = now or utcnow_naive()
         actions: list[ResumeAction] = []
         with self.session_factory() as session:
-            rows = registry.resumable_executions(session)
+            # Shadow executions are deliberately excluded, and not as an
+            # optimisation. PR 3's shadow executor walks the same §12 machine and
+            # leaves rows sitting at `protected` until the simulated position
+            # matures, so they are non-terminal — but there is no adapter to
+            # resolve them against, and asking for one is
+            # `ShadowReachedExecution` by design. A simulated position is
+            # resumed by re-running the shadow executor, never from a broker.
+            rows = [
+                row
+                for mode in slx.MODE_VENUES
+                for row in registry.resumable_executions(session, mode=mode)
+            ]
+            rows.sort(key=lambda row: row.id)
             plan = [(row.execution_id, row.status, row.arm_id) for row in rows]
         for execution_id, status, arm_id in plan:
             try:

@@ -140,6 +140,11 @@ def blocking_executions(session) -> list:
     the ledger side, so that one function answers "may an entry proceed" for
     both the Phase 6 proposal path and the Phase 5 arm path.
 
+    Shadow executions are excluded. The shadow executor walks the same machine
+    against a simulator, so a simulated row could in principle reach a blocking
+    state — and a simulated position must never block real capital. Spec Q §12
+    invariant 3 is about existing *live* trades.
+
     ``protection_pending`` is deliberately **not** in the blocking set: it is the
     few seconds between a fill and its stop being read back, and a row that is
     still inside its protection window has not failed yet. The window's own
@@ -151,6 +156,7 @@ def blocking_executions(session) -> list:
     return (
         session.query(StrategyTrade)
         .filter(StrategyTrade.status.in_(STRATEGY_TRADE_BLOCKING_STATUSES))
+        .filter(StrategyTrade.mode != "shadow")
         .order_by(StrategyTrade.id.desc())
         .all()
     )

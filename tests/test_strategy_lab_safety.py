@@ -601,3 +601,70 @@ class CapabilityInspectionTests(unittest.TestCase):
         source = inspect.getsource(RobinhoodMCPBroker.inspect_order_capabilities)
         for forbidden in ("_call_tool", "place_order", "review_order", "place_stop"):
             self.assertNotIn(forbidden, source)
+
+
+# --------------------------------------------------------------------------- #
+# Shadow rows must not leak into the live path
+# --------------------------------------------------------------------------- #
+
+
+class ShadowRowsAreInertTests(SafetyTestCase):
+    """PR 3's shadow executor walks the same §12 machine. It must stay separate.
+
+    A shadow arm's simulated position sits at `protected` — non-terminal — until
+    it matures, so it *is* in `resumable_executions`. Two consequences the live
+    path must not inherit: a resume pass must not try to bind an adapter for it
+    (there is none, by design), and a simulated row must never block real
+    capital.
+    """
+
+    def _shadow_row(self, status):
+        from strategy_lab import registry
+
+        with get_session() as session:
+            arm, decision = fx.build_lab(
+                session, mode=ExecutionMode.SHADOW, ticker="NVDA", promote=False
+            )
+            trade = registry.open_execution(
+                session, arm.id, decision.id, mode=ExecutionMode.SHADOW
+            )
+            registry.advance_execution(
+                session, trade.execution_id, status, reason="simulated"
+            )
+            session.commit()
+            return trade.execution_id
+
+    def test_resume_ignores_a_shadow_execution(self):
+        """Otherwise `ShadowReachedExecution` would kill the whole pass."""
+        execution_id = self._shadow_row(ExecutionState.OWNER_APPROVED)
+        service = self.service()
+        actions = service.resume(now=self.now)
+        self.assertEqual([a.execution_id for a in actions], [])
+        self.assertNoOrders()
+
+    def test_a_blocking_shadow_row_does_not_block_a_real_entry(self):
+        """A simulation must never stop real capital. Invariant 3 is about live."""
+        self._shadow_row(ExecutionState.RECONCILIATION_REQUIRED)
+        with get_session() as session:
+            self.assertIsNone(killswitch.entry_block(session))
+        card = self.service().propose(self.request, now=self.now)
+        self.assertEqual(card.blocked_reason, "")
+
+    def test_a_blocking_paper_row_still_blocks(self):
+        """The control: the exclusion is on the mode, not on the states."""
+        from strategy_lab import registry
+
+        with get_session() as session:
+            arm, decision = fx.build_lab(session, mode=ExecutionMode.PAPER, ticker="MSFT")
+            trade = registry.open_execution(
+                session, arm.id, decision.id, mode=ExecutionMode.PAPER
+            )
+            registry.advance_execution(
+                session, trade.execution_id, ExecutionState.RECONCILIATION_REQUIRED
+            )
+            session.commit()
+        with get_session() as session:
+            self.assertEqual(
+                killswitch.entry_block(session)[0], killswitch.UNRESOLVED_EXECUTION
+            )
+        self.assertNoOrders()

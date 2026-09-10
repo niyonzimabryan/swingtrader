@@ -904,9 +904,17 @@ changing a declaration that a test asserts, which is the intended cost.
 
 ### Restart, and the two rules the resume pass never breaks
 
-`StrategyExecutionService.resume()` re-derives every non-terminal execution from
-the broker's current answer, because after a restart there is no other source of
-truth.
+`StrategyExecutionService.resume()` re-derives every non-terminal *paper or live*
+execution from the broker's current answer, because after a restart there is no
+other source of truth.
+
+Shadow rows are skipped, and not as an optimisation. §17's shadow executor walks
+this same machine, so a simulated position sits at `protected` — non-terminal —
+until it matures; it is resumed by re-running the shadow executor, never from a
+broker, and asking for an adapter for it is `ShadowReachedExecution` by design.
+For the same reason `killswitch.blocking_executions` excludes `shadow`: a
+simulated position must never block real capital, and §12 invariant 3 is about
+existing *live* trades.
 
 * **No entry order is ever placed by resume.** A protective stop may be
   re-placed — that is the whole point of surviving a restart with an unprotected
