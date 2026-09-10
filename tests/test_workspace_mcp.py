@@ -26,27 +26,54 @@ def _text(result) -> str:
 
 
 class WorkspaceServiceTests(unittest.TestCase):
-    def setUp(self):
-        self.db = TestDatabase("workspace")
-        self.addCleanup(self.db.cleanup)
+    """One database and one live server for the whole class.
 
+    Nothing here needs a fresh schema per test, only a fresh set of tokens:
+    every test in this class issues the same three labels, so the previous
+    test's rows have to be gone before the next `issue_token` call, or the
+    label collides (`workspace.tokens.issue` refuses a duplicate label).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = TestDatabase("workspace")
         from database.db import init_db
 
+        init_db(cls.db.url)
+        cls.app, cls.settings = ws.build_app(cls.db.url)
+        cls._live_ctx = ws.running(cls.app)
+        cls.live = cls._live_ctx.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._live_ctx.__exit__(None, None, None)
+        cls.db.cleanup()
+
+    def setUp(self):
+        # Defensive: `WorkspaceFlagOffTests` (this module) calls `init_db` with
+        # its own throwaway database, repointing the process-global engine this
+        # class's live server reads through `get_session()`.
+        from database.db import get_session, init_db
+
         init_db(self.db.url)
+        from database.models import WorkspaceToken
+
+        with get_session() as session:
+            session.query(WorkspaceToken).delete()
+        # SQLite reuses a deleted table's lowest rowid, so a reissued token can
+        # carry the same id an earlier test's did; the rate limiter's
+        # in-memory window is keyed by that id and would otherwise treat both
+        # tests' calls as one token's, on a server this class now shares.
+        self.app.state.workspace_auth.limiter.reset()
+
         self.read_token = ws.issue_token("claude-code", ["read"])
         self.admin_token = ws.issue_token("admin-only", ["admin"])
         self.revoked_token = ws.issue_token("retired-laptop", ["read"])
 
-        from database.db import get_session
         from workspace import tokens
 
         with get_session() as session:
             tokens.revoke(session, "retired-laptop")
-
-        app, self.settings = ws.build_app(self.db.url)
-        self._live = ws.running(app)
-        self.live = self._live.__enter__()
-        self.addCleanup(lambda: self._live.__exit__(None, None, None))
 
     # --- /health -----------------------------------------------------------
 

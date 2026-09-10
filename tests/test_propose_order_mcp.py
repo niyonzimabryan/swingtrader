@@ -31,13 +31,49 @@ def _text(result) -> str:
 
 
 class ProposeOrderMcpTests(unittest.TestCase):
-    def setUp(self):
-        self.db = TestDatabase("propose_mcp")
-        self.addCleanup(self.db.cleanup)
+    """One database and one live server for the whole class.
 
+    Every test resyncs a fresh cash Agentic ledger and reissues its own
+    tokens; `run_sync` reconciles a broker snapshot idempotently, so replaying
+    it against a shared, already-synced ledger is exactly what production does
+    on every real sync, and `_reset_proposals` clears the one table only this
+    class's own tool call writes.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = TestDatabase("propose_mcp")
         from database.db import init_db
 
+        init_db(cls.db.url)
+        cls.app, cls.settings = ws.build_app(
+            cls.db.url,
+            phase6_execution_enabled=True,
+            execution_approval_secret="test-approval-secret",
+            telegram_chat_id="99887766",
+        )
+        cls._live_ctx = ws.running(cls.app)
+        cls.live = cls._live_ctx.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._live_ctx.__exit__(None, None, None)
+        cls.db.cleanup()
+
+    def setUp(self):
+        from database.db import get_session, init_db
+        from database.models import Proposal, WorkspaceToken
+        from utils.timeutils import utcnow_naive
+
         init_db(self.db.url)
+        with get_session() as session:
+            session.query(Proposal).delete()
+            session.query(WorkspaceToken).delete()
+        # See the identical comment in test_workspace_mcp.py: a reissued token
+        # can carry a rowid an earlier test's token did, and the rate limiter
+        # window is keyed by that id.
+        self.app.state.workspace_auth.limiter.reset()
+
         self.read_token = ws.issue_token("claude-read", ["read"])
         self.propose_token = ws.issue_token("claude-propose", ["propose"])
 
@@ -45,22 +81,9 @@ class ProposeOrderMcpTests(unittest.TestCase):
         # against. The MCP tool sizes against the real clock (it takes no
         # injected `now`), so the ledger must be synced as of *now* or the
         # freshness guard would refuse it as stale.
-        from database.db import get_session
-        from utils.timeutils import utcnow_naive
-
         with get_session() as session:
             pf.synced_session(session, now=utcnow_naive())
             session.commit()
-
-        app, self.settings = ws.build_app(
-            self.db.url,
-            phase6_execution_enabled=True,
-            execution_approval_secret="test-approval-secret",
-            telegram_chat_id="99887766",
-        )
-        self._live = ws.running(app)
-        self.live = self._live.__enter__()
-        self.addCleanup(lambda: self._live.__exit__(None, None, None))
 
     def _call(self, token, arguments):
         return asyncio.run(ws.call_tool(self.live.base_url, token, "propose_order", arguments))
