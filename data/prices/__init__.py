@@ -5,7 +5,7 @@ false, and `data/market_data.py` (the incumbent yfinance path) is untouched.
 
   * `base`            the `PricePlane` interface and the record shapes.
   * `fixture_plane`   `FixturePricePlane`, backed by committed CSVs.
-  * `sharadar`        `SharadarPricePlane`, against Nasdaq Data Link.
+  * `sharadar`        `SharadarPricePlane`, against Sharadar's direct API.
   * `derived`         the three series, the factors between them, and the
                       point-in-time covariates computable from stored bars.
   * `store`           persistence into the five Phase 3p tables.

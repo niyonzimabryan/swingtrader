@@ -10,9 +10,9 @@ not get wrong:
 
 - **The direct API is `https://api.sharadar.com/v1.0`. It is not Nasdaq Data
   Link.** A sharadar.com key does not work against `data.nasdaq.com` or with the
-  `nasdaqdatalink` / `quandl` libraries. `data/prices/sharadar.py` was written
-  against Nasdaq Data Link (Phase 3p) and is being ported — see
-  `docs/investment-workspace/handoff/HANDOFF.md`.
+  `nasdaqdatalink` / `quandl` libraries. `data/prices/sharadar.py` targets the
+  direct API — ported against payloads recorded live under
+  `tests/fixtures/sharadar_direct/` (see that directory's README).
 - **Prices plan, 10-year history, $19/month** is the tier this project buys
   (Spec N §5.4 regime cells and §5.5 stability need two market cycles; 5 years
   is one). Bulk `years=10` matches the purchased history.

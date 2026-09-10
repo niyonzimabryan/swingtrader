@@ -140,3 +140,10 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   CI-speed building.
 - 2026-09-10 05:35Z — #62 (this file) and #60 merged; SL4 spawned; #61 waiting
   on a Postgres CI run under the 40-minute cap.
+- 2026-09-10 07:10Z — `data/prices/sharadar.py` ported from Nasdaq Data Link to
+  Sharadar's direct API (`https://api.sharadar.com/v1.0`), against payloads
+  recorded live with the public `test-api-key` under
+  `tests/fixtures/sharadar_direct/`. Added `SharadarPricePlane.bulk_download`
+  and `--bulk years=5|10|full` on `scripts/price_backfill.py` for the 10-year
+  Prices tier. `PRICE_PLANE_SOURCE=sharadar` no longer needs the port; it
+  needs `SHARADAR_API_KEY` (`docs/ENV_SETUP.md` §6).
