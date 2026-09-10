@@ -44,7 +44,16 @@ ENV_SETUP (#52), rulings (#55), **Phase 3c (#56), Phase 6 (#57), Strategy Lab 2
    `specs/investment-workspace/strategy-lab/strategy-lab-architecture.md`, same
    shape as Spec N §12), and refresh `docs/ENV_SETUP.md` §10 (Strategy Lab
    flags) and the order-of-operations list.
-6. Write the owner summary (§7 below is the skeleton).
+6. **Port `data/prices/sharadar.py` to the direct API** (`docs/vendors/sharadar.md`):
+   base `https://api.sharadar.com/v1.0/data/{table}`, `x-api-key` header,
+   `ticker`/`from`/`to`/`fields`/`limit`/`offset`, tables `stocks` (SEP),
+   `actions`, `tickers`, `sp500`; keep the fixture path and every existing test;
+   record the real JSON shape from the owner's laptop
+   (`curl "https://api.sharadar.com/v1.0/data/stocks?api_key=test-api-key&ticker=AAPL&limit=3&format=json"`,
+   same for `actions` and `tickers`) into `tests/fixtures/sharadar_direct/`
+   before writing the parser — the build sandbox cannot reach sharadar.com.
+   Small enough for a Sonnet session.
+7. Write the owner summary (§7 below is the skeleton).
 
 Each spawn: Claude Code cloud session, model `claude-opus-5`, source
 `niyonzimabryan/swingtrader` @ `main`, outcome branch as named in the brief.
@@ -106,8 +115,9 @@ the brief and tell it the branch already carries N commits.
 
 ## 6. Gotchas learned tonight
 
-- Pushes from the orchestrating session do **not** trigger CI; pushes from
-  cloud child sessions do. Local validation is the gate for orchestrator pushes.
+- Pushes to a PR branch trigger the `pull_request` workflow whoever pushes
+  them (earlier note to the contrary was wrong); `workflow_dispatch` is also
+  enabled. Local validation on 3.12 stays the first gate.
 - The Postgres CI job was cancelled at exactly the 20-minute cap on #60; the
   cap is 40 now. The real fix is the CI-speed PR.
 - `pkill -f` with the test command string kills your own shell.
