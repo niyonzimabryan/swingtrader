@@ -39,6 +39,7 @@ The acceptance list from the Phase 5 brief, and where each row lives:
 from __future__ import annotations
 
 import threading
+import time
 import unittest
 from datetime import timedelta
 
@@ -302,7 +303,7 @@ class OpenExecutionTests(ExecutionTestCase):
         def worker():
             try:
                 barrier.wait(timeout=10)
-                for _ in range(5):
+                for attempt in range(20):
                     try:
                         with get_session() as session:
                             row = registry.open_execution(
@@ -317,6 +318,11 @@ class OpenExecutionTests(ExecutionTestCase):
                     except Exception as exc:  # SQLite writer contention
                         if "locked" not in str(exc).lower():
                             raise
+                        # One writer at a time on SQLite; back off and retry.
+                        # The contention is the test environment's, not the
+                        # invariant's — Postgres has no such lock, and the
+                        # assertion below is about how many rows exist either way.
+                        time.sleep(0.05 * (attempt + 1))
                 raise RuntimeError("could not acquire the writer")
             except Exception as exc:  # pragma: no cover - surfaced below
                 errors.append(exc)
@@ -902,3 +908,67 @@ class MonitorIntegrationTests(ExecutionTestCase):
         )
         monitor._run_execution_reconcilers()
         self.assertEqual(calls, ["ran"])
+
+
+class ResumeWalksEveryLegalHopTests(ExecutionTestCase):
+    """Resume must never jump an edge §12 does not draw, or the row sticks.
+
+    Two hops the transition table refuses and the resume paths have to walk
+    instead: `owner_approved -> submitted` (the reservation is taken in
+    between) and `submitted -> expired` (an order held long enough to expire
+    was accepted first). Both are narrow, and a row stuck non-terminal blocks
+    every further entry, so both are asserted rather than reasoned about.
+    """
+
+    def test_resume_from_owner_approved_walks_through_the_reservation(self):
+        self.build()
+        card = self.propose()
+        with get_session() as session:
+            proposal = session.query(Proposal).one()
+            proposal.entry_ref_id = f"p6-entry-{proposal.proposal_uid}"
+            proposal.quantity, proposal.notional = 50, 5000.0
+            trade = registry.execution_row(session, card.execution_id)
+            registry.advance_execution(
+                session, trade.execution_id, ExecutionState.OWNER_APPROVED
+            )
+            session.commit()
+            ref_id = proposal.entry_ref_id
+
+        self.broker.phantom_ref_ids = (ref_id,)
+        self.service.resume(now=self.now)
+
+        # Adopted, not re-placed, and not left stuck in a state with no exit.
+        self.assertEqual(self.broker.calls.get("place_order", 0), 0)
+        self.assertNotEqual(self.status(card.execution_id), ExecutionState.OWNER_APPROVED.value)
+
+    def test_resume_from_owner_approved_with_no_order_is_terminal(self):
+        self.build()
+        card = self.propose()
+        with get_session() as session:
+            proposal = session.query(Proposal).one()
+            proposal.entry_ref_id = f"p6-entry-{proposal.proposal_uid}"
+            registry.advance_execution(
+                session, card.execution_id, ExecutionState.OWNER_APPROVED
+            )
+            session.commit()
+        self.service.resume(now=self.now)
+        self.assertEqual(self.status(card.execution_id), ExecutionState.FAILED_NO_ORDER.value)
+        self.assertEqual(self.reserved(), 0.0)
+        self.assertEqual(self.broker.calls.get("place_order", 0), 0)
+
+    def test_an_expired_entry_resolves_from_submitted(self):
+        self.build(broker=FakeExecutionBroker(fill_price=100.0, fill_entry=False))
+        card = self.propose()
+        self.approve(card)
+        with get_session() as session:
+            entry_order_id = session.query(Proposal).one().entry_broker_order_id
+            # Set the column directly rather than through the machine: this test
+            # is about what `resume` does *from* `submitted`, and the machine
+            # (rightly) refuses to walk backwards into it.
+            registry.execution_row(session, card.execution_id).status = "submitted"
+            session.commit()
+        self.broker._orders[entry_order_id].status = "expired"
+
+        self.service.resume(now=self.now)
+        self.assertEqual(self.status(card.execution_id), ExecutionState.EXPIRED.value)
+        self.assertEqual(self.reserved(), 0.0)

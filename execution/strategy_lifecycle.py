@@ -847,6 +847,18 @@ class StrategyExecutionService:
 
         order_id = str(found.get("id") or found.get("order_id") or "")
         self._mark_proposal(proposal.id, "submitted", "", entry_broker_order_id=order_id or None)
+        # §12 draws no edge from `owner_approved` straight to `submitted`: the
+        # reservation is taken in between, and skipping it would submit an order
+        # whose notional nothing had counted. A crash in that gap is vanishingly
+        # narrow — the observer commits both hops in one transaction — but a
+        # resume pass that could not resolve the row would leave it stuck, so the
+        # missing hop is walked rather than jumped.
+        if status == ExecutionState.OWNER_APPROVED.value:
+            self._set(
+                execution_id, ExecutionState.RISK_RESERVED, now=now,
+                notional=float(proposal.notional or 0.0),
+                quantity=float(proposal.quantity or 0),
+            )
         self._set(execution_id, ExecutionState.SUBMITTED, now=now)
         return self._resume_working_entry(
             service,
@@ -869,6 +881,9 @@ class StrategyExecutionService:
             self._mark_proposal(proposal.id, "cancelled", "resume: this entry was cancelled at the broker.")
             return ResumeAction(execution_id, status, ExecutionState.CANCELLED.value, "cancelled")
         if state == "expired":
+            # `submitted -> expired` is not an edge; `accepted -> expired` is.
+            # An order the broker held long enough to expire was one it accepted.
+            self._set(execution_id, ExecutionState.ACCEPTED, now=now)
             self._set(execution_id, ExecutionState.EXPIRED, now=now, reason="broker_expired")
             self._mark_proposal(proposal.id, "expired", "resume: this entry expired at the broker.")
             return ResumeAction(execution_id, status, ExecutionState.EXPIRED.value, "expired")
