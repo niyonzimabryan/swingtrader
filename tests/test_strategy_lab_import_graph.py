@@ -73,7 +73,15 @@ PURE_SDK_MODULES = {
 #: one. Every write they make goes through `registry.py`, which stays the only
 #: module in the package holding `database`. Naming them here means adding a
 #: Phase 3 module that opens its own session is a visible test failure.
-SESSION_TAKING_BUT_NOT_HOLDING = {"runner.py", "shadow.py"}
+#: PR 6 adds `promotion.py` to the same set for the same reason: the promotion
+#: workflow reads arms, evidence and the event log, and every one of those reads
+#: and its one write go through `registry.py`. It also cannot see a feature flag,
+#: a kill switch or a broker — those refusals are contributed by
+#: `orchestrator/strategy_lab_promotion.py`, which can — and that split is the
+#: point rather than a limitation: the module holding "a tier change binds this
+#: evidence to this arm" must not be able to read a setting that would let it
+#: infer one instead.
+SESSION_TAKING_BUT_NOT_HOLDING = {"runner.py", "shadow.py", "promotion.py"}
 
 #: Pure stdlib, and staying that way: this is what a strategy imports.
 NO_FIRST_PARTY_AT_ALL = {"domain.py"}

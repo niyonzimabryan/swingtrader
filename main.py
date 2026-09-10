@@ -202,9 +202,17 @@ async def main():
             # A protection failure or an unknown placement must reach the owner
             # on the same channel everything else pages on. The recovery text is
             # in `detail`; system_message carries it verbatim.
-            recovery = (detail or {}).get("recovery", "")
-            message = f"⚠️ {event}: proposal {(detail or {}).get('proposal_id', '?')} " \
-                      f"{(detail or {}).get('ticker', '')}\n{recovery}"
+            detail = detail or {}
+            recovery = detail.get("recovery", "")
+            # A Strategy Lab page names its execution, a Phase 6 one its
+            # proposal. Same channel, same recovery text, and the line says which
+            # row to go and look at rather than printing "?" for the other kind.
+            subject = (
+                f"execution {str(detail.get('execution_id'))[:12]}"
+                if detail.get("execution_id")
+                else f"proposal {detail.get('proposal_id', '?')}"
+            )
+            message = f"⚠️ {event}: {subject} {detail.get('ticker', '')}\n{recovery}"
             try:
                 asyncio.run_coroutine_threadsafe(
                     notifications.system_message(message),
@@ -220,6 +228,40 @@ async def main():
             pager=_pager,
         )
         log.info("phase6_execution_wired", execution_mode=getattr(settings, "execution_mode", "paper"))
+
+        # Strategy Lab arms (Spec Q §12 invariant 11, PR 6). A SECOND service,
+        # deliberately, and the difference is the whole invariant: the one above
+        # is bound to `pipeline.broker`, the router that follows the global
+        # EXECUTION_MODE, while this one is given a venue -> adapter MAP and the
+        # arm's own immutable mode selects from it. A paper arm therefore reaches
+        # Alpaca paper when EXECUTION_MODE=live and BROKER_PRIMARY=robinhood, and
+        # `bind_adapter` refuses any other pairing before broker review.
+        #
+        # The live venue is registered only when the primary broker declares
+        # itself to be that venue. Registering the router would reintroduce the
+        # global-mode inference this service exists to remove.
+        from strategy_lab.execution import LIVE_VENUE, PAPER_VENUE
+
+        _adapters = {PAPER_VENUE: pipeline.paper_broker}
+        if str(getattr(pipeline.primary_broker, "venue", "") or "").lower() == LIVE_VENUE:
+            _adapters[LIVE_VENUE] = pipeline.primary_broker
+
+        from execution.strategy_lifecycle import StrategyExecutionService
+
+        app.bot_data["strategy_lab_adapters"] = _adapters
+        app.bot_data["strategy_execution_service"] = StrategyExecutionService(
+            session_factory=_get_session,
+            settings=settings,
+            adapters=_adapters,
+            pager=_pager,
+            owner_id=str(getattr(settings, "telegram_chat_id", "") or ""),
+        )
+        log.info(
+            "strategy_lab_execution_wired",
+            venues=sorted(_adapters),
+            paper_enabled=bool(getattr(settings, "strategy_lab_paper_enabled", False)),
+            live_enabled=bool(getattr(settings, "strategy_lab_live_enabled", False)),
+        )
 
     # Initialize order monitor — always bound to the Alpaca broker, never the
     # mode-sensitive router. These monitors manage Alpaca order lifecycles only;
