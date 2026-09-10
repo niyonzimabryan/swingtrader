@@ -115,6 +115,11 @@ Not every tool exists yet in every deployment. Phases land them in order; a tool
 that is absent is absent, and the answer is to say so rather than to substitute
 recall for it.
 
+**Vendor references.** `docs/vendors/` holds vendor-supplied API references
+(currently `sharadar.md`). Read the relevant one before touching an adapter under
+`data/` or `filings/`; an adapter written from memory against the wrong endpoint
+is the failure mode those files exist to prevent.
+
 ## 4. Attaching
 
 `docs/WORKSPACE_ACCESS.md` is the procedure: issue a token, export
