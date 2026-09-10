@@ -436,7 +436,7 @@ class RedactionTests(unittest.TestCase):
             "ref_id": "p6-entry-1",
             "quantity": 10,
             "account_number": "123456789",
-            "access_token": "secret",
+            "access_token": "REDACT-ME",
             "raw_payload": {"account_number": "123456789"},
         })
         self.assertEqual(redacted["execution_id"], "abc")
@@ -448,7 +448,7 @@ class RedactionTests(unittest.TestCase):
 
     def test_a_key_is_kept_even_when_its_value_is_not(self):
         """Knowing a token was present is diagnosis; knowing its value is a leak."""
-        self.assertIn("access_token", slx.redact({"access_token": "secret"}))
+        self.assertIn("access_token", slx.redact({"access_token": "REDACT-ME"}))
 
     def test_a_nested_allowlisted_mapping_is_redacted_recursively(self):
         redacted = slx.redact({"recovery": "do the thing", "detail": {"order_id": "1"}})
