@@ -602,6 +602,119 @@ class NoDuplicateTests(PaperFixture):
         with get_session() as session:
             self.assertEqual(paper.reserved_tickers(session, mode="paper"), ())
 
+    def test_the_entry_point_itself_refuses_a_reserved_ticker(self):
+        """Not only the dispatcher: the rule is a property of `propose`.
+
+        A check that lives in one caller's loop is not a property of the system —
+        a second dispatch pass or any future caller would reintroduce
+        duplicate-ticker exposure. So the same name is refused at the entry point,
+        with a terminal row as the audit trail and zero order calls.
+        """
+        from execution.strategy_lifecycle import ArmExecutionRequest
+
+        self.dispatch(settings=self.settings_for(strategy_lab_paper_max_proposals_per_run=1))
+        with get_session() as session:
+            held = paper.reserved_tickers(session, mode="paper")
+        self.assertEqual(len(held), 1)
+
+        # A second decision on the held name, from a second snapshot, proposed
+        # directly — bypassing the dispatcher's pre-filter entirely.
+        with get_session() as session:
+            snapshot = slf.universe_snapshot(
+                [slf.replayable_inputs(t, slf.flat_bars()) for t in self.tickers],
+                cutoff=CUTOFF + timedelta(minutes=2),
+            )
+            row = registry.record_snapshot(session, snapshot)
+            decision = registry.record_decision(
+                session, self.arm_id, row.id, a_decision(snapshot, held[0])
+            )
+            session.commit()
+            decision_id = decision.id
+
+        card = self.service().propose(
+            ArmExecutionRequest(
+                arm_id=self.arm_id, decision_id=decision_id,
+                mode=ExecutionMode.PAPER, ticker=held[0],
+                entry=100.0, stop=95.0, risk_fraction=0.005,
+            ),
+            now=NOW,
+        )
+        self.assertEqual(card.blocked_reason, "ticker_reserved")
+        self.assertEqual(card.status, ExecutionState.RISK_REJECTED.value)
+        self.assertNoOrders()
+
+    def test_an_execution_cannot_be_cancelled_once_it_is_past_proposed(self):
+        """`cancel` is owner-rejection *before* placement, and now says so.
+
+        The §12 table allows `submitted -> cancelled` so the resume pass can
+        record a cancellation the broker reports. An owner reject arriving while
+        an approval is in flight must not use that edge: it would mark a row with
+        a live order terminal and release its reservation, reopening the name to a
+        second arm.
+        """
+        from execution.strategy_lifecycle import ArmExecutionRefused
+
+        self.dispatch(settings=self.settings_for(strategy_lab_paper_max_proposals_per_run=1))
+        service = self.service()
+        with get_session() as session:
+            trade = session.query(models.StrategyTrade).first()
+            execution_id = trade.execution_id
+            registry.advance_execution(
+                session, execution_id, ExecutionState.OWNER_APPROVED, now=NOW
+            )
+            registry.advance_execution(
+                session, execution_id, ExecutionState.RISK_RESERVED, now=NOW
+            )
+            registry.advance_execution(
+                session, execution_id, ExecutionState.SUBMITTED, now=NOW
+            )
+            session.commit()
+
+        with self.assertRaises(ArmExecutionRefused) as caught:
+            service.cancel(execution_id=execution_id, reason="owner_rejected")
+        self.assertEqual(caught.exception.code, "not_cancellable")
+        with get_session() as session:
+            row = session.query(models.StrategyTrade).filter(
+                models.StrategyTrade.execution_id == execution_id
+            ).one()
+            self.assertEqual(row.status, ExecutionState.SUBMITTED.value)
+            # And the reservation is still held, which is the point.
+            from strategy_lab.execution import holds_reservation
+
+            self.assertTrue(holds_reservation(row.status))
+
+    def test_a_proposed_execution_is_still_cancellable(self):
+        """The other side of the boundary, so the guard cannot pass by refusing all."""
+        self.dispatch(settings=self.settings_for(strategy_lab_paper_max_proposals_per_run=1))
+        with get_session() as session:
+            execution_id = session.query(models.StrategyTrade).first().execution_id
+        status = self.service().cancel(execution_id=execution_id, reason="owner_rejected")
+        self.assertEqual(status, ExecutionState.CANCELLED.value)
+        with get_session() as session:
+            self.assertEqual(paper.reserved_tickers(session, mode="paper"), ())
+
+    def test_the_bot_routes_a_lab_proposal_by_its_row_not_its_callback(self):
+        """`_lab_execution_id` reads the row, so a crafted callback cannot re-route."""
+        from bot.handlers.proposals import _lab_execution_id
+
+        self.dispatch(settings=self.settings_for(strategy_lab_paper_max_proposals_per_run=1))
+        with get_session() as session:
+            lab_proposal = session.query(models.Proposal).first()
+            lab_id, expected = lab_proposal.id, lab_proposal.execution_id
+            plain = models.Proposal(
+                proposal_uid="plain-1", ticker="IBM", side="long", entry=100.0,
+                stop=95.0, risk_fraction=0.005, status="proposed",
+                created_at=NOW, updated_at=NOW,
+            )
+            session.add(plain)
+            session.flush()
+            plain_id = plain.id
+            session.commit()
+
+        self.assertEqual(_lab_execution_id(lab_id), expected)
+        self.assertEqual(_lab_execution_id(plain_id), "")
+        self.assertEqual(_lab_execution_id(999_999), "")
+
     def test_a_live_execution_does_not_reserve_against_paper(self):
         """Different books: a paper fill at Alpaca is not the champion's position."""
         self.dispatch()

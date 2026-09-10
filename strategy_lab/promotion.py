@@ -341,12 +341,14 @@ def evidence_completeness(
 def evidence_binding_refusal(session, metric_snapshot_id: int, target_arm_id: int) -> str | None:
     """Refuse evidence that already authorized a *different* target arm.
 
-    Spec Q §8: evidence collected by one arm in one tier authorizes one tier
-    change. Re-presenting the paper arm's snapshot to promote a second target —
-    or to re-promote the same target after a demotion — would let one body of
-    evidence justify an unbounded amount of capital. The same ``(evidence,
-    target)`` pair is *not* refused here: that case is idempotency, and the
-    target's own ``inactive`` requirement is what stops a double activation.
+    Spec Q §8: evidence collected by one arm in one tier authorizes **one** tier
+    change, full stop. Re-presenting the paper arm's snapshot to promote a second
+    target would let one body of evidence justify an unbounded amount of capital;
+    re-presenting it to *re-promote the same target* after a demotion would let
+    the evidence that justified a tier the arm has since been demoted out of
+    justify putting it back. Both are refused, and the two refusals say which
+    case they are. A reactivation needs fresh evidence from the arm's own tier —
+    which is also the honest thing, because the demotion is itself new evidence.
     """
     rows = (
         session.query(registry.models.PromotionEvent)

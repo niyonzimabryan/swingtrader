@@ -113,6 +113,19 @@ async def handle_proposal_callback(query, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     owner_id = str(query.message.chat_id)
+
+    # Retire the buttons *before* dispatching, not after the work returns. An
+    # approval can take tens of seconds (the entry, the fill poll, the stop and
+    # its read-back), and until PR 6 the Reject button stayed live throughout —
+    # so an impatient second tap could arrive while the placement was in flight.
+    # The execution state machine refuses that now (`cancel` is legal only from
+    # `proposed`), but a button that cannot do anything useful should not be
+    # there to tap.
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as exc:  # pragma: no cover - Telegram-specific
+        log.warning("proposal_markup_clear_failed", proposal_id=proposal_id, error=str(exc)[:200])
+
     if action == "reject":
         await _reject(query, context, proposal_id, owner_id)
         return

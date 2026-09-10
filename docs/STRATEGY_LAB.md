@@ -1191,12 +1191,30 @@ change with its own risk surface, and it is recorded here rather than hidden.
 | Level | Mechanism |
 |---|---|
 | one execution per decision | the partial unique index on `strategy_trades.decision_id`, held by the database rather than by a process |
-| one position per ticker per mode | `reserved_tickers(session, mode=...)` — every non-terminal execution in that mode, **across arms**, because the failure it prevents is two different arms opening the same position |
+| one position per ticker per mode | checked **inside `propose`**, read fresh in the transaction that opens the row, over every non-terminal execution in that mode **across arms** — because the failure it prevents is two different arms opening the same position, and a rule that lives in one caller's loop is not a property of the system. The dispatcher's own `reserved_tickers` check is a pre-filter that avoids minting rows it already knows will be refused |
 | within one pass | the dispatcher advances its own view of the book between proposals, so the eleventh name of a ten-position book is blocked inside a single run |
 
 Modes do not reserve against each other. A paper position at Alpaca and a live
 position at Robinhood are different books, and treating them as one would make
 the tournament's exposure depend on the champion's.
+
+### Cancellation is owner-rejection *before* placement
+
+`StrategyExecutionService.cancel` is legal only from `proposed`, and that is
+checked rather than asserted. The §12 transition table does permit `submitted ->
+cancelled`, because the resume pass has to be able to **record** a cancellation
+the broker reports — it does that through its own writer, not through `cancel`.
+An owner Reject arriving while an approval is in flight would otherwise walk a row
+that already has an order at the broker to a terminal `cancelled` and release its
+reservation: the ledger would read "nothing placed, nothing reserved" for a ticker
+that has a live order, and the freed reservation would reopen the name to a second
+arm — the exact duplicate-position failure §11's reservation exists to prevent.
+Past `proposed`, cancelling is a broker action a human takes in the broker's own
+app, and the refusal says so.
+
+The approval card's buttons are also retired the moment a callback is dispatched
+rather than when the work returns, so there is nothing to double-tap during the
+tens of seconds a placement takes.
 
 ### Experiment tags
 

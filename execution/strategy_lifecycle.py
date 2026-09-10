@@ -316,6 +316,50 @@ class StrategyExecutionService:
             )
         return None
 
+    @staticmethod
+    def _ticker_reservation_refusal(session, *, mode, ticker: str, execution_id: str):
+        """Spec Q §11's ticker-level exposure reservation, at the entry point.
+
+        "A ticker-level exposure reservation prevents two arms from accidentally
+        creating duplicate live positions." The dispatcher checks this too, and
+        that check is a useful pre-filter, but a property enforced only by one
+        caller's loop is not a property of the system: a second dispatch pass, a
+        retried scan, or any future caller of :meth:`propose` would reintroduce
+        duplicate-ticker exposure with nothing to stop it. So the rule lives here,
+        read fresh inside the transaction that opens the row.
+
+        Scoped to the mode on purpose. A paper position at Alpaca and a live
+        position at Robinhood are different books; reserving across them would
+        make the tournament's exposure depend on the champion's.
+        """
+        from database import models
+        from strategy_lab.domain import TERMINAL_EXECUTION_STATES
+
+        symbol = (ticker or "").strip().upper()
+        terminal = sorted({state.value for state in TERMINAL_EXECUTION_STATES})
+        rows = (
+            session.query(models.StrategyTrade)
+            .filter(models.StrategyTrade.mode == ExecutionMode(mode).value)
+            .filter(models.StrategyTrade.status.notin_(terminal))
+            .filter(models.StrategyTrade.execution_id != execution_id)
+            .all()
+        )
+        for row in rows:
+            try:
+                held = registry.decision_row(session, row.decision_id).ticker
+            except registry.NotFound:  # pragma: no cover - a foreign key prevents it
+                continue
+            if (held or "").strip().upper() == symbol:
+                return (
+                    "ticker_reserved",
+                    f"{symbol} already carries a non-terminal "
+                    f"{ExecutionMode(mode).value} execution ({row.execution_id}) "
+                    f"on arm {row.arm_id}. One position per name per mode: a "
+                    "ticker-level reservation is what stops two arms opening the "
+                    "same position twice (Spec Q §11).",
+                )
+        return None
+
     def _capability_refusal(self, binding: slx.AdapterBinding) -> tuple[str, str] | None:
         """Run :func:`portfolio.capabilities.gate_intent` on the *adapter*.
 
@@ -427,7 +471,14 @@ class StrategyExecutionService:
                     ),
                 )
 
-            refusal = killswitch.entry_block(session)
+            refusal = self._ticker_reservation_refusal(
+                session,
+                mode=binding.mode,
+                ticker=request.ticker,
+                execution_id=trade.execution_id,
+            )
+            if refusal is None:
+                refusal = killswitch.entry_block(session)
             if refusal is None:
                 refusal = self._capability_refusal(binding)
             if refusal is None and binding.is_live:
@@ -724,14 +775,36 @@ class StrategyExecutionService:
     def cancel(self, *, execution_id: str, by: str = "owner", reason: str = "", now=None) -> str:
         """Owner cancellation, before anything has been placed.
 
-        Legal only from ``proposed``: once an entry is at the broker, "cancel"
-        is a broker action a human takes in the broker's own app, and code that
-        cheerfully flattened a book during an outage would be the worst failure
-        available here (the same reasoning as :mod:`portfolio.killswitch`).
+        Legal only from ``proposed``, and that is now checked rather than
+        asserted. The §12 transition table permits ``submitted -> cancelled``
+        because :meth:`resume` has to be able to *record* a cancellation the
+        broker reports; it does that through :meth:`_set`, not through here. An
+        owner "reject" arriving while an approval is mid-flight would otherwise
+        walk a row that already has an order at the broker to a terminal
+        ``cancelled`` and release its reservation — the ledger would read
+        "nothing placed, nothing reserved" for a ticker that has a live order,
+        and the freed reservation would reopen the name to a second arm. That is
+        the duplicate-position failure Spec Q §11's reservation exists to
+        prevent, so it is refused here.
+
+        Once an entry is at the broker, "cancel" is a broker action a human takes
+        in the broker's own app; code that cheerfully flattened a book during an
+        outage would be the worst failure available here (the same reasoning as
+        :mod:`portfolio.killswitch`).
         """
         now = now or utcnow_naive()
         with self.session_factory() as session:
             trade = registry.execution_row(session, execution_id)
+            if trade.status != ExecutionState.PROPOSED.value:
+                raise ArmExecutionRefused(
+                    "not_cancellable",
+                    f"execution {execution_id} is {trade.status!r}, not "
+                    "'proposed'. An owner cancellation is only for an execution "
+                    "that has not been approved; past that point an order may "
+                    "exist at the broker and only the broker's own app may "
+                    "cancel it. Nothing was changed here.",
+                    execution_id,
+                )
             registry.advance_execution(
                 session, trade.execution_id, ExecutionState.CANCELLED,
                 reason=reason or f"cancelled_by:{by}", now=now,

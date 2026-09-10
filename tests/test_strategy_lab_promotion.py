@@ -564,6 +564,62 @@ class ChampionTests(LiveTierFixture):
             self.assertIsNotNone(champion)
             self.assertEqual(champion.id, request.target_arm_id)
 
+    def test_a_failure_partway_through_the_swap_leaves_the_champion_untouched(self):
+        """The atomicity that matters: a failure *after* the old arm stood down.
+
+        `replace_live_champion` deactivates the incumbent and then activates the
+        target, and the caller's transaction is what makes the pair atomic. The
+        refusal cases below never reach the first write; this one breaks the
+        *second*, which is the only case where a non-transactional implementation
+        would leave the book with no champion at all.
+
+        It exercises `registry.replace_live_champion` directly rather than through
+        a promotion, because a promotion's own bindings (one experiment, one shared
+        immutable strategy version, one active arm per version and mode) make a
+        second distinct live target unconstructible — which is itself a guarantee
+        worth having, and is why this has to be tested one layer down.
+        """
+        first = self.live_request()
+        wiring.confirm(self.settings, first, adapters=self.adapters)
+
+        from dataclasses import replace as dc_replace
+
+        from strategy_lab.domain import ExperimentSpec
+
+        original = registry.set_arm_status
+        attempted: list[int] = []
+
+        def explode_on_activation(session, arm_id, status):
+            if str(getattr(status, "value", status)) == "active":
+                attempted.append(arm_id)
+                raise RuntimeError("the activation failed halfway")
+            return original(session, arm_id, status)
+
+        try:
+            with get_session() as session:
+                other = dc_replace(an_experiment_spec(), name="second_experiment")
+                registry.register_experiment(session, other)
+                rival = registry.create_arm(
+                    session, "second_experiment", "momentum_v1", "1.0.0",
+                    ExecutionMode.LIVE, risk_budget=0.0,
+                )
+                session.commit()
+                rival_id = rival.id
+
+            with self.assertRaises(RuntimeError):
+                with get_session() as session:
+                    registry.set_arm_status = explode_on_activation
+                    registry.replace_live_champion(session, rival_id)
+        finally:
+            registry.set_arm_status = original
+
+        self.assertEqual(attempted, [rival_id])
+        with get_session() as session:
+            champion = registry.active_live_arm(session)
+            self.assertIsNotNone(champion, "the swap left the book with no champion")
+            self.assertEqual(champion.id, first.target_arm_id)
+            self.assertEqual(registry.require_arm(session, rival_id).status, "inactive")
+
     def test_a_failed_live_activation_leaves_the_prior_champion_unchanged(self):
         first = self.live_request()
         wiring.confirm(self.settings, first, adapters=self.adapters)
