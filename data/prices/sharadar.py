@@ -410,6 +410,16 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         column headers are the same `STOCKS_COLUMNS` names the slice path
         already validates against, per the CSV slice recorded in
         `tests/fixtures/sharadar_direct/stocks_aapl.csv`.
+
+        **`security_uid` is a placeholder** (`sharadar:bulk:<ticker>`): the
+        bulk `stocks` CSV carries no `permaticker`, only `ticker`, so there is
+        nothing here to derive the real uid from. A caller that stores these
+        bars must first resolve the real, permaticker-derived uid per ticker
+        (`security_master`, which the bulk `tickers` zip is also a
+        full-snapshot source for) and replace this field — `store.py` joins
+        `price_bars` to `securities` on `security_uid`, so storing the
+        placeholder orphans the bar. `scripts/price_backfill.py`'s
+        `backfill_bulk` does this remap before writing anything.
         """
         rows_by_ticker = self._read_bulk_csv(zip_path, STOCKS_COLUMNS)
         out: dict[str, tuple[DailyBar, ...]] = {}
@@ -421,7 +431,10 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         return out
 
     def load_bulk_actions(self, zip_path: str | Path) -> dict[str, tuple[CorporateActionRecord, ...]]:
-        """Parse an `actions` bulk zip into corporate actions per ticker."""
+        """Parse an `actions` bulk zip into corporate actions per ticker.
+
+        Same placeholder-`security_uid` caveat as `load_bulk_bars`.
+        """
         rows_by_ticker = self._read_bulk_csv(zip_path, ACTIONS_COLUMNS)
         out: dict[str, tuple[CorporateActionRecord, ...]] = {}
         for ticker, rows in rows_by_ticker.items():

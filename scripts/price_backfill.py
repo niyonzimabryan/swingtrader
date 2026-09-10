@@ -108,7 +108,17 @@ def backfill_bulk(
     `PricePlane` interface — `FixturePricePlane` has no vendor zip to fetch).
     `tickers`, if given, narrows the parsed zip to a subset; otherwise every
     ticker in the zip is loaded.
+
+    The bulk `stocks`/`actions` CSVs carry no `permaticker` (only `ticker`),
+    so `load_bulk_bars`/`load_bulk_actions` hand back a placeholder
+    `security_uid`. That placeholder is replaced here with the real
+    permaticker-derived uid from `security_master` before anything is stored
+    — `price_bars` and `securities` are joined on `security_uid`
+    (`data/prices/store.py`), so storing the placeholder would silently orphan
+    every bulk-loaded bar from its security-master row.
     """
+    from dataclasses import replace as _replace
+
     from database.db import get_session
 
     if not hasattr(plane, "bulk_download"):
@@ -125,6 +135,7 @@ def backfill_bulk(
         "actions_written": 0,
         "securities_written": 0,
         "tickers_empty": [],
+        "tickers_without_a_security_master_row": [],
         "reconstruction_checked": check,
     }
 
@@ -138,15 +149,24 @@ def backfill_bulk(
 
     with get_session() as session:
         ticker_list = sorted(wanted)
+        uid_by_ticker: dict[str, str] = {}
         for start in range(0, len(ticker_list), MASTER_BATCH_SIZE):
             batch = ticker_list[start:start + MASTER_BATCH_SIZE]
-            summary["securities_written"] += store.upsert_securities(
-                session, plane.security_master(batch)
-            )
+            master_rows = plane.security_master(batch)
+            summary["securities_written"] += store.upsert_securities(session, master_rows)
+            uid_by_ticker.update({row.ticker: row.security_uid for row in master_rows})
 
         for ticker in ticker_list:
+            uid = uid_by_ticker.get(ticker)
+            if uid is None:
+                # `tickers` has no row for this name — refuse to store bars
+                # under the bulk parser's placeholder uid, same principle as
+                # `_uid_for` refusing to invent one on the slice path.
+                summary["tickers_without_a_security_master_row"].append(ticker)
+                continue
             bars = tuple(
-                bar for bar in bars_by_ticker.get(ticker, ())
+                _replace(bar, security_uid=uid)
+                for bar in bars_by_ticker.get(ticker, ())
                 if (since is None or bar.session_date >= since)
                 and (until is None or bar.session_date <= until)
             )
@@ -157,7 +177,8 @@ def backfill_bulk(
                 check_reconstruction(bars)
             summary["bars_written"] += store.upsert_bars(session, bars)
             actions = tuple(
-                action for action in actions_by_ticker.get(ticker, ())
+                _replace(action, security_uid=uid)
+                for action in actions_by_ticker.get(ticker, ())
                 if (since is None or action.ex_date >= since)
                 and (until is None or action.ex_date <= until)
             )

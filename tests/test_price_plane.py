@@ -961,7 +961,18 @@ class SharadarBulkDownloadTests(unittest.TestCase):
         self.assertEqual(summary["securities_written"], 2)
 
         with get_session() as session:
-            self.assertEqual(len(store.load_all_bars(session)), 2)
+            all_bars = store.load_all_bars(session)
+            self.assertEqual(len(all_bars), 2)
+            # The bulk CSV carries no permaticker, only `ticker`; the stored
+            # security_uid must be the real, permaticker-derived one from
+            # `security_master` — not the placeholder `load_bulk_bars` hands
+            # back — or `price_bars` never joins to its `securities` row.
+            master_by_ticker = {row.ticker: row.security_uid for row in store.load_securities(session)}
+            self.assertEqual(master_by_ticker["BBBY"], "sharadar:199059")
+            self.assertEqual(master_by_ticker["AAPL"], "sharadar:320193")
+            self.assertEqual(set(all_bars), set(master_by_ticker.values()))
+            for uid in all_bars:
+                self.assertNotIn("bulk", uid)
 
         # Idempotent, like the per-ticker path.
         again = backfill_bulk(plane, "10", None, since=None, until=None, check=True)
