@@ -38,7 +38,13 @@ citation ids, which is the honest shape.
 
 No foreign keys, in keeping with the two revisions this one sits on top of.
 Written through `op.batch_alter_table` so the constraint swap is a table rebuild
-on SQLite and a plain `ALTER` on Postgres, and reversible on both.
+on SQLite and a plain `ALTER` on Postgres.
+
+`downgrade()` is reversible on both engines **while no answer carries a
+subject**, and refuses once one does: the narrow key cannot hold two answers
+that differ only by subject, and each of them is the target of a citation
+somebody may already have written down, so there is no correct row to discard.
+It says so rather than choosing.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -91,7 +97,34 @@ def upgrade() -> None:
         batch_op.create_unique_constraint(UNIQUE_KEY, NEW_KEY_COLUMNS)
 
 
+#: Two answers that differ only by subject cannot both survive the narrow key.
+CLASHES = sa.text(
+    "SELECT COUNT(*) FROM ("
+    "  SELECT setup_hash, as_of_date, price_snapshot_id, depth"
+    "  FROM cohort_answers GROUP BY 1, 2, 3, 4 HAVING COUNT(*) > 1"
+    ") clashing"
+)
+
+
 def downgrade() -> None:
+    # The narrow key cannot hold two answers that differ only by subject, and
+    # there is no correct way to choose which one to lose: each is the target of
+    # a citation somebody may already have written into the journal. So this
+    # refuses rather than deciding. (Alembic's SQLite batch rebuild does *not*
+    # refuse on its own — it was observed dropping one of the pair silently,
+    # which is the failure mode this guard exists to prevent.)
+    clashing = int(op.get_bind().execute(CLASHES).scalar() or 0)
+    if clashing:
+        raise RuntimeError(
+            f"cannot downgrade: {clashing} cohort_answers key(s) hold more than "
+            f"one subject_ticker, and uq_cohort_answers_key without the subject "
+            f"cannot hold them. Each row is the target of a citation "
+            f"(`cohort:<id>`) that a journal entry or a proposal may already "
+            f"carry, so this revision will not pick one to discard. Delete the "
+            f"subject-bearing rows deliberately, or stay on "
+            f"0011_comparable_subject_ticker."
+        )
+
     # Narrow the key back *before* dropping the column it names, or the drop
     # takes the constraint's meaning with it on one engine and not the other.
     with op.batch_alter_table('cohort_answers', schema=None) as batch_op:

@@ -42,6 +42,14 @@ questions about different names share one row and one id. The swap goes through
 `ALTER TABLE ... DROP/ADD CONSTRAINT` on Postgres, and `downgrade()` narrows the
 key back *before* dropping the column it names.
 
+It is also the first revision whose `downgrade()` can **refuse**. Two answers
+that differ only by their subject cannot both survive the narrow key, and each
+is the target of a citation (`cohort:<id>`) a journal entry may already carry,
+so there is no correct row to discard — it raises and names the choice instead
+of making it. Worth knowing when you write a widening key of your own:
+alembic's SQLite batch rebuild does not refuse on its own, and was observed
+dropping one row of the clashing pair silently.
+
 `0007_strategy_lab` is the first revision to carry a **partial unique index**
 (`WHERE` on a unique index). Both engines support it, and it is how two Spec Q
 invariants are held by the database rather than by the application: at most one
