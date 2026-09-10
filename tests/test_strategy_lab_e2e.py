@@ -502,6 +502,36 @@ class PaperUnderGlobalLiveModeTests(LabE2EFixture):
         self.assertEqual(self.paper_broker.calls.get("place_order", 0), placed)
         self.assertEqual(self.live_broker.calls, {}, self.live_broker.calls)
 
+    def test_a_card_minted_before_the_flag_was_turned_off_places_nothing(self):
+        """The gate is a condition on the placement, not on the proposal.
+
+        An approval card can sit in a chat while the world moves. Phase 6
+        re-checks what it owns at approval time; this re-checks what it cannot
+        see — the Strategy Lab's own tier flag.
+        """
+        from execution.strategy_lifecycle import ArmExecutionRefused
+
+        self._to_paper()
+        execution_id = self.executions(mode="paper")[0][0]
+        off = e2e_settings(
+            execution_mode="live",
+            allow_live_trading=True,
+            strategy_lab_paper_enabled=False,
+        )
+        with self.assertRaises(ArmExecutionRefused) as caught:
+            self.approve(
+                execution_id,
+                service=self.service(settings=off, adapters=self.adapters(with_live=True)),
+            )
+        self.assertEqual(caught.exception.code, "strategy_lab_paper_enabled_false")
+        self.assertEqual(self.paper_broker.order_calls, 0, self.paper_broker.calls)
+        self.assertEqual(self.live_broker.calls, {}, self.live_broker.calls)
+
+        # The card was not consumed: turning the flag back on lets the same tap
+        # through, which is what makes the refusal a gate rather than a loss.
+        result = self.approve(execution_id, service=self.service())
+        self.assertEqual(result.status, "protected", result.message)
+
     def test_a_live_arm_cannot_be_dispatched_by_the_paper_pass(self):
         """Even with every live flag on, the paper dispatcher only sees paper arms."""
         paper_arm = self._to_paper()

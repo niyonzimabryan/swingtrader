@@ -554,6 +554,46 @@ class StrategyExecutionService:
                     f"execution {execution_id} has no proposal to approve.",
                     execution_id,
                 )
+
+            # Re-run the two gates Phase 6 cannot see, from fresh state.
+            #
+            # Phase 6 re-checks what it owns at approval time — the switch, its
+            # own live flags, every risk guard — precisely because an approval
+            # card can sit in a chat while the world moves. The two gates it
+            # cannot re-check are the ones that are *ours*: the Strategy Lab's
+            # tier flag, and whether this arm is still an authorized live
+            # champion. Without this block, a card minted while paper was enabled
+            # would still place after the flag was turned off, and a live card
+            # would still place after its arm was paused, demoted, or replaced as
+            # champion — and Spec Q §12 invariant 2 is a condition on the
+            # *placement*, not on the proposal that preceded it.
+            #
+            # A refusal here deliberately does **not** consume the approval or
+            # move the row: nothing was placed and nothing was reserved, so the
+            # owner can clear the condition and tap the same card again. A card
+            # nobody clears is terminated by the hourly expiry job instead.
+            refusal = self._tier_flag_refusal(binding)
+            if refusal is None and binding.is_live:
+                refusal = self._live_authorization(session, arm)
+            if refusal is not None:
+                code, reason = refusal
+                self.pager(
+                    ARM_EXECUTION_BLOCKED,
+                    slx.redact({
+                        "execution_id": execution_id,
+                        "arm_id": trade.arm_id,
+                        "reason_code": code,
+                        "reason": reason,
+                        "recovery": (
+                            "The approval was refused at placement time, after "
+                            "the card was sent. Nothing was placed and nothing "
+                            "is reserved, and the card is still valid: clear the "
+                            "condition named above and approve it again, or let "
+                            "it expire."
+                        ),
+                    }),
+                )
+                raise ArmExecutionRefused(code, reason, execution_id)
         return self._service(binding).on_approval(
             proposal_id=proposal_id,
             presented_signature=presented_signature,

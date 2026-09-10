@@ -46,6 +46,7 @@ from tests import strategyexecfixture as fx
 from tests.dbfixture import init_test_db
 from tests.test_strategy_lab_domain import (
     CUTOFF,
+    a_universe_snapshot as _a_universe_snapshot,
     a_version_spec,
     an_experiment_spec,
 )
@@ -651,16 +652,102 @@ class PromotionIsNotApprovalTests(LiveTierFixture):
     def test_a_promoted_live_arm_has_placed_nothing(self):
         self.assertEqual(self.broker.order_calls, 0, self.broker.calls)
 
+    def _a_live_card(self):
+        """A proposed live execution on the promoted champion, and its service."""
+        from execution.strategy_lifecycle import ArmExecutionRequest
+
+        with get_session() as session:
+            fx.synced(session)
+            champion = registry.active_live_arm(session)
+            snapshot = registry.record_snapshot(session, _a_universe_snapshot())
+            decision = registry.record_decision(
+                session, champion.id, snapshot.id, fx.a_decision(snapshot, "AMD")
+            )
+            session.commit()
+            arm_id, decision_id = champion.id, decision.id
+
+        service = fx.service(
+            broker=self.broker,
+            settings=self.settings,
+            venue=LIVE_VENUE,
+            resolver=pf.resolver_for({}),
+        )
+        card = service.propose(
+            ArmExecutionRequest(
+                arm_id=arm_id, decision_id=decision_id, mode=ExecutionMode.LIVE,
+                ticker="AMD", entry=100.0, stop=95.0, risk_fraction=0.005,
+                expected_hold_sessions=5,
+            ),
+            now=pf.NOW,
+        )
+        return service, card, arm_id
+
+    def test_a_champion_paused_after_the_card_was_sent_places_nothing(self):
+        """Spec Q §12 invariant 2 is a condition on the *placement*.
+
+        An approval card can sit in a chat for half an hour. If the arm it
+        belongs to stops being the authorized live champion in that time, the tap
+        must not place — the promotion is not a standing licence.
+        """
+        from execution.strategy_lifecycle import ArmExecutionRefused
+
+        service, card, arm_id = self._a_live_card()
+        self.assertEqual(card.status, "proposed", card.message)
+        with get_session() as session:
+            registry.set_arm_status(session, arm_id, ArmStatus.PAUSED)
+            session.commit()
+
+        with self.assertRaises(ArmExecutionRefused) as caught:
+            service.on_approval(
+                execution_id=card.execution_id,
+                presented_signature=card.approval_signature,
+                owner_id="99887766",
+                now=pf.NOW,
+            )
+        self.assertEqual(caught.exception.code, "live_arm_not_active")
+        self.assertEqual(self.broker.order_calls, 0, self.broker.calls)
+
+    def test_the_lab_live_flag_is_re_read_at_approval_time(self):
+        from execution.strategy_lifecycle import ArmExecutionRefused
+
+        service, card, _arm_id = self._a_live_card()
+        off = fx.service(
+            broker=self.broker,
+            settings=self.settings_for(
+                allow_live_trading=True,
+                execution_mode="live",
+                strategy_lab_live_enabled=False,
+                strategy_lab_live_risk_budget=0.005,
+            ),
+            venue=LIVE_VENUE,
+            resolver=pf.resolver_for({}),
+        )
+        with self.assertRaises(ArmExecutionRefused) as caught:
+            off.on_approval(
+                execution_id=card.execution_id,
+                presented_signature=card.approval_signature,
+                owner_id="99887766",
+                now=pf.NOW,
+            )
+        self.assertEqual(caught.exception.code, "strategy_lab_live_enabled_false")
+        self.assertEqual(self.broker.order_calls, 0, self.broker.calls)
+
+        # The card was not consumed: the refusal is a gate, not a loss.
+        result = service.on_approval(
+            execution_id=card.execution_id,
+            presented_signature=card.approval_signature,
+            owner_id="99887766",
+            now=pf.NOW,
+        )
+        self.assertEqual(result.status, "protected", result.message)
+
     def test_the_promoted_arm_still_needs_a_separate_signed_approval(self):
         from strategy_lab.domain import ExecutionState
 
         with get_session() as session:
             fx.synced(session)
             champion = registry.active_live_arm(session)
-            snapshot = registry.record_snapshot(
-                session, __import__("tests.test_strategy_lab_domain",
-                                    fromlist=["x"]).a_universe_snapshot()
-            )
+            snapshot = registry.record_snapshot(session, _a_universe_snapshot())
             decision = registry.record_decision(
                 session, champion.id, snapshot.id,
                 fx.a_decision(snapshot, "AMD"),

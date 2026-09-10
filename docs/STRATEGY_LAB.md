@@ -1346,6 +1346,21 @@ There is exactly **one** HMAC in the codebase (`portfolio.approvals.sign`) and
 one kill switch (`portfolio.killswitch`, `/live_kill`). PR 6 added neither a
 second signing scheme nor a second switch.
 
+**The gate is re-read at the tap, not only at the render.** An approval card can
+sit in a chat for half an hour. Phase 6 already re-checks what it owns —
+`PHASE6_EXECUTION_ENABLED`, the kill switch, its own live flags, and every risk
+guard from fresh state. `StrategyExecutionService.on_approval` adds the two it
+cannot see: the Strategy Lab's tier flag, and (for a live arm) the §12 invariant
+2 authorization — still `active`, still the single global champion, still
+carrying a `promotion_event`. A promotion is not a standing licence; an arm that
+has since been paused, demoted or replaced cannot place, even with a valid card
+in hand.
+
+A refusal there deliberately **does not consume the approval or move the row**.
+Nothing was placed and nothing was reserved, so clearing the condition and
+tapping the same card again works; a card nobody clears is terminated by the
+hourly expiry job instead.
+
 **Routing.** A Phase 6 approval callback for a proposal carrying an
 `execution_id` is routed to PR 5's explicit-mode service, not the globally-bound
 one — approving a lab execution through the router would be exactly the inference
