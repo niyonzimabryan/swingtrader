@@ -421,6 +421,36 @@ class TradingPipeline:
         self._send_scan_notification(duration, len(scan_list), escalated_count, memos_generated, memo_details)
         self._maybe_alert_high_failure_rate(len(scan_list), catalyst_failures)
 
+        # Strategy Lab shadow pass (Spec Q §14, PR 4). Last, deliberately: every
+        # memo has been generated and delivered and every notification sent
+        # before a single experiment row is written, so the worst a Strategy Lab
+        # defect can cost is the experiment's own evidence. Default-off, and a
+        # no-op with either flag false.
+        self._run_strategy_lab_shadow(outcomes, run_id=scan_session_id)
+
+    def _run_strategy_lab_shadow(self, outcomes: list, *, run_id: str) -> None:
+        """Run the registered shadow arms over the names this scan scored.
+
+        The whole integration lives in `orchestrator/strategy_lab_shadow.py`;
+        this is the hook. Two guards, on purpose: the module already catches its
+        own exceptions and returns a summary, and this catches anything its
+        error handling missed — including an ImportError, which is what a
+        half-deployed container looks like. A scan that has already delivered
+        its memos must not die of an experiment (Spec Q §14).
+        """
+        if not bool(getattr(self.settings, "strategy_lab_enabled", False)):
+            return
+        try:
+            from orchestrator import strategy_lab_shadow
+
+            strategy_lab_shadow.run_shadow_for_scan(
+                self.settings,
+                tickers=[o.ticker for o in outcomes if o.scored],
+                run_id=run_id,
+            )
+        except Exception as e:
+            log.error("strategy_lab_shadow_hook_failed", error=str(e)[:300])
+
     def _maybe_alert_high_failure_rate(self, total_scanned: int, catalyst_failures: int) -> None:
         """
         BRY-301: per-ticker exceptions (billing exhaustion, LLM provider outages)
