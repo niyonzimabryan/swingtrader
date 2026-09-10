@@ -610,6 +610,11 @@ def _mature(settings, summary: MaturationSummary, *, now: datetime):
                 days=version.expected_holding_days + MATURATION_GRACE_DAYS
             )
             pending = _pending_by_snapshot(session, arm_id)
+            # Read the arm's open book once and carry it through the loop,
+            # adding anything a settlement leaves open. Re-querying per snapshot
+            # would be O(executions x snapshots) on a job that runs every night
+            # against a table that only grows.
+            open_tickers = set(_open_tickers(session, arm_id))
             for snapshot_id, decision_ids in sorted(pending.items()):
                 if summary.snapshots_considered >= budget:
                     return
@@ -638,7 +643,7 @@ def _mature(settings, summary: MaturationSummary, *, now: datetime):
                         context=portfolio_context(
                             settings,
                             as_of=snapshot.data_cutoff_utc,
-                            open_tickers=_open_tickers(session, arm_id),
+                            open_tickers=tuple(sorted(open_tickers)),
                         ),
                         costs=costs,
                     )
@@ -657,6 +662,8 @@ def _mature(settings, summary: MaturationSummary, *, now: datetime):
                         summary.executions_opened += 1
                     if execution.status is ExecutionState.CLOSED:
                         summary.executions_closed += 1
+                    elif not execution.blocked:
+                        open_tickers.add(execution.ticker)
                 settled = {e.decision_id for e in executions}
                 summary.still_pending += len(
                     [d for d in decision_ids if d not in settled]
@@ -672,8 +679,9 @@ def _pending_by_snapshot(session, arm_id: int) -> dict[int, list[int]]:
     for row in registry.decisions_for_arm(
         session, arm_id, actions=(DecisionAction.LONG.value,)
     ):
-        if registry.open_execution_for(session, row.id) is not None:
-            continue
+        # *Any* execution, not only a non-terminal one: a decision that has
+        # already been settled is finished, and re-settling it would be a second
+        # trade on one signal.
         if _has_any_execution(session, row.id):
             continue
         pending.setdefault(row.snapshot_id, []).append(row.id)
@@ -685,7 +693,7 @@ def _open_tickers(session, arm_id: int) -> tuple[str, ...]:
 
     In practice this is usually empty, because a snapshot is only settled once
     its whole horizon has elapsed and `execute_arm` therefore opens and closes in
-    one pass. It is queried anyway rather than passed as `()`: a trade that does
+    one pass. It is read anyway rather than passed as `()`: a trade that does
     stay open — bars that stop arriving mid-horizon — must block a second
     position in the same name, and hard-coding an empty book would quietly make
     `ticker_already_held_by_this_portfolio` unreachable.
