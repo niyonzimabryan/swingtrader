@@ -511,3 +511,183 @@ remembered.
   `registry.record_snapshot`, which already existed.
 * No promotion-eligible replay is possible yet, and the code says so out loud
   rather than producing a number that looks clean (§9).
+
+---
+
+## 15. The execution machine (PR 5, Spec Q §12)
+
+PR 5 makes a Strategy Lab arm able to execute — on Phase 6's service, not beside
+it. Phase 6 already owns signed single-use approval, fresh risk re-evaluation,
+the kill switch, entry placement, fill polling, the `gtc` `stop_market` with its
+read-back, `unprotected` paging, and the daily stop replacement. None of that is
+reimplemented. What PR 5 adds is the persistent §12 machine those steps land on,
+and the gates that decide whether a step may be taken at all.
+
+**Nothing here is enabled.** No flag is added, `PHASE6_EXECUTION_ENABLED` stays
+off, and no order has been placed against a real broker by any of it.
+
+### The split, and why it is where it is
+
+| Concern | Module | May reach |
+|---|---|---|
+| the §12 states, the reservation, the mode→venue rule, redaction | `strategy_lab/execution.py` | `strategy_lab`, `database`, `utils` |
+| gates, the observer, resume, reconcile | `execution/strategy_lifecycle.py` | everything above plus `execution/`, `portfolio/` |
+| placement, protection, the read-back | `execution/lifecycle.py` (Phase 6) | the broker |
+| does the broker agree with the ledger | `tracking/position_reconciliation.py` | `database`, `strategy_lab.domain` |
+
+The first row is the load-bearing one. Spec Q §12 invariant 11 says execution
+mode is an explicit immutable input, never inferred from global mutable
+settings — so the module that decides *which venue a mode may reach* is the one
+module that cannot read a setting. `import config` fails there, by test
+(`tests/test_strategy_lab_import_graph.py`), and so does `import execution` and
+`import portfolio`. The rules cannot be talked out of themselves.
+
+### One execution per decision, and one id before anything
+
+`open_execution` writes an `execution_id` and commits it **before** any
+reservation and long before any broker call. Uniqueness is held by the partial
+index `uq_strategy_trades_open_execution` — a database constraint, so a second
+worker and a restart both see it. A caller that loses the race is handed the
+winner's row inside a SAVEPOINT rather than an `IntegrityError`, which is what
+makes a retried approval reuse one placement instead of creating a second.
+
+The index is partial on `status NOT IN (terminal)`, so a cancelled or rejected
+execution frees its decision for a fresh attempt while a live one never does.
+
+### The reservation is a predicate, not a counter
+
+Spec Q §12 requires every terminal path to release its reservation *exactly
+once*. Rather than a released-at column and the discipline to write it once,
+a reservation is membership in `RESERVING_EXECUTION_STATES`: a row holds its
+notional from `risk_reserved` until it reaches a terminal state, and terminal
+states have no outgoing edge. Release is therefore the terminal transition
+itself — there is no second write to forget, repeat, or disagree with the
+status.
+
+`placement_unknown` and `reconciliation_required` are inside the reserving set
+on purpose (invariant 12): an unknown outcome might be a real order, and an
+order that might exist has not released anything.
+
+### What blocks a new entry
+
+`portfolio.killswitch.entry_block` gained a third **reason**, not a second
+switch:
+
+1. `kill_switch_engaged` — the owner pulled it; a database row, survives restart.
+2. `unprotected_position_blocks_entries` — a Phase 6 proposal is `unprotected`
+   or `reconciliation_required`.
+3. `unresolved_execution_blocks_entries` — a `strategy_trades` row is
+   `protection_failed`, `placement_unknown`, or `reconciliation_required`.
+
+`protection_pending` is deliberately not blocking: it is the few seconds between
+a fill and its stop being read back, and the window's own deadline resolves it
+either way. A row still in `protection_pending` after a restart is moved to
+`protection_failed` by the resume pass, which is what makes that distinction
+safe rather than a loophole.
+
+### Mode → venue → adapter
+
+```text
+shadow  ->  (no venue at all; bind_adapter raises)
+paper   ->  alpaca_paper    ->  AlpacaBroker.venue == "alpaca_paper"
+live    ->  robinhood_live  ->  RobinhoodMCPBroker.venue == "robinhood_live"
+```
+
+Three checks, in order: the arm's recorded mode must equal the requested one;
+the venue must be the single one that mode may select; and the adapter's **own**
+`venue` declaration must not contradict it. The third is what catches the wiring
+error the first two cannot — the live adapter registered under the paper key.
+An adapter that declares nothing is accepted; one that declares something else
+never is.
+
+### What a live arm needs beyond the flags
+
+`PHASE6_EXECUTION_ENABLED`, `ALLOW_LIVE_TRADING=true` and `EXECUTION_MODE=live`
+are necessary and nowhere near sufficient. On top of them (§12 invariant 2), at
+propose time and before a card is minted:
+
+* the arm is `active`;
+* the arm **is** `registry.active_live_arm` — the single global champion;
+* the arm carries at least one owner `promotion_event`, itself already bound to
+  a source arm, its evidence snapshot, the shared immutable strategy version,
+  the mode, and the approved budget when it was recorded;
+* the adapter's declared capabilities pass `gate_intent` with
+  `requires_protective_exit=True`.
+
+Any one missing is a terminal `risk_rejected` with the reason on the row, and
+the safety suite asserts zero order calls for each.
+
+### The cases where a live entry is impossible, and stays impossible
+
+Spec Q §12's closing paragraph: if Robinhood cannot provide a verifiable
+protective exit for a case, that case cannot be opened live. No manual-exit
+fallback, and no in-process watcher — a watcher disappears with the process,
+which is the failure it would be pretending to prevent.
+
+| Case | What refuses it | Where |
+|---|---|---|
+| the adapter stops declaring `can_place_standalone_gtc_stop` | `gate_intent`, before any order is formed | `portfolio/capabilities.py` |
+| the adapter declares no capabilities at all | treated as "cannot protect" | `_capability_refusal` |
+| a fractional quantity, or a `dollar_amount` entry | `stops_whole_shares_only` | `gate_intent` |
+| an extended-hours entry | `stops_regular_hours_only` | `gate_intent` |
+| a short entry | there is no protective-stop shape for one | `ck_proposals_side_long_only` |
+| a stop at or above the entry | per-share risk ≤ 0 | `portfolio/proposals.py` |
+| a fill whose stop cannot be read back | `protection_failed`, pages, blocks every entry | `_protect` |
+| a stop that later vanishes | re-placed daily; unverifiable ⇒ `unprotected` | `replace_missing_stops` |
+
+None of these is a flag. Turning a live entry back on for one of them means
+changing a declaration that a test asserts, which is the intended cost.
+
+### Restart, and the two rules the resume pass never breaks
+
+`StrategyExecutionService.resume()` re-derives every non-terminal execution from
+the broker's current answer, because after a restart there is no other source of
+truth.
+
+* **No entry order is ever placed by resume.** A protective stop may be
+  re-placed — that is the whole point of surviving a restart with an unprotected
+  fill — but an entry never is. An execution whose entry cannot be found
+  resolves to `failed_no_order` or to `reconciliation_required`, never to a
+  re-submission.
+* **A read that fails is not an answer.** Any exception leaves the row where it
+  was or moves it to `reconciliation_required`. "I could not check" and "it is
+  fine" are never the same answer.
+
+`placement_unknown` leaves only through `reconciliation_required`, exactly as
+§12 draws it, holding its reservation the whole way; from there the broker's
+answer to "does an order carrying this ref_id exist" resolves it into the
+lifecycle or terminally.
+
+### Partial fills, and resizing protection
+
+A partial fill is protected at what actually filled. When the remainder arrives
+later, the stop covers less than the position — and nothing detects that without
+asking the broker again, which is what `resume` does. The resize:
+
+1. cancels the undersized stop **first** (two live sell orders against one
+   position is not protection, it is a short);
+2. asks for a new `ref_id`, keyed to the quantity being protected, so
+   re-protecting an unchanged fill reuses one stop and a grown position gets its
+   own;
+3. routes `protected → reconciliation_required → filled → protection_pending →
+   protected`, because §12 draws no edge from `protected` back to
+   `protection_pending` and a position whose stop no longer covers it is
+   precisely "broker and local state disagree".
+
+### Reconciliation
+
+`tracking.position_reconciliation.reconcile_executions` runs the comparison the
+legacy pass never did — *this execution believes it holds a position, does the
+broker agree?* — and returns `matched`, `missing_at_broker`, `quantity_mismatch`,
+`unexpected_at_broker`, or `unsupported`. It transitions nothing; the bridge
+applies `reconciliation_required` and pages with a recovery instruction. An
+execution it cannot evaluate is `unsupported` and fails closed.
+
+### Redaction
+
+`strategy_lab.execution.redact` is an allowlist, not a denylist: ids,
+idempotency keys, states, reasons, and the numbers reconciliation needs survive;
+every other key is kept with its **value** replaced by `[redacted]`, so a
+reviewer can see that a token was present without seeing it. A denylist's
+failure mode is a field nobody thought of, arriving from a payload shape we do
+not control.

@@ -820,6 +820,40 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
                   percentage). Spec Q §6 asks for the full context hash; closing
                   the gap is a change to the scoring pipeline, which PR 2 does
                   not own.
+      - [ ] **PR 5 — persistent execution state machine (Spec Q §12)** — in review
+            on `claude/strategy-lab-5-live-closure`. Built **on** Phase 6's
+            `ExecutionService`, not beside it: Phase 6 keeps signed single-use
+            approval, fresh risk re-evaluation, entry placement, fill polling,
+            the `gtc` `stop_market` and its read-back, `unprotected` paging and
+            the daily stop replacement. PR 5 adds
+            `strategy_lab/execution.py` (the §12 machine over `strategy_trades`,
+            the reservation, the mode→venue rule, the redaction allowlist — and
+            no broker, no `config`, no `portfolio`),
+            `execution/strategy_lifecycle.py` (the gates before a card exists,
+            an observer that lands every Phase 6 hop on the machine, restart
+            resume, reconciliation), `tracking.position_reconciliation.reconcile_executions`
+            (does the broker agree with the execution ledger — the comparison
+            nothing ran before), and a third *reason* on
+            `killswitch.entry_block` rather than a second switch. No new flag,
+            no new migration, no production enablement step.
+            - [ ] **Nothing wires the scheduler or the Telegram approve/reject
+                  callback to it.** PR 4 owns `orchestrator/scheduler.py` and
+                  `bot/handlers/`, so the resume, expiry and reconciliation
+                  passes are callable but unscheduled, and a live
+                  `strategy_trade` has no owner card yet (Spec Q §13). PR 4/6
+                  wires `StrategyExecutionService.on_approval` to that callback.
+            - [ ] **Robinhood is still untouched by any assertion.** Every §12
+                  path is exercised against `FakeExecutionBroker`; the §5.1 live
+                  probe (`docs/EXECUTION_LIFECYCLE.md` §6) remains an owner
+                  action, and until it passes `EXECUTION_MODE=live` stays off.
+            - [x] **Two defects closed on the way.** Phase 6's
+                  `_reconcile_unknown` marked a proposal `failed` — releasing its
+                  reservation — when an ambiguous placement's `ref_id` *was*
+                  found at the broker; it now adopts the order and lands in
+                  `reconciliation_required` either way. And a partial fill whose
+                  remainder arrived later left a stop covering less than the
+                  position; `resume` now cancels the undersized stop and
+                  re-places it at the true size.
 - [ ] **Phase 6 — order proposal→approval→execution** — gated on Phases 0–3 **and** on
       documenting whether Robinhood can place a protective exit that survives our
       process. Human-in-the-loop, not an autonomous goal run.
