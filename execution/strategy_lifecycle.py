@@ -415,7 +415,19 @@ class StrategyExecutionService:
             row.execution_mode = binding.mode.value
             trade.quantity = float(row.quantity or 0)
             trade.notional = float(row.notional or 0.0)
-            trade.portfolio_context_hash = row.portfolio_context_hash or ""
+            # `portfolio_context_hash` is deliberately **not** rewritten from the
+            # proposal. It is the row's identity key (PR 3: an attempt is
+            # `(decision, portfolio_context_hash)`), and rewriting it after the
+            # fact would silently change what a retry resolves to. The two are
+            # read from the same session at the same instant for the same symbol
+            # and should agree; a disagreement is a defect worth seeing rather
+            # than a value worth adopting.
+            if (row.portfolio_context_hash or "") != trade.portfolio_context_hash:
+                log.warning(
+                    "strategy_execution_context_hash_drift",
+                    execution_id=trade.execution_id,
+                    proposal_id=row.id,
+                )
             session.flush()
 
             if row.status == "risk_rejected":
