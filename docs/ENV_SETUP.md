@@ -244,12 +244,61 @@ metrics rather than treating costs as zero), the evidence floors
 (`STRATEGY_LAB_FLOOR_*`, `STRATEGY_LAB_CONFIDENCE_LEVEL`) and the card's
 bootstrap (`STRATEGY_LAB_REPORT_BOOTSTRAP_REPS`, `STRATEGY_LAB_REPORT_SEED`).
 
-**Paper and live are not reachable from here.** There is no paper or live flag in
-this family, because the safety services that would have to gate them are PR 5
-(the broker-independent live lifecycle) and PR 6 (the paper tournament and the
-promotion workflow). Every arm this integration creates is `shadow`, its mode is
-fixed at creation, and `strategy_lab/shadow.py` refuses any arm whose mode is not
-`shadow`. `/live_kill` is Phase 6's switch (§9) and is unaffected.
+**Every arm this integration creates is `shadow`.** Its mode is fixed at creation,
+`strategy_lab/shadow.py` refuses any arm whose mode is not `shadow`, and no code
+path creates a paper or live arm — only an owner promotion does (§10.1).
+`/live_kill` is Phase 6's switch (§9) and is unaffected.
+
+## 10.1 Strategy Lab paper and live tiers (Spec Q, PR 6)
+
+Two more flags, both **false**, added by PR 6 together with the services that read
+them. PR 4 deliberately shipped neither, because a flag nothing reads is a flag
+nobody can trust.
+
+| Flag | What it turns on |
+|---|---|
+| `STRATEGY_LAB_PAPER_ENABLED` | the post-scan **paper dispatcher** and the three scheduled execution jobs (`resume` every 30 min in market hours, stale-approval `expire` hourly, `reconcile` at 16:45 ET) |
+| `STRATEGY_LAB_LIVE_ENABLED` | the Strategy Lab's **own** live gate, on top of `ALLOW_LIVE_TRADING`, `EXECUTION_MODE=live`, the kill switch, the broker's declared exit capability, and an owner promotion of the one global champion |
+
+Each tier needs every gate below it. Paper additionally needs
+`PHASE6_EXECUTION_ENABLED=true` (§9) and `EXECUTION_APPROVAL_SECRET` set — without
+the secret no approval card can be minted, which is the correct failure.
+
+**A paper arm reaches Alpaca paper and nothing else.** The arm's immutable mode
+selects the venue and the venue selects the adapter, so `EXECUTION_MODE=live` and
+`BROKER_PRIMARY=robinhood` do not change where a paper order goes; a mismatch is
+refused before broker review or placement (Spec Q §12 invariant 11), and
+`tests/test_strategy_lab_e2e.py` proves the live adapter sees zero calls in exactly
+that configuration.
+
+**A dispatch proposes; it never places.** Each proposal is a `proposed` row plus an
+approval card carrying a signed, expiring, single-use, owner-bound reference. The
+placement happens only when you tap Approve. A promotion is not an entry approval:
+a promoted live arm with ten decisions needs ten approvals.
+
+The paper book is its own virtual budget, independent of the shadow book and of the
+production ledger (Spec Q §11): `STRATEGY_LAB_PAPER_EQUITY`,
+`STRATEGY_LAB_PAPER_RISK_BUDGET`, `STRATEGY_LAB_PAPER_MAX_OPEN_POSITIONS`,
+`STRATEGY_LAB_PAPER_MAX_POSITION_FRACTION`, `STRATEGY_LAB_PAPER_DAILY_NOTIONAL`,
+`STRATEGY_LAB_PAPER_MAX_PROPOSALS_PER_RUN`,
+`STRATEGY_LAB_PAPER_MAX_SNAPSHOT_AGE_MINUTES` (past which a decision abstains,
+because the snapshot's age is the quote's age).
+
+Promotion settings: `STRATEGY_LAB_PROMOTION_FLOOR_SHADOW_MATURED` and
+`STRATEGY_LAB_PROMOTION_FLOOR_PAPER_CLOSED` are the per-tier operational minimums
+a tier change is gated on and the card prints;
+`STRATEGY_LAB_PROMOTION_TTL_SECONDS` is how long a confirmation stays valid; and
+`STRATEGY_LAB_LIVE_RISK_BUDGET` defaults to `0.0` **on purpose** — a promoted live
+champion with no budget sizes to nothing, so setting a number is its own
+deliberate owner step.
+
+Owner-only commands added with the tiers: `/promote_arm <arm> <tier> [reason]`,
+`/demote_arm <arm> <tier> [reason]`, `/promotions`. They render a card and require
+a confirmation; nothing auto-promotes.
+
+**The procedure, step by step, is `docs/STRATEGY_LAB_RUNBOOK.md`** — including
+what a failure looks like, how to stop, and the draft production rollout
+checklist. Do not turn the paper flag on from this page; turn it on from there.
 
 ## Order of operations to a testing state
 
@@ -276,3 +325,11 @@ fixed at creation, and `strategy_lab/shadow.py` refuses any arm whose mode is no
    after the next scan (§10). Turn on `STRATEGY_LAB_UNIVERSE_ENABLED` only once
    the price plane and `universe_membership` are backfilled. No broker, no
    capital and no order is involved at this tier.
+9. Strategy Lab paper: only after the shadow observation window
+   (60 days / 100 matured decisions, Spec Q §10). Promote **one** arm with
+   `/promote_arm`, then `STRATEGY_LAB_PAPER_ENABLED=true`, and approve the first
+   card by hand. Follow `docs/STRATEGY_LAB_RUNBOOK.md` §5 rather than this list.
+10. Strategy Lab live: not reachable until the real `gtc stop_market` probe passes
+    against the live Robinhood account (`docs/EXECUTION_LIFECYCLE.md` §6) and the
+    micro-live canary is separately authorized. `STRATEGY_LAB_LIVE_ENABLED` and
+    `STRATEGY_LAB_LIVE_RISK_BUDGET` both stay at their defaults until then.

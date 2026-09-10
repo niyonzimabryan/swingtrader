@@ -75,6 +75,39 @@ flag-flips are recorded release steps; hygiene debt cleared (346 → 1 test
 warnings, tz-aware datetimes, DB indices, dead tables dropped); trackers
 reconciled.
 
+### 6. Strategies are versioned, compared, and promoted only by the owner
+*(Spec Q PRs #54/#58/#60/#64/#65 + PR 6 — **shipped disabled**)*
+The Strategy Lab turns "is the bot's judgment any good" into "which of several
+*named, immutable* strategies is any good, under one snapshot and one cost
+model". Four arms (the existing composite as champion, earnings drift, momentum,
+short-term reversal), one `MarketSnapshot` per cutoff shared by the
+cross-sectional ones, and a decision that is reproducible from that snapshot and
+carries no portfolio state — so the same decision can be executed on Monday and
+refused on Tuesday, and the row says which book it was judged against.
+
+Three tiers run concurrently and the tier is part of an arm's identity, not a
+setting: **shadow** records what a strategy would do and can reach no broker at
+all (structurally — the package imports none); **paper** places at Alpaca paper
+and only there, whatever `EXECUTION_MODE` or `BROKER_PRIMARY` say; **live** is one
+global champion. Between an owner approval and a position sits the full §12 state
+machine: the notional reservation persisted before the external call, the
+protective stop placed *and read back*, partial fills resized idempotently,
+unknown placements held (never guessed successful), reconciliation against the
+broker after the close, and restart recovery that may re-place a stop but never an
+entry.
+
+Promotion is an append-only `promotion_events` row binding the source arm, its
+evidence snapshot, a separate inactive target arm at the same immutable version,
+and the requested mode and budget. The strongest label the system will produce is
+`ready_for_owner_review`; it cannot promote, and no scheduled job can reach the
+confirmation. A promotion is not an entry approval — each proposed execution gets
+its own signed, expiring, single-use owner callback.
+
+**All of it is off** (`STRATEGY_LAB_ENABLED`, `_SHADOW_ENABLED`, `_PAPER_ENABLED`,
+`_LIVE_ENABLED`, `PHASE6_EXECUTION_ENABLED`, and a live risk budget of 0.0 —
+six independent gates). The ladder for turning them on is
+`docs/STRATEGY_LAB_RUNBOOK.md`.
+
 ## The questions the system can now answer
 
 | Question | Instrument | Available |
@@ -91,6 +124,11 @@ reconciled.
 | Is Sonnet-5 = Opus at scoring, at ~30% of cost? | BRY-243 parity eval + attestation gate | Corpus ≥150 (~1 week of scans) |
 | Which agents earn their scoring weights? | Attribution over closed trades | 50+ closed trades |
 | Does LLM judgment beat class base rates? | Score-sorted ledger outcomes vs backtester base rates | ~1 month |
+| Does a *named* strategy beat the composite on the same opportunity set? | Strategy Lab scorecard (`scripts/strategy_lab_scoreboard.py`, `/strategy <slug>`) | 60 days + 100 matured decisions of shadow |
+| Is an apparent winner an artifact of trying four variants? | Family-adjusted lower bound and step-M over every variant tried, printed on the card | Same data |
+| Are two strategies the same bet wearing two names? | The overlap view: shared names, Jaccard, correlation | Same data |
+| Does the execution machinery survive a partial fill, an unknown placement, a failed stop, a restart? | Paper tier + the resume/reconcile jobs | ~30 closed paper executions |
+| What exactly authorized this live position? | `promotion_events` + the per-entry approval row, both append-only | Immediately, once live |
 
 ## What it deliberately cannot answer
 
@@ -102,6 +140,14 @@ reconciled.
   slippage is an assumption, labeled as such.
 - **Regime robustness** — until the data spans more than one market mood.
   Small-n cautions are printed, not hidden.
+- **Whether a Strategy Lab arm has edge** — no arm has produced a single decision
+  in production: every flag is off. The scorecard is built and tested; it has
+  nothing to rank yet, and it says `insufficient_evidence` rather than guessing.
+- **Whether Robinhood can actually protect a live position** — the adapter
+  *declares* a standalone `gtc stop_market` capability and the real probe
+  (`docs/EXECUTION_LIFECYCLE.md` §6) has not been run against a live account.
+  Until it passes, every Strategy Lab live entry is refused before an order is
+  formed. That is the designed behaviour, not a gap to route around.
 
 ## Enable runbook (current gate: Anthropic credit top-up)
 

@@ -1103,3 +1103,301 @@ every other key is kept with its **value** replaced by `[redacted]`, so a
 reviewer can see that a token was present without seeing it. A denylist's
 failure mode is a field nobody thought of, arriving from a payload shape we do
 not control.
+
+---
+
+## 23. PR 6: the paper tournament
+
+PR 5 built the execution machine and gave it an explicit-mode entry point. PR 6
+is what calls it for a paper arm, and the call site is one module:
+`orchestrator/strategy_lab_paper.py`.
+
+```text
+scan (orchestrator/pipeline.py)
+  |
+  +-- memos delivered, notifications sent        <- production work, first
+  |
+  +-- _run_strategy_lab_shadow      STRATEGY_LAB_SHADOW_ENABLED
+  |     snapshot -> every ACTIVE arm of every ENABLED tier -> strategy_decisions
+  |
+  \-- _run_strategy_lab_paper       STRATEGY_LAB_PAPER_ENABLED
+        for each active paper arm:
+          decisions with no strategy_trades row, action=long, plan resolvable
+            |
+            +-- snapshot older than PAPER_MAX_SNAPSHOT_AGE_MINUTES --> abstain
+            +-- ticker reserved by another paper arm                --> skip
+            +-- shadow.assess against the arm's VIRTUAL paper book  --> skip/size
+            |
+            \-- StrategyExecutionService.propose(mode=paper, tag=lab:.../arm:N)
+                  |
+                  +-- bind_adapter: paper -> alpaca_paper, one adapter, or refuse
+                  +-- kill switch, capabilities, tier flag
+                  \-- Phase 6 create_proposal -> a `proposed` row + an approval card
+
+        NOTHING IS PLACED HERE. The card carries a signed, expiring, single-use
+        owner reference; `on_approval` is where an order happens.
+```
+
+### The decision pass runs every enabled tier, the maturation pass does not
+
+A `StrategyDecision` is a function of the snapshot and the immutable strategy
+version alone (§9) — it carries no portfolio state and no mode — so a paper arm
+needs decisions for exactly the same reason a shadow arm does, from the same
+snapshot. `orchestrator.strategy_lab_shadow.active_decision_arms` is therefore
+the arms of every *enabled* tier, and a tier whose flag is off contributes none:
+turning `paper` off stops the decisions as well as the dispatch, so the arm stops
+producing evidence rather than producing evidence nobody can act on.
+
+`active_shadow_arms` stays shadow-only, and that is not an oversight.
+`mature_shadow_decisions` simulates a fill from stored bars. That is the right
+thing to do to a hypothetical position and the wrong thing to do to one that
+exists at a broker; a paper arm's executions are settled by the §12 state machine
+against the broker's own answer.
+
+### Independent virtual budgets
+
+Spec Q §11: "shadow and paper arms receive independent virtual budgets." The
+paper book is its own settings family (`STRATEGY_LAB_PAPER_EQUITY`,
+`_RISK_BUDGET`, `_MAX_OPEN_POSITIONS`, `_MAX_POSITION_FRACTION`,
+`_DAILY_NOTIONAL`) and the sizing runs through PR 3's pure
+`strategy_lab.shadow.assess` / `size_position`, which is where the
+max-open-positions, position-fraction, daily-notional and ticker-already-held
+rules already live. Reusing them means the paper tier's caps are the ones months
+of shadow evidence were produced under.
+
+Phase 6 then applies its **own** caps — the risk-fraction hard cap, the budget's
+per-trade cap, concentration, sector, daily notional, settled cash — over the
+real ledger, and those can only make an order *smaller*. So the honest
+description of a paper arm's size is: the virtual book decides it, and the
+production book is a ceiling.
+
+**What that leaves open, stated plainly.** `create_proposal` reads the ledger's
+`agent_placeable` account for equity, concentration and settled cash, which on a
+configured deployment is the Robinhood Agentic account — not the Alpaca paper
+account the order actually reaches. A paper arm is therefore sized against the
+virtual book and *bounded* by a book it does not trade. That is conservative in
+the direction that matters (the bound can only shrink the order) but it is not
+the same thing as a self-contained paper ledger, and closing it means teaching
+Phase 6's `read_context` to take a venue. PR 6 did not do that: it is a Phase 6
+change with its own risk surface, and it is recorded here rather than hidden.
+
+### No duplicate orders, at three levels
+
+| Level | Mechanism |
+|---|---|
+| one execution per decision | the partial unique index on `strategy_trades.decision_id`, held by the database rather than by a process |
+| one position per ticker per mode | `reserved_tickers(session, mode=...)` — every non-terminal execution in that mode, **across arms**, because the failure it prevents is two different arms opening the same position |
+| within one pass | the dispatcher advances its own view of the book between proposals, so the eleventh name of a ten-position book is blocked inside a single run |
+
+Modes do not reserve against each other. A paper position at Alpaca and a live
+position at Robinhood are different books, and treating them as one would make
+the tournament's exposure depend on the champion's.
+
+### Experiment tags
+
+Every proposal a paper arm makes carries
+`requester_token_label = lab:<experiment>/arm:<id>/<slug>@<version>`, and Phase
+6's `client_context` gains `experiment` and `execution_id` for a lab execution
+(and is byte-identical for every other proposal). So an order at Alpaca is
+attributable to the arm that produced it without a join.
+
+### A stale snapshot abstains
+
+The entry reference a paper dispatch prices against is the decision's own
+snapshot — the last bar's split-adjusted close, or, for the compatibility arm
+whose plan was frozen by the pipeline that produced it, that composite result's
+own `entry_price`. The snapshot's age is therefore the quote's age, and past
+`STRATEGY_LAB_PAPER_MAX_SNAPSHOT_AGE_MINUTES` (90 by default) the decision is
+skipped with `stale_snapshot` rather than priced off a number nobody should trade
+on (Spec Q §12 invariant 7).
+
+## 24. The three jobs PR 5 deferred
+
+PR 5 wrote `resume()`, `expire_stale()` and `reconcile()` and scheduled none of
+them, because the flag that would gate the schedule did not exist yet. PR 6 adds
+all three, gated on `STRATEGY_LAB_ENABLED` **and** `STRATEGY_LAB_PAPER_ENABLED`,
+and re-checked inside each job so a flag turned off without a restart stops the
+work rather than only the next schedule.
+
+| Job | Cron (ET) | What it does |
+|---|---|---|
+| `strategy_lab_resume` | `mon-fri 9-16 */30m` | Re-derives every non-terminal execution from the broker's own answer. **Never places an entry**; may re-place a protective stop, which is the whole point of surviving a restart with an unprotected fill. A read that fails is not an answer. |
+| `strategy_lab_expire` | hourly at :05 | Terminates `proposed` executions whose approval reference has lapsed, freeing the decision's one open-execution slot. Releases nothing, because a `proposed` row reserved nothing. |
+| `strategy_lab_reconcile` | `mon-fri 16:45` | Compares the execution ledger against the broker. Every mismatch moves to `reconciliation_required`, which blocks new entries through the **existing** kill switch rather than a second one, and pages with a recovery instruction. |
+
+The adapter map the jobs use registers the live venue **only** when the primary
+broker declares itself to be that venue. Registering the `BrokerRouter` would
+reintroduce exactly the global-mode inference invariant 11 exists to remove.
+
+## 25. Promotion: rendered, then confirmed
+
+Two modules, and the split is the import graph doing its job.
+
+`strategy_lab/promotion.py` holds what a tier change is a property of — the
+*data*. It cannot see a feature flag, a kill switch or a broker, because
+`strategy_lab/` may not import `config`, `portfolio` or `execution`: the module
+that says "a tier change binds this evidence to this arm" must not be able to
+read a setting it could infer one from instead.
+
+`orchestrator/strategy_lab_promotion.py` can see all three, and contributes them
+as `external_refusals`. A refusal from either side blocks the confirmation
+identically, and the card shows both lists.
+
+### What an authorization binds
+
+```text
+/promote_arm <source_arm_id> <tier> [reason]
+        |
+        +-- prepare_target: create-or-return the INACTIVE arm at <tier>,
+        |   same experiment, same immutable strategy version, budget from settings
+        |   (writes a row; activates nothing; idempotent)
+        |
+        +-- latest_evidence_id(source) or an explicit snapshot id
+        |
+        \-- plan(): every refusal, accumulated, never short-circuited
+              |
+              |  from strategy_lab/promotion.py:
+              |   - the domain bindings (authorize_promotion): distinct arms,
+              |     evidence belongs to the SOURCE, shared strategy version,
+              |     target INACTIVE, warnings acknowledged, a legal rung
+              |   - requested_mode == target.mode       <- the card's own claim
+              |   - requested_risk_budget == target.risk_budget
+              |   - evidence not already used for a DIFFERENT target
+              |   - evidence not already used for THIS target
+              |   - evidence complete: costs, benchmark, uncertainty, metrics,
+              |     n_decisions, content_hash
+              |   - the tier's operational floor (Spec Q §10)
+              |
+              \  from orchestrator/strategy_lab_promotion.py:
+                  - STRATEGY_LAB_ENABLED, PHASE6_EXECUTION_ENABLED
+                  - the destination tier's own flag
+                  - the kill switch
+                  - Phase 6's live gates (ALLOW_LIVE_TRADING, EXECUTION_MODE)
+                  - the live adapter's declared exit capability
+        |
+        \-- a card + a signed, expiring, single-use, owner-bound confirmation
+              |
+              \-- confirm(): RECOMPUTES the plan, then appends a promotion_event
+                    and activates the target. Live goes through
+                    replace_live_champion, so the global champion swaps
+                    atomically or the prior champion is untouched.
+```
+
+`requested_mode` and `requested_risk_budget` exist for one reason: without them
+the card an owner read ("this promotes `momentum_v1` to *paper* at 0.5%") and the
+row that gets activated are two independent facts that happen to agree. A target
+arm edited between the render and the tap would activate something nobody saw.
+
+`confirm()` recomputes rather than trusting a stored plan, because the gap
+between rendering a card and tapping it is exactly where a kill switch gets
+engaged.
+
+### Evidence is not reusable
+
+One `experiment_metric_snapshots` row authorizes one target arm. A second target
+is refused outright, and so is re-promoting the same arm with the snapshot that
+put it there. "The evidence that justified paper now justifies live" is precisely
+the reasoning Spec Q §8 forbids: each tier needs evidence collected *in* that
+tier.
+
+### The strongest thing the system will say
+
+`recommendation` returns one of three labels, computed arithmetically from the
+stored counts and the configured floors:
+
+- `ready_for_owner_review` — complete evidence, floor met, nothing refusing;
+- `insufficient_evidence` — complete or not, the floor is not met;
+- `blocked` — something refuses.
+
+None of them is "promote". Spec Q §3 keeps promotion authority with the owner,
+and §10 forbids selecting a winner from a return figure. There is no scheduled
+job, pipeline hook, or dispatcher path that reaches `confirm()`;
+`tests/test_strategy_lab_promotion.py` greps for one.
+
+### A live arm is prepared with a zero budget
+
+`STRATEGY_LAB_LIVE_RISK_BUDGET` defaults to `0.0`, and that is a safety property
+rather than an unfinished default: sizing multiplies by the arm's budget, so a
+promoted live champion with no budget is the single global champion and can still
+place nothing. Setting a number is its own deliberate owner step (Spec Q §3: the
+dollar budget is deployment configuration, not part of the strategy).
+
+### Demotion
+
+`/demote_arm <source_arm_id> <tier>` is the same machinery downward, with one
+asymmetry: a demotion also stands the **source** arm down (`active -> paused`).
+Promoting says nothing about the arm you promoted from; demoting says everything,
+and leaving the demoted arm active would mean the tier change changed nothing.
+
+## 26. Promotion is not entry approval
+
+Spec Q §13 states it and PR 6 implements it as two separate signed callbacks with
+two separate prefixes:
+
+| Callback | Prefix | What it authorizes | Signed with |
+|---|---|---|---|
+| tier change | `slpr:` / `slpx:` | one `promotion_event`, one arm activation | `portfolio.approvals.sign`, nonce held in the bot process |
+| one entry | `p6ok:` / `p6no:` | one `proposed` execution, atomically | `portfolio.approvals.mint`/`verify`, nonce on the `proposals` row |
+
+Both are owner-bound, expiring and single-use. Neither is the other's approval: a
+promoted live arm that proposes ten entries needs ten approvals.
+
+There is exactly **one** HMAC in the codebase (`portfolio.approvals.sign`) and
+one kill switch (`portfolio.killswitch`, `/live_kill`). PR 6 added neither a
+second signing scheme nor a second switch.
+
+**Routing.** A Phase 6 approval callback for a proposal carrying an
+`execution_id` is routed to PR 5's explicit-mode service, not the globally-bound
+one — approving a lab execution through the router would be exactly the inference
+invariant 11 forbids. The routing key is read from the **row**, not from the
+callback, so a crafted callback cannot make a plain proposal look like a lab
+execution or the reverse. A rejection cancels the `strategy_trades` row as well
+as the proposal, so the decision's open-execution slot is released rather than
+held forever.
+
+## 27. The operator surface after PR 6
+
+| Command | What it does |
+|---|---|
+| `/experiments` | experiments, arms, tier distribution |
+| `/strategies` | the roster: champion, challengers, versions, statuses |
+| `/strategy <slug>` | one strategy's decisions, executions, scorecard, warnings |
+| `/pause_experiment` `/resume_experiment` | stop and restart an experiment's arms |
+| `/promote_arm <arm> <tier> [reason]` | render a tier change, then confirm it |
+| `/demote_arm <arm> <tier> [reason]` | the same, downward; stands the source arm down |
+| `/promotions` | the append-only audit trail |
+| `/live_kill on\|off` | Phase 6's kill switch. Unchanged, and still the only one |
+
+Everything is owner-only through the existing chat-id allowlist, and every
+performance figure on every card is copied out of
+`scripts/strategy_lab_scoreboard.py`'s payload. Nothing in `bot/` computes,
+rounds, selects or characterises a number.
+
+## 28. What PR 6 does not do
+
+- **It does not enable anything.** `STRATEGY_LAB_PAPER_ENABLED` and
+  `STRATEGY_LAB_LIVE_ENABLED` are false, as are the two PR 4 flags and every
+  Phase 6 gate. With all of them false a scan behaves exactly as it does today
+  and writes no Strategy Lab row (`tests/test_strategy_lab_e2e.py`).
+- **It places no live order, and no live order is reachable.** Live needs
+  `STRATEGY_LAB_LIVE_ENABLED`, `ALLOW_LIVE_TRADING`, `EXECUTION_MODE=live`,
+  `PHASE6_EXECUTION_ENABLED`, kill-switch clearance, a Robinhood adapter
+  declaring `can_place_standalone_gtc_stop`, an owner `promotion_event` binding
+  the one global champion, a non-zero live risk budget, and a separate signed
+  approval per entry. The real `gtc stop_market` probe
+  (`docs/EXECUTION_LIFECYCLE.md` §6) has still not been run against a live
+  account, so the capability declaration is unverified in production and live
+  automation remains disabled with that limitation recorded.
+- **It does not give a paper arm its own ledger.** See §23's "what that leaves
+  open".
+- **It does not evaluate.** `experiment_metric_snapshots` rows are written by PR
+  3's evaluator through `scripts/strategy_lab_scoreboard.py` and the maturation
+  job; PR 6 reads them and refuses a promotion when one is incomplete. There is
+  no scheduled job that records evidence *for the purpose of* a promotion.
+- **It adds no migration.** The single Alembic head stays
+  `0011_comparable_subject_ticker`; `promotion_events`,
+  `experiment_metric_snapshots` and `strategy_trades` have existed since PR 1
+  precisely so that PR 6 would not have to reopen the graph.
+- **It does not touch production capital or settings.** No Railway variable was
+  changed; the rollout checklist in `docs/STRATEGY_LAB_RUNBOOK.md` is a draft
+  for the owner to execute.
