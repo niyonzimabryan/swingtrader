@@ -945,17 +945,23 @@ def record_execution(
 ):
     """Create the execution row for a decision, idempotently.
 
-    Two idempotency rules, and they are different on purpose:
+    Two idempotency rules, applied in this order:
 
-    * a **non-terminal** execution is unique per decision, so a retry returns
-      the stored row and its ``execution_id`` rather than creating a second
-      one. That is the database constraint's application-level twin, and it is
-      why the row is written before any reservation or broker call would be;
-    * a **terminal** one — a risk refusal, say — is deduplicated on
-      ``(decision, status, portfolio_context_hash, blocked_reason)``. Re-running
-      an evaluation against the same portfolio context must not append a second
-      identical refusal, but a refusal against a *different* context is a
-      genuinely new attempt and gets its own row.
+    * **An attempt is identified by ``(decision, portfolio_context_hash)``.**
+      Re-running an evaluation against the same portfolio returns the stored
+      row, whatever state it has since reached. That is what makes a whole
+      shadow run re-runnable: a settled, closed execution is not a reason to
+      open a second one, and a refusal is not appended twice.
+    * **A decision has at most one non-terminal execution.** A retry against a
+      *different* context while one is still open reuses that open row and its
+      ``execution_id`` rather than creating a second placement. That is the
+      database constraint's application-level twin, and it is why the row is
+      written before any reservation or broker call would be (Spec Q §12
+      invariant 6).
+
+    A refusal against a genuinely different portfolio context is a new attempt
+    and gets its own row, which is how "the same decision was blocked on
+    Tuesday" stays answerable.
 
     The mode is copied from the arm and never passed in: Spec Q §11 makes an
     arm's mode the execution's mode, and an argument here would be somewhere for
@@ -972,21 +978,18 @@ def record_execution(
         )
     state = ExecutionState(status)
 
-    if state in TERMINAL_EXECUTION_STATES:
-        existing = (
-            session.query(models.StrategyTrade)
-            .filter(
-                models.StrategyTrade.decision_id == decision_id,
-                models.StrategyTrade.status == state.value,
-                models.StrategyTrade.portfolio_context_hash == portfolio_context_hash,
-                models.StrategyTrade.blocked_reason == blocked_reason,
-            )
-            .order_by(models.StrategyTrade.id)
-            .first()
+    existing = (
+        session.query(models.StrategyTrade)
+        .filter(
+            models.StrategyTrade.decision_id == decision_id,
+            models.StrategyTrade.portfolio_context_hash == portfolio_context_hash,
         )
-        if existing is not None:
-            return existing
-    else:
+        .order_by(models.StrategyTrade.id)
+        .first()
+    )
+    if existing is not None:
+        return existing
+    if state not in TERMINAL_EXECUTION_STATES:
         existing = open_execution_for(session, decision_id)
         if existing is not None:
             return existing

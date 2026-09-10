@@ -72,6 +72,8 @@ __all__ = [
     "fill",
     "close",
     "settle",
+    "refreshed",
+    "execute_arm",
 ]
 
 
@@ -318,7 +320,12 @@ def assess(
 
 @dataclass(frozen=True)
 class ShadowExecution:
-    """One ``strategy_trades`` row, as this module sees it."""
+    """One ``strategy_trades`` row, as this module sees it.
+
+    ``status`` is the row's state at the moment the value object was built.
+    :func:`settle` moves the row on, so a caller that needs the current state
+    asks :func:`refreshed` for it rather than trusting a stale copy.
+    """
 
     execution_id: str
     trade_id: int
@@ -345,6 +352,15 @@ class ShadowExecution:
             "portfolio_context_hash": self.context_hash,
             "sizing": self.sizing.canonical() if self.sizing else None,
         }
+
+
+def refreshed(session, execution: ShadowExecution) -> ShadowExecution:
+    """The same execution with its status re-read from the row."""
+    row = registry.execution_row(session, execution.execution_id)
+    payload = dict(execution.__dict__)
+    payload["status"] = ExecutionState(row.status)
+    payload["blocked_reason"] = row.blocked_reason
+    return ShadowExecution(**payload)
 
 
 def _require_shadow(session, arm_id: int):
@@ -583,6 +599,14 @@ def execute_arm(
         if row.action != DecisionAction.LONG.value:
             continue
         decision = _decision_of(row)
+        if decision.snapshot_hash != snapshot.content_hash:
+            raise ShadowRefused(
+                f"decision {decision_id} ({row.ticker}) was made from snapshot "
+                f"{decision.snapshot_hash[:12]}, not from "
+                f"{snapshot.content_hash[:12]}. One shadow run covers one "
+                "snapshot; replaying a decision against inputs it was not made "
+                "from is exactly the cross-cutoff assembly Spec Q §6 forbids."
+            )
         bars = bars_for(forward_bars, row.ticker)
         if len(bars) < 2:
             continue
@@ -596,7 +620,7 @@ def execute_arm(
             session, arm_id, decision_id, replay.plan_of(outcome), working
         )
         settle(session, execution, outcome)
-        executions.append(execution)
+        executions.append(refreshed(session, execution))
         outcomes.append(outcome)
         if not execution.blocked and execution.sizing:
             working = working.with_position(
