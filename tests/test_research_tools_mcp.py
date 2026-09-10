@@ -50,22 +50,75 @@ MINIMAL_ARGUMENTS = {
 }
 
 
-class ResearchToolsTestCase(unittest.TestCase):
-    def setUp(self):
-        self.db = TestDatabase("research_tools")
-        self.addCleanup(self.db.cleanup)
+def _reset_research_workspace(session):
+    """Undo whatever the previous test wrote: theses, dossier, journal, tokens.
 
+    Children before parents, though nothing here actually enforces foreign
+    keys on SQLite — this is the order a Postgres run would need.
+    """
+    from database.models import (
+        DecisionJournalEntry,
+        Dossier,
+        DossierSection,
+        ResearchQuestion,
+        Thesis,
+        ThesisInvalidator,
+        WorkspaceToken,
+    )
+
+    session.query(ThesisInvalidator).delete()
+    session.query(Thesis).delete()
+    session.query(DossierSection).delete()
+    session.query(Dossier).delete()
+    session.query(DecisionJournalEntry).delete()
+    session.query(ResearchQuestion).delete()
+    session.query(WorkspaceToken).delete()
+    session.flush()
+
+
+class ResearchToolsTestCase(unittest.TestCase):
+    """One database and one live server for the whole class hierarchy leaf.
+
+    Every concrete subclass (`SurfaceTests`, `ReadToolTests`, ...) gets its own
+    `setUpClass` call — unittest runs it once per leaf class even though it is
+    defined here — so this still converts "one server per test method" into
+    "one server per class" without any subclass needing to know.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = TestDatabase("research_tools")
         from database.db import init_db
 
+        init_db(cls.db.url)
+        cls.app, cls.settings = ws.build_app(cls.db.url, research_workspace_enabled=True)
+        cls._live_ctx = ws.running(cls.app)
+        cls.live = cls._live_ctx.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._live_ctx.__exit__(None, None, None)
+        cls.db.cleanup()
+
+    def setUp(self):
+        # Defensive: `FlagOffTests` below calls `init_db` with its own
+        # throwaway database, repointing the process-global engine this
+        # class's live server reads through `get_session()`.
+        from database.db import get_session, init_db
+
         init_db(self.db.url)
+        with get_session() as session:
+            _reset_research_workspace(session)
+        # SQLite reuses a deleted table's lowest rowid, so the token this test
+        # issues can carry the same id an earlier test's did; the rate
+        # limiter's in-memory window is keyed by that id and would otherwise
+        # count both tests' calls as one token's, on a server this class now
+        # shares for its whole run.
+        self.app.state.workspace_auth.limiter.reset()
+
         self.read_token = ws.issue_token("claude-code", ["read"])
         self.write_token = ws.issue_token("claude-web", ["read", "research:write"])
         self.admin_token = ws.issue_token("admin-only", ["admin"])
-
-        app, self.settings = ws.build_app(self.db.url, research_workspace_enabled=True)
-        self._live = ws.running(app)
-        self.live = self._live.__enter__()
-        self.addCleanup(lambda: self._live.__exit__(None, None, None))
         self.addCleanup(citations.clear_answer_resolver)
 
     def call(self, tool, arguments=None, token=None):

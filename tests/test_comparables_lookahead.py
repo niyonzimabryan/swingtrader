@@ -32,17 +32,39 @@ from comparables import lookahead as lookahead_mod
 from comparables import setups as roster
 
 
+#: The expensive, never-mutated part of the world (prices, share counts) is
+#: seeded once for this module: every test here either reads the world
+#: read-only or truncates and restores it under its own savepoint (that
+#: restoration is exactly what `test_truncation_is_rolled_back` and
+#: `test_truncation_survives_an_exception` assert), so nothing here needs a
+#: fresh base per test. See `cohortfixture.seed_base_world`.
+def setUpModule():
+    global _MODULE_DB, _MODULE_BASE
+
+    from database.db import get_session, init_db
+
+    _MODULE_DB = TestDatabase("lookahead_module")
+    init_db(_MODULE_DB.url)
+    # Short-lived: commits and closes rather than being held open for the
+    # whole module, so it never stands in the way of the per-test sessions
+    # below on this same SQLite file (SQLite allows one writer at a time).
+    with get_session() as session:
+        _MODULE_BASE = cf.seed_base_world(session)
+
+
+def tearDownModule():
+    _MODULE_DB.cleanup()
+
+
 class LookaheadHarnessTests(unittest.TestCase):
     def setUp(self):
-        self.db = TestDatabase("lookahead")
-        self.addCleanup(self.db.cleanup)
         from database.db import get_session, init_db
 
-        init_db(self.db.url)
+        init_db(_MODULE_DB.url)
         self._ctx = get_session()
         self.session = self._ctx.__enter__()
         self.addCleanup(lambda: self._ctx.__exit__(None, None, None))
-        self.world = cf.seed_world(self.session)
+        self.world = cf.seed_mutable_world(self.session, _MODULE_BASE)
 
     def test_truncated_data_identical_answer(self):
         """Every stored cohort, every event cutoff, byte for byte.
