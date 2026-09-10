@@ -179,6 +179,65 @@ The Robinhood `gtc` `stop_market` live probe (`docs/EXECUTION_LIFECYCLE.md` §6)
 is an **owner action** and is not run from a build session. Until it passes,
 keep `EXECUTION_MODE=live` off.
 
+## 10. Strategy Lab shadow integration (Spec Q, PR 4)
+
+Versioned strategies running in shadow beside the existing scan. Everything
+defaults **off**, and with `STRATEGY_LAB_ENABLED=false` the pipeline hook
+returns before it imports anything, no scheduled job is registered, the weekly
+report gains no section, and the owner-only commands answer "disabled" instead
+of reading a table. The domain model, the roster and the scorecard are in
+`docs/STRATEGY_LAB.md`.
+
+Two gates, because they turn on different things:
+
+| Flag | What it turns on |
+|---|---|
+| `STRATEGY_LAB_ENABLED` | the read surface: `/experiments`, `/strategies`, `/strategy <slug>`, `/pause_experiment`, `/resume_experiment`, and the weekly scoreboard section |
+| `STRATEGY_LAB_SHADOW_ENABLED` | the one path that **writes**: the post-scan shadow pass and the nightly maturation job at 04:15 ET |
+
+To reach a **shadow** testing state (no broker, no capital, no order):
+
+- `STRATEGY_LAB_ENABLED=true` and `STRATEGY_LAB_SHADOW_ENABLED=true` on the bot
+  service. Nothing is needed on the workspace service: the Strategy Lab has no
+  MCP tool, by design (Spec Q §4.1 — an agent cannot reach it).
+- Leave `STRATEGY_LAB_EXPERIMENT=shadow_roster_v1` alone unless you want a fresh
+  experiment. The analysis plan is pre-registered in
+  `orchestrator/strategy_lab_shadow.py` and frozen at registration: re-registering
+  the same name with a changed plan is refused, and the remedy is a new name
+  here, not an edit there.
+- The first scan after the flags flip registers the experiment, the four roster
+  versions and four shadow arms, then records decisions. Check with
+  `/experiments`.
+- The nightly 04:15 ET job settles decisions once their forward bars exist. Until
+  the price plane is populated (§6) only the compatibility arm
+  (`swingtrader_composite_v1`) produces decisions, because it reads the
+  pipeline's own `scored_candidates` row and needs no bars; the other three
+  abstain with `missing_dependency`, which is recorded rather than hidden.
+
+Cross-sectional arms (`momentum_v1`, `short_term_reversal_v1`) additionally need
+`STRATEGY_LAB_UNIVERSE_ENABLED=true`, a populated `universe_membership` table and
+`PRICE_PLANE_ENABLED=true` (§6). One universe snapshot is built per scan cutoff
+and shared by both arms; leave the flag false until the plane is backfilled,
+because a 500-name read against an empty plane buys nothing.
+
+Everything else is tuning, defaults in `.env.example`: the virtual shadow book
+(`STRATEGY_LAB_SHADOW_EQUITY`, `STRATEGY_LAB_SHADOW_RISK_BUDGET`,
+`STRATEGY_LAB_SHADOW_MAX_OPEN_POSITIONS`,
+`STRATEGY_LAB_SHADOW_MAX_POSITION_FRACTION`), the per-scan and per-run caps
+(`STRATEGY_LAB_MAX_TICKERS_PER_SCAN`, `STRATEGY_LAB_MATURATION_MAX_SNAPSHOTS`),
+the cost model (`STRATEGY_LAB_SLIPPAGE_BPS`, `STRATEGY_LAB_HALF_SPREAD_BPS`,
+`STRATEGY_LAB_COMMISSION_BPS` — a missing cost model **blocks** an arm's return
+metrics rather than treating costs as zero), the evidence floors
+(`STRATEGY_LAB_FLOOR_*`, `STRATEGY_LAB_CONFIDENCE_LEVEL`) and the card's
+bootstrap (`STRATEGY_LAB_REPORT_BOOTSTRAP_REPS`, `STRATEGY_LAB_REPORT_SEED`).
+
+**Paper and live are not reachable from here.** There is no paper or live flag in
+this family, because the safety services that would have to gate them are PR 5
+(the broker-independent live lifecycle) and PR 6 (the paper tournament and the
+promotion workflow). Every arm this integration creates is `shadow`, its mode is
+fixed at creation, and `strategy_lab/shadow.py` refuses any arm whose mode is not
+`shadow`. `/live_kill` is Phase 6's switch (§9) and is unaffected.
+
 ## Order of operations to a testing state
 
 1. Merge is on `main`; Railway auto-deploys the bot service. Confirm the bot
@@ -199,3 +258,8 @@ keep `EXECUTION_MODE=live` off.
    `propose` scope; call `propose_order`, approve the card in Telegram, and
    watch the paper lifecycle reach `protected` (§9). Live stays off until the
    Robinhood stop probe passes.
+8. Strategy Lab shadow: `STRATEGY_LAB_ENABLED=true` and
+   `STRATEGY_LAB_SHADOW_ENABLED=true` on the bot service, then `/experiments`
+   after the next scan (§10). Turn on `STRATEGY_LAB_UNIVERSE_ENABLED` only once
+   the price plane and `universe_membership` are backfilled. No broker, no
+   capital and no order is involved at this tier.
