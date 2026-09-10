@@ -189,3 +189,22 @@ bull argument.
 - A new session, given only the repo, can state Bryan's current view on a held name and
   what would change it.
 - The quarterly honesty metrics render, including the unflattering ones.
+
+---
+
+## 10. Rulings log (post-build)
+
+Ratified 2026-09-09 from the Phase 2 build (PR #50):
+
+- **`time_decay` fires unconditionally at its deadline** unless the optional
+  `unless_metric` observable moved. An unresolved thesis at its own deadline is
+  weakened; "give it more time" costs a human decision.
+- **"All sources untrusted-tier" means all sources are unaccountable third-party
+  text** (news, vendor data, scraped pages). A filing or issuer disclosure is still
+  marked `content_trust: "untrusted"` and nonce-wrapped but counts as sourced, so
+  `company-researcher` can write a dossier section from primary sources without a
+  human flag.
+- **`web_scrape` is withheld from the mirror** alongside the news and vendor-data
+  tiers: a scraped page is third-party copyrighted prose in a public repo.
+- The evidenced budget is unusable until Phase 3c registers cohort answers with the
+  citation seam; every journal entry until then is honestly `discretionary`.

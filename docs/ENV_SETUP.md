@@ -85,10 +85,30 @@ Owner actions: buy Sharadar Prices (confirm what "from $9" gates and the
 redistribution terms), then `python -m scripts.audit_delisting_returns` before
 relying on any cohort, then `python -m scripts.price_backfill --source sharadar --since 2015-01-01`.
 
-## 7. Comparable setups (Phase 3c, pending)
+## 7. Comparable setups (Phase 3c)
 
-`COMPARABLE_SETUPS_ENABLED=true` on the workspace service once merged; it reads
-the price plane and `source_observations` and needs nothing else.
+`COMPARABLE_SETUPS_ENABLED=true` on the workspace service. Off means
+`compare_setups` and `cohort_detail` are not registered at all. It reads the
+price plane and `source_observations` and needs, on the workspace service:
+
+- `COMPARABLE_BENCHMARK_SECURITY_UID` — **required**: the `security_uid` in
+  `price_bars` every abnormal return is measured against (a total-return
+  benchmark, e.g. the SPY row after the backfill). Empty refuses every cohort;
+  there is no default benchmark on purpose.
+- `COMPARABLE_PRICE_SNAPSHOT` (default `dev`) — the named price-file vintage; its
+  delisting audit (§6) must be recorded or no cohort can reach `vendor_pit`.
+- `COMPARABLE_UNIVERSE_SLUG` (default `liquid_us_equity_v1`) — must have
+  `universe_membership` rows for the period, or cohorts cap at
+  `archival_reconstructed`.
+- `COMPARABLE_EXECUTION_POLICY` (default `event_swing_14cal_v1`),
+  `COMPARABLE_QUICK_BOOTSTRAP_REPS` (1000), `COMPARABLE_FULL_BOOTSTRAP_REPS`
+  (10000) — leave as defaults.
+- `COMPARABLE_CIK_MAP` (`TICKER:CIK,...`) — optional; empty refuses every name a
+  market-cap decile rather than guessing one. Phase 4's entity plane replaces it.
+
+Then `python -m scripts.cohort_smoke` against the production database (Spec N
+§11 asks for one `insufficient` and one `ok` answer hand-verified on real data;
+this was only run on fixtures). `docs/COMPARABLE_SETUPS.md` is the reference.
 
 ## 8. Evidence planes (Phase 4)
 
@@ -172,4 +192,5 @@ keep `EXECUTION_MODE=live` off.
    `whoami`, then `portfolio_overview`. Holdings appear after the first sync.
 5. Record real SEC and Robinhood fixtures from the laptop (§3, §5) and push.
 6. Buy Sharadar Prices, run the delisting audit and the price backfill (§6),
-   then flip `COMPARABLE_SETUPS_ENABLED` when Phase 3c lands.
+   then set `COMPARABLE_BENCHMARK_SECURITY_UID` and flip
+   `COMPARABLE_SETUPS_ENABLED` (§7).

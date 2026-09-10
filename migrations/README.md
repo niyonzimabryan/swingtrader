@@ -18,7 +18,10 @@ migrations/
     0006_merge_research_workspace.py joins the research workspace to it
     0007_strategy_lab.py             Phase 5: the Strategy Lab experiment tables (spec Q §8)
     0008_merge_strategy_lab.py       joins the Strategy Lab branch to the integrated head
+    0005_comparable_registry.py      Phase 3c: comparable_queries, cohort_answers, cohort_predictions (spec N §7)
+    0009_merge_comparables.py        joins the comparable registry to 0008_merge_strategy_lab
     0009_execution_lifecycle.py      Phase 6: proposals + the persistent kill switch (spec L §6)
+    0010_merge_execution_lifecycle.py joins Phase 6 to 0009_merge_comparables (the head)
 ```
 
 `0009_execution_lifecycle` branches from the single head `0008_merge_strategy_lab`

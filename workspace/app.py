@@ -207,6 +207,7 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
     )
     app.state.workspace_auth = auth
     app.state.mcp = mcp
+    app.state.registered_tools = tool_module.registered_tools(settings)
 
     @app.get("/health")
     def health():
@@ -234,6 +235,9 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
                 },
                 "research_workspace_enabled": bool(
                     getattr(settings, "research_workspace_enabled", False)
+                ),
+                "comparable_setups_enabled": bool(
+                    getattr(settings, "comparable_setups_enabled", False)
                 ),
                 "portfolio_sync": portfolio_sync,
                 "pending_checks": [

@@ -344,6 +344,38 @@ class Settings(BaseSettings):
     delisting_audit_window_sessions: int = 10
     delisting_audit_collapse_threshold: float = -0.60
 
+    # --- Comparable-setups engine (Spec N, Phase 3c) ---
+    # Off by default. When false the `compare_setups` and `cohort_detail` MCP
+    # tools are not registered at all — an unregistered tool is a clearer
+    # refusal than a registered one that answers "disabled".
+    comparable_setups_enabled: bool = False
+    # The stored universe a cohort's membership is read from, as of the event
+    # date. A universe with no `universe_membership` rows for the period caps
+    # the cohort at `archival_reconstructed` (Spec N §4.2).
+    comparable_universe_slug: str = "liquid_us_equity_v1"
+    # The named price-file vintage a cohort runs against. Its delisting audit
+    # (Spec N §4.2) must be recorded, or the cohort cannot reach `vendor_pit`.
+    comparable_price_snapshot: str = "dev"
+    # The total-return benchmark every abnormal return is measured against.
+    # A `security_uid` in `price_bars`, not a ticker: tickers are reused.
+    comparable_benchmark_security_uid: str = ""
+    # The execution policy the §5.3 policy leg replays under.
+    comparable_execution_policy: str = "event_swing_14cal_v1"
+    # Bootstrap replications for a `quick` answer. `full` uses the configured
+    # comparables default (10,000); quick trades width for latency.
+    comparable_quick_bootstrap_reps: int = 1000
+    # Bootstrap replications for a `full` answer. Spec N §6.1 wants a stationary
+    # block bootstrap, not a number of draws; 10,000 is the default and lowering
+    # it widens nothing and only makes the interval noisier, so it is configurable
+    # rather than fixed for the same reason the floors are.
+    comparable_full_bootstrap_reps: int = 10_000
+    # `TICKER:CIK,TICKER:CIK` — the join `market_cap_decile` needs, because the
+    # price plane's security master has no CIK column and the SEC feed stamps a
+    # ticker. Phase 4's entity-history plane replaces it with a stored,
+    # point-in-time mapping. Empty means every name is refused a market-cap
+    # decile rather than given one computed from a count it could not have had.
+    comparable_cik_map: str = ""
+
     # --- Spec O Phase 3a: minimum SEC ingestion plane ---
     # Off by default. When false, filings.sec_minimal refuses to ingest; the
     # read helpers still work against whatever is already in the ledger.

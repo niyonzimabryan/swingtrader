@@ -671,6 +671,50 @@ class CitedAnswer:
     evidence_hash: str
 
 
+def _is_stored_citation(answer) -> bool:
+    """A `comparables.citations.ResolvedCitation`: a stored answer, resolved.
+
+    Duck-typed rather than imported so this module never depends on the
+    persistence half of `comparables/` (its import-graph test keeps the two
+    halves apart); the four attributes are the ones the citer needs.
+    """
+    return all(hasattr(answer, name) for name in ("citation_id", "depth", "status", "answer"))
+
+
+def _cite_stored_answer(resolved) -> CitedAnswer:
+    """Cite an answer Phase 3c stored, on the same rule as an in-memory one.
+
+    The evidence hash is over the stored JSON exactly as the engine wrote it:
+    nothing is recomputed, and `comparables.report.cohort_answer_from_text`
+    refuses to rebuild an answer from text by design (Spec N §9).
+    """
+    if resolved.depth != "full" or resolved.status == "insufficient":
+        reason = (
+            (resolved.answer or {}).get("refusal_reason")
+            if resolved.status == "insufficient"
+            else f"depth={resolved.depth!r}"
+        )
+        raise ResearchRefused(
+            "uncitable_cohort_answer",
+            f"{resolved.citation_id} cannot be cited ({reason}): `full` is "
+            f"mandatory and an `insufficient` answer carries no statistic "
+            f"(Spec N §8)",
+        )
+    if resolved.status != "ok":
+        raise ResearchRefused(
+            "uncitable_cohort_answer",
+            f"a depth='full' answer with status={resolved.status!r} is not a "
+            f"citation: {(resolved.answer or {}).get('refusal_reason') or 'no effect was established'} "
+            f"(Spec L §6.6 — the decision may still be made, as "
+            f"budget='discretionary')",
+        )
+    canonical = json.dumps(resolved.answer, sort_keys=True, separators=(",", ":"))
+    return CitedAnswer(
+        cohort_answer_id=resolved.citation_id,
+        evidence_hash=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    )
+
+
 def cite_cohort_answer(answer) -> CitedAnswer:
     """Accept a cohort answer for citation, or refuse it (Spec N §8, Spec L §6.6).
 
@@ -682,6 +726,9 @@ def cite_cohort_answer(answer) -> CitedAnswer:
     discretionary split means nothing.
     """
     from comparables.report import NotCitableError, assert_citable, to_json
+
+    if _is_stored_citation(answer):
+        return _cite_stored_answer(answer)
 
     try:
         full = assert_citable(answer)
