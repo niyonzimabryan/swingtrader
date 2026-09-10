@@ -457,6 +457,23 @@ class ShadowEnabledTests(ScanFixture):
         )
         self.assertEqual(resumed["status"], "running")
 
+    def test_an_experiment_can_be_paused_by_row_id_too(self):
+        """Spec Q §13 writes `<id>`; `/experiments` prints names. Both resolve."""
+        self.run_scan()
+        with get_session() as session:
+            row_id = session.query(models.Experiment).first().id
+
+        result = lab.set_experiment_paused(self.settings, str(row_id), paused=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["name"], "shadow_roster_v1")
+        self.assertEqual(result["status"], "paused")
+
+    def test_an_unknown_experiment_is_refused_not_created(self):
+        result = lab.set_experiment_paused(self.settings, "no_such_thing", paused=True)
+        self.assertFalse(result["ok"])
+        self.assertIn("no_such_thing", result["error"])
+        self.assertEqual(self.lab_row_counts()["experiments"], 0)
+
 
 def _ledger_rows() -> list[dict]:
     """Every `scored_candidates` row, detached, ordered by id."""

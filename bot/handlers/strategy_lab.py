@@ -6,6 +6,7 @@ Five commands, all read-only except the two that move an experiment's status:
 ``/strategies``        the roster: champion, challengers, versions, statuses
 ``/strategy <slug>``   one strategy's decisions, executions and recent activity
 ``/pause_experiment``  and ``/resume_experiment`` — Spec Q §13's pause controls
+                       (by name or row id; the configured experiment by default)
 
 **Not here, on purpose.** ``/promote_arm`` and the live-tier controls are Spec Q
 §13 commands whose safety services are PR 5 and PR 6: an owner-only button that
@@ -447,7 +448,7 @@ async def _set_paused(update: Update, context: ContextTypes.DEFAULT_TYPE, *, pau
     )
     if not name:
         await update.message.reply_text(
-            "Usage: /pause_experiment <name>  (see /experiments)", parse_mode=None
+            "Usage: /pause_experiment <name|id>  (see /experiments)", parse_mode=None
         )
         return
     verb = "pause_experiment" if paused else "resume_experiment"

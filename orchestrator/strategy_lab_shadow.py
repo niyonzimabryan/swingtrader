@@ -636,7 +636,9 @@ def _mature(settings, summary: MaturationSummary, *, now: datetime):
                     executions, _outcomes = shadow.execute_arm(
                         session, arm_id, version, snapshot, decision_ids, forward,
                         context=portfolio_context(
-                            settings, as_of=snapshot.data_cutoff_utc
+                            settings,
+                            as_of=snapshot.data_cutoff_utc,
+                            open_tickers=_open_tickers(session, arm_id),
                         ),
                         costs=costs,
                     )
@@ -676,6 +678,33 @@ def _pending_by_snapshot(session, arm_id: int) -> dict[int, list[int]]:
             continue
         pending.setdefault(row.snapshot_id, []).append(row.id)
     return {key: sorted(value) for key, value in pending.items()}
+
+
+def _open_tickers(session, arm_id: int) -> tuple[str, ...]:
+    """Names this arm still holds, so the exposure caps bind across snapshots.
+
+    In practice this is usually empty, because a snapshot is only settled once
+    its whole horizon has elapsed and `execute_arm` therefore opens and closes in
+    one pass. It is queried anyway rather than passed as `()`: a trade that does
+    stay open — bars that stop arriving mid-horizon — must block a second
+    position in the same name, and hard-coding an empty book would quietly make
+    `ticker_already_held_by_this_portfolio` unreachable.
+
+    What this does *not* model: a running intraday book. The shadow arm's
+    concurrency is visible in the scorecard's `exposure_positions_per_day`
+    instead, which is computed from the observations rather than asserted here.
+    """
+    from strategy_lab import registry
+    from strategy_lab.domain import TERMINAL_EXECUTION_STATES
+
+    terminal = {state.value for state in TERMINAL_EXECUTION_STATES}
+    tickers: set[str] = set()
+    for row in registry.executions_for_arm(session, arm_id):
+        if row.status in terminal:
+            continue
+        decision = registry.decision_row(session, row.decision_id)
+        tickers.add(decision.ticker)
+    return tuple(sorted(tickers))
 
 
 def _has_any_execution(session, decision_id: int) -> bool:
@@ -930,6 +959,26 @@ def strategy_detail(settings, slug: str, *, recent: int = 5) -> Mapping | None:
     }
 
 
+def _experiment_by_name_or_id(session, token: str):
+    """Resolve an experiment from what an operator types.
+
+    Spec Q §13 writes the commands as ``/pause_experiment <id>``; `/experiments`
+    prints names, which are slugs and are what a person actually has to hand.
+    Both work, and a numeric token is tried as a row id only after the name
+    lookup fails, so an experiment legitimately named `2026` is not shadowed by
+    a row with that id.
+    """
+    from database import models
+    from strategy_lab import registry
+
+    row = registry.get_experiment(session, token)
+    if row is not None:
+        return row
+    if token.isdigit():
+        return session.get(models.Experiment, int(token))
+    return None
+
+
 def set_experiment_paused(settings, name: str, *, paused: bool) -> Mapping:
     """Pause or resume an experiment. Owner-only at the call site.
 
@@ -943,9 +992,10 @@ def set_experiment_paused(settings, name: str, *, paused: bool) -> Mapping:
 
     target = ExperimentStatus.PAUSED if paused else ExperimentStatus.RUNNING
     with get_session() as session:
-        row = registry.get_experiment(session, name)
+        row = _experiment_by_name_or_id(session, name)
         if row is None:
             return {"ok": False, "error": f"no experiment named {name!r}"}
+        name = row.name
         before = row.status
         if ExperimentStatus(before) is target:
             return {"ok": True, "name": name, "status": before, "changed": False}
