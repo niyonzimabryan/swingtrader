@@ -276,3 +276,7 @@ fixed at creation, and `strategy_lab/shadow.py` refuses any arm whose mode is no
    after the next scan (§10). Turn on `STRATEGY_LAB_UNIVERSE_ENABLED` only once
    the price plane and `universe_membership` are backfilled. No broker, no
    capital and no order is involved at this tier.
+9. Strategy Lab paper and live arms arrive with PR 6 (`STRATEGY_LAB_PAPER_ENABLED`,
+   `STRATEGY_LAB_LIVE_ENABLED`, both default off): paper dispatches through the
+   Phase 6 lifecycle to Alpaca paper; live is owner-promoted, one champion, and
+   gated by everything in §9 plus the promotion audit.
