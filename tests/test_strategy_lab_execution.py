@@ -812,3 +812,62 @@ class ReconciliationTests(ExecutionTestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+# --------------------------------------------------------------------------- #
+# The monitor seam
+# --------------------------------------------------------------------------- #
+
+
+class MonitorIntegrationTests(ExecutionTestCase):
+    """`PositionMonitor` runs injected execution reconcilers, or nothing at all.
+
+    The monitor holds an Alpaca client and nothing else, which is exactly why a
+    position opened through this path was outside reconciliation. It now takes
+    injected reconcilers instead of a second broker; PR 4 supplies the schedule.
+    """
+
+    def _monitor(self, **kwargs):
+        from execution.position_monitor import PositionMonitor
+
+        return PositionMonitor(None, None, self.settings_for(), **kwargs)
+
+    def test_no_reconciler_means_no_change(self):
+        self.assertEqual(self._monitor().execution_reconcilers, ())
+
+    def test_an_injected_reconciler_runs_on_a_position_tick(self):
+        self.build()
+        card = self.propose()
+        self.approve(card)
+        monitor = self._monitor(
+            execution_reconcilers=(lambda: self.service.reconcile(mode=self.mode, now=self.now),)
+        )
+        monitor._run_execution_reconcilers()
+        self.assertEqual(self.status(card.execution_id), ExecutionState.PROTECTED.value)
+
+    def test_a_mismatch_found_by_the_monitor_blocks_entries(self):
+        self.build()
+        card = self.propose()
+        self.approve(card)
+        self.broker.get_positions_detail = lambda: []
+        monitor = self._monitor(
+            execution_reconcilers=(lambda: self.service.reconcile(mode=self.mode, now=self.now),)
+        )
+        monitor._run_execution_reconcilers()
+        self.assertEqual(
+            self.status(card.execution_id), ExecutionState.RECONCILIATION_REQUIRED.value
+        )
+        self.assertEqual(self.entry_block()[0], killswitch.UNRESOLVED_EXECUTION)
+
+    def test_a_failing_reconciler_does_not_stop_the_tick(self):
+        """The position alerts are this loop's first job; a comparison is not."""
+        calls = []
+
+        def explodes():
+            raise RuntimeError("broker unreachable")
+
+        monitor = self._monitor(
+            execution_reconcilers=(explodes, lambda: calls.append("ran"))
+        )
+        monitor._run_execution_reconcilers()
+        self.assertEqual(calls, ["ran"])

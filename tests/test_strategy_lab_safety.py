@@ -507,3 +507,96 @@ class ReservationVocabularyTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+# --------------------------------------------------------------------------- #
+# The review-only Robinhood capability inspection (Spec Q §12 invariant 4)
+# --------------------------------------------------------------------------- #
+
+
+class CapabilityInspectionTests(unittest.TestCase):
+    """Check the declaration against a schema — reading nothing but a schema.
+
+    Spec Q's Phase 5 brief asks for the capabilities to come from the documented
+    facts *and* a review-only inspection through the existing adapter. This is
+    that inspection: it lists tools and reads their JSON Schemas, and it calls
+    none of them. The only way to discover a *placement* capability by trying is
+    to place something, which is why there is no other kind here.
+
+    The fixture is a recorded shape, like everything else under
+    `tests/fixtures/robinhood/` — the live dump is not committed. What these
+    tests prove is that the checker sees a disagreement when there is one.
+    """
+
+    def setUp(self):
+        import json
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        root = Path(__file__).resolve().parents[1]
+        raw = json.loads(
+            (root / "tests/fixtures/robinhood/tool_schemas__equity_write.json").read_text()
+        )
+        self.schemas = {k: v for k, v in raw.items() if not k.startswith("_")}
+        self.broker = RobinhoodMCPBroker(
+            SimpleNamespace(robinhood_mcp_url="https://example.invalid", robinhood_account_number="x")
+        )
+
+    def test_the_recorded_schema_agrees_with_the_declaration(self):
+        result = self.broker.inspect_order_capabilities(schemas=self.schemas)
+        self.assertTrue(result.ok, result.as_dict())
+        self.assertEqual(
+            result.observed_order_types,
+            frozenset({"market", "limit", "stop_market", "stop_limit"}),
+        )
+        self.assertEqual(result.attached_exit_parameters, ())
+
+    def test_a_bracket_parameter_is_reported_and_changes_nothing(self):
+        """The finding is a finding. It does not grant a capability."""
+        schemas = dict(self.schemas)
+        place = dict(schemas["place_equity_order"])
+        place["properties"] = dict(place["properties"], bracket={"type": "object"})
+        schemas["place_equity_order"] = place
+
+        result = self.broker.inspect_order_capabilities(schemas=schemas)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.attached_exit_parameters, ("bracket",))
+        self.assertFalse(result.declared.can_place_attached_stop)
+        self.assertFalse(self.broker.capabilities().can_place_attached_stop)
+        self.assertFalse(ROBINHOOD_CAPABILITIES.can_place_attached_stop)
+
+    def test_a_changed_order_type_vocabulary_is_reported(self):
+        schemas = dict(self.schemas)
+        place = dict(schemas["place_equity_order"])
+        place["properties"] = dict(
+            place["properties"], type={"enum": ["market", "limit"]}
+        )
+        schemas["place_equity_order"] = place
+        result = self.broker.inspect_order_capabilities(schemas=schemas)
+        self.assertFalse(result.ok)
+        self.assertIn("stop_market", result.findings[0])
+
+    def test_a_missing_time_in_force_enum_is_not_read_as_agreement(self):
+        """An absent enum says nothing, and nothing is what it is read as."""
+        schemas = dict(self.schemas)
+        place = dict(schemas["place_equity_order"])
+        properties = dict(place["properties"])
+        properties.pop("time_in_force")
+        place["properties"] = properties
+        schemas["place_equity_order"] = place
+        result = self.broker.inspect_order_capabilities(schemas=schemas)
+        self.assertEqual(result.observed_time_in_force, frozenset())
+        self.assertTrue(result.ok)
+
+    def test_an_empty_schema_is_not_confirmation(self):
+        result = self.broker.inspect_order_capabilities(schemas={})
+        self.assertFalse(result.ok)
+        self.assertTrue(any("could not confirm" in f for f in result.findings))
+
+    def test_the_inspection_never_calls_a_tool(self):
+        """A grep-level control: the method reads schemas and calls nothing."""
+        import inspect
+
+        source = inspect.getsource(RobinhoodMCPBroker.inspect_order_capabilities)
+        for forbidden in ("_call_tool", "place_order", "review_order", "place_stop"):
+            self.assertNotIn(forbidden, source)

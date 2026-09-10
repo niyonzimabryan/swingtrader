@@ -51,10 +51,34 @@ POSITION_NEAR_STOP_PCT = -5.0  # -5% (approaching default stop)
 class PositionMonitor:
     name = "position_monitor"
 
-    def __init__(self, alpaca: AlpacaClient, notification_manager, settings):
+    def __init__(
+        self,
+        alpaca: AlpacaClient,
+        notification_manager,
+        settings,
+        *,
+        execution_reconcilers=(),
+    ):
         self.alpaca = alpaca
         self.nm = notification_manager
         self.settings = settings
+        #: Zero-argument callables run on each position tick, alongside this
+        #: monitor's own Alpaca-only pass (Spec Q §12, Phase 5).
+        #:
+        #: This monitor filters to Alpaca by construction — it holds an Alpaca
+        #: client and nothing else — which is precisely why a Robinhood position
+        #: opened through the Phase 6/Phase 5 path used to be outside
+        #: reconciliation entirely. Rather than teach it a second broker, it
+        #: takes injected reconcilers: Phase 5 supplies
+        #: ``lambda: strategy_execution_service.reconcile(mode=...)``, whose
+        #: whole job is to ask a broker whether it agrees with the execution
+        #: ledger and to fail closed when it does not.
+        #:
+        #: Empty by default, so nothing about this monitor changes until
+        #: something is injected. Each call is isolated: a reconciler that raises
+        #: is logged and the tick continues, because a failed comparison must
+        #: never stop the position alerts that are this loop's first job.
+        self.execution_reconcilers = tuple(execution_reconcilers or ())
         self._running = False
         self._task = None
         self._last_tick: datetime | None = None  # heartbeat for the watchdog
@@ -167,6 +191,22 @@ class PositionMonitor:
                     await self.nm.portfolio_drawdown_warning(drawdown_pct)
                     log.warning("portfolio_drawdown_warning", drawdown_pct=drawdown_pct)
 
+    def _run_execution_reconcilers(self) -> None:
+        """Run each injected execution reconciler, isolating its failures."""
+        for reconciler in self.execution_reconcilers:
+            try:
+                report = reconciler()
+            except Exception as exc:
+                log.error("execution_reconciler_failed", error=str(exc))
+                continue
+            mismatches = getattr(report, "mismatches", None)
+            if mismatches:
+                log.warning(
+                    "execution_reconciler_mismatch",
+                    count=len(mismatches),
+                    kinds=sorted({getattr(f, "kind", "") for f in mismatches}),
+                )
+
     async def _check_positions(self):
         """Check all open positions against their stored parameters."""
         positions = await self._broker_call(self.alpaca.get_positions_detail)
@@ -178,6 +218,7 @@ class PositionMonitor:
             execution_mode="paper",
             source="position_monitor",
         )
+        self._run_execution_reconcilers()
 
         with get_session() as session:
             for pos in positions:

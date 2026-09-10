@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
@@ -69,6 +70,32 @@ ROBINHOOD_CAPABILITIES = BrokerCapabilities(
     supports_specified_lot_sale=True,
 )
 
+#: What the 2026-09-08 ``tools/list`` dump said, written down so the declaration
+#: above stops being a comment and becomes a claim something can check.
+#: :meth:`RobinhoodMCPBroker.inspect_order_capabilities` compares a schema
+#: against this and reports every difference.
+EXPECTED_ORDER_TYPES = frozenset({"market", "limit", "stop_market", "stop_limit"})
+EXPECTED_TIME_IN_FORCE = frozenset({"gfd", "gtc"})
+
+#: Parameter names that would mean an attached/bracket exit exists after all.
+#: Finding one is a **finding to report**, never an automatic capability
+#: upgrade: `can_place_attached_stop` is changed by a human reading the schema
+#: and editing the declaration, because the difference between "the parameter
+#: exists" and "the broker guarantees the stop exists the moment the entry
+#: fills" is exactly the thing that cannot be inferred from a name.
+ATTACHED_EXIT_PARAMETER_NAMES = (
+    "bracket",
+    "oco",
+    "oto",
+    "attach",
+    "attached_stop",
+    "stop_loss",
+    "take_profit",
+    "trigger_order",
+    "child_orders",
+    "legs",
+)
+
 #: Read-only tools this adapter uses for the ledger. Listed so the sync path is
 #: legible and so a reviewer can check it against Spec L §5.1 without reading
 #: every method. No write tool appears here or is reachable from the sync.
@@ -82,6 +109,52 @@ LEDGER_READ_TOOLS = (
     "get_realized_pnl",
     "get_pnl_trade_history",
 )
+
+
+@dataclass(frozen=True)
+class CapabilityInspection:
+    """What a review-only schema inspection found. Advisory, never applied.
+
+    ``ok`` means the server's schema still says what
+    :data:`ROBINHOOD_CAPABILITIES` was written from. It does **not** mean a live
+    entry is safe — that needs the §5.1 probe, which is an owner action.
+    """
+
+    declared: BrokerCapabilities
+    observed_order_types: frozenset
+    observed_time_in_force: frozenset
+    attached_exit_parameters: tuple
+    findings: tuple
+    inspected_tool_count: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return not self.findings
+
+    def as_dict(self) -> dict:
+        return {
+            "ok": self.ok,
+            "observed_order_types": sorted(self.observed_order_types),
+            "observed_time_in_force": sorted(self.observed_time_in_force),
+            "attached_exit_parameters": list(self.attached_exit_parameters),
+            "findings": list(self.findings),
+            "inspected_tool_count": self.inspected_tool_count,
+        }
+
+
+def _schema_enum(node) -> set:
+    """The lowercased ``enum`` of one JSON Schema property, or an empty set.
+
+    Empty means "the schema did not say", which is never read as agreement:
+    every caller above only raises a finding when the enum is present *and*
+    differs.
+    """
+    if not isinstance(node, dict):
+        return set()
+    values = node.get("enum")
+    if not isinstance(values, (list, tuple)):
+        return set()
+    return {str(v).strip().lower() for v in values}
 
 
 class RobinhoodMCPBroker:
@@ -460,6 +533,109 @@ class RobinhoodMCPBroker:
     # Ledger read paths (Spec L §4). Read-only, across every account the token
     # can see. Nothing below reaches a placement, review, or cancel tool.
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Review-only capability inspection (Spec Q §12 invariant 4, Phase 5)
+    # ------------------------------------------------------------------
+
+    def fetch_tool_schemas(self) -> dict[str, dict]:
+        """The server's own ``tools/list``, as ``{name: inputSchema}``.
+
+        A **read**. It lists tools and reads their JSON Schemas; it calls none of
+        them, reviews nothing, and places nothing — which is the only kind of
+        capability inspection this repository permits, because the only way to
+        discover a *placement* capability by trying is to place something.
+
+        Cached per instance, because the schema does not change inside a run and
+        the round trip is an OAuth handshake.
+        """
+        if self._tools_cache is None:
+            self._tools_cache = asyncio.run(self._list_tools())
+
+        return self._tools_cache
+
+    async def _list_tools(self) -> dict[str, dict]:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        auth = self._oauth_provider()
+        headers = self._headers(include_auth_token=auth is None)
+        async with streamablehttp_client(
+            self.url, headers=headers, timeout=45, sse_read_timeout=45, auth=auth,
+        ) as (read_stream, write_stream, _):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                listed = await session.list_tools()
+        return {
+            tool.name: (getattr(tool, "inputSchema", None) or {})
+            for tool in getattr(listed, "tools", []) or []
+        }
+
+    def inspect_order_capabilities(self, *, schemas: dict | None = None) -> "CapabilityInspection":
+        """Check the declared capabilities against the server's own schema.
+
+        ``schemas`` may be supplied — from ``docs/robinhood/tool_schemas.json``,
+        from a recorded fixture, or from :meth:`fetch_tool_schemas` — so the
+        inspection is testable without a network and reviewable without a token.
+        With none supplied it fetches, which needs the token store.
+
+        It **reports**; it changes nothing. A capability declaration is edited by
+        a human who has read the finding, and the Strategy Lab live gate runs on
+        the declaration (Spec Q §12 invariant 4). An inspection that silently
+        widened what the system believes it can do would be a capability check
+        that grants capabilities, which is not a check.
+        """
+        schemas = schemas if schemas is not None else self.fetch_tool_schemas()
+        place = schemas.get("place_equity_order") or {}
+        properties = (place.get("properties") or {}) if isinstance(place, dict) else {}
+
+        findings: list[str] = []
+        order_types = _schema_enum(properties.get("type"))
+        if order_types and order_types != EXPECTED_ORDER_TYPES:
+            findings.append(
+                "place_equity_order.type is "
+                f"{sorted(order_types)}, not {sorted(EXPECTED_ORDER_TYPES)}"
+            )
+        time_in_force = _schema_enum(properties.get("time_in_force"))
+        if time_in_force and time_in_force != EXPECTED_TIME_IN_FORCE:
+            findings.append(
+                "place_equity_order.time_in_force is "
+                f"{sorted(time_in_force)}, not {sorted(EXPECTED_TIME_IN_FORCE)}"
+            )
+
+        attached = sorted(
+            name for name in properties
+            if any(needle in str(name).lower() for needle in ATTACHED_EXIT_PARAMETER_NAMES)
+        )
+        if attached:
+            findings.append(
+                "place_equity_order exposes parameter(s) that may be an attached "
+                f"exit: {attached}. can_place_attached_stop stays False until a "
+                "human reads the schema and decides; the parameter's existence is "
+                "not the broker's guarantee that the stop exists at the fill."
+            )
+
+        missing_tools = [
+            name for name in ("place_equity_order", "review_equity_order", "get_equity_orders")
+            if name not in schemas
+        ]
+        if missing_tools:
+            findings.append(f"tool(s) the execution path needs are absent: {missing_tools}")
+
+        if not place:
+            findings.append(
+                "no place_equity_order schema was returned; the inspection could "
+                "not confirm anything and must not be read as confirmation."
+            )
+
+        return CapabilityInspection(
+            declared=ROBINHOOD_CAPABILITIES,
+            observed_order_types=frozenset(order_types),
+            observed_time_in_force=frozenset(time_in_force),
+            attached_exit_parameters=tuple(attached),
+            findings=tuple(findings),
+            inspected_tool_count=len(schemas),
+        )
 
     def capabilities(self) -> BrokerCapabilities:
         """The declared capability set, recorded on ``brokerage_accounts``."""
