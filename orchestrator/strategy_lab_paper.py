@@ -302,7 +302,13 @@ def candidates_for_arm(
         if not bars:
             skipped.append((label, SKIP_NO_ENTRY_REFERENCE))
             continue
-        entry_reference = float(bars[-1].close)
+        # The split-adjusted close of the last bar in the snapshot, which is the
+        # series every signal, policy and replay in this package runs on (Spec N
+        # §4.3). For the most recent session the forward split factor is 1, so it
+        # is also the raw last trade — and anchoring the plan and the order to the
+        # same number is what keeps the stop a fixed distance from the entry
+        # rather than a fixed distance from a differently-adjusted price.
+        entry_reference = float(bars[-1].split_adjusted_close)
         if entry_reference <= 0:
             skipped.append((label, SKIP_NO_ENTRY_REFERENCE))
             continue
