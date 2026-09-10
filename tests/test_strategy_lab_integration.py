@@ -293,6 +293,47 @@ class FlagsOffTests(ScanFixture):
         self.assertEqual(summary.snapshots_considered, 0)
         self.assertEqual(self.lab_row_counts()["strategy_trades"], 0)
 
+    def test_the_legacy_ledger_row_is_identical_either_way(self):
+        """Requirement 3: the `ScoredCandidate` ledger continues unchanged.
+
+        The same scan is run with the flags off and with shadow on, and every
+        column of the ledger row that is not a clock or an id must match. The
+        migration period has two ledgers; the old one is not allowed to drift
+        because the new one exists.
+        """
+        self.run_scan()
+        off = _ledger_row()
+
+        self.settings.strategy_lab_enabled = True
+        self.settings.strategy_lab_shadow_enabled = True
+        self.pipeline = self._pipeline(self.settings)
+        self.run_scan()
+        rows = _ledger_rows()
+        self.assertEqual(len(rows), 2)
+        on = rows[-1]
+
+        for column in (
+            "ticker", "source", "final_score", "direction", "regime", "cohort",
+            "memo_generated", "catalyst_score", "fundamental_score",
+            "pattern_score", "pattern_status", "web_research_score",
+            "entry_price", "suggested_stop", "target_1",
+        ):
+            self.assertEqual(
+                off[column], on[column],
+                f"the legacy ledger's {column} changed when shadow was enabled",
+            )
+
+    def test_the_funnel_line_carries_counts_and_reason_codes_only(self):
+        """Requirement 6: log events with no sensitive payloads."""
+        fields = lab.run_shadow_for_scan(
+            self.settings, tickers=["NVDA"]
+        ).as_log_fields()
+        for name, value in fields.items():
+            self.assertIsInstance(
+                value, (int, str), f"{name} is neither a count nor a reason code"
+            )
+        self.assertNotIn("NVDA", " ".join(str(v) for v in fields.values()))
+
     def test_the_scoreboard_is_none_with_the_master_switch_off(self):
         self.assertIsNone(lab.scoreboard(self.settings))
         self.assertIsNone(lab.experiment_overview(self.settings))
@@ -415,6 +456,29 @@ class ShadowEnabledTests(ScanFixture):
             self.settings, "shadow_roster_v1", paused=False
         )
         self.assertEqual(resumed["status"], "running")
+
+
+def _ledger_rows() -> list[dict]:
+    """Every `scored_candidates` row, detached, ordered by id."""
+    columns = (
+        "ticker", "source", "final_score", "direction", "regime", "cohort",
+        "memo_generated", "catalyst_score", "fundamental_score", "pattern_score",
+        "pattern_status", "web_research_score", "entry_price", "suggested_stop",
+        "target_1", "run_id",
+    )
+    with get_session() as session:
+        return [
+            {column: getattr(row, column) for column in columns}
+            for row in session.query(ScoredCandidate)
+            .order_by(ScoredCandidate.id)
+            .all()
+        ]
+
+
+def _ledger_row() -> dict:
+    rows = _ledger_rows()
+    assert len(rows) == 1, f"expected one ledger row, got {len(rows)}"
+    return rows[0]
 
 
 def _decisions_by_slug() -> dict[str, dict]:

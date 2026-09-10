@@ -62,7 +62,17 @@ def _settings(context):
 
 
 async def _reply(update: Update, text: str) -> None:
-    await update.message.reply_text(text, parse_mode="MarkdownV2")
+    """Send a MarkdownV2 card, split at Telegram's 4096-character limit.
+
+    `/strategies` over a longer roster, or `/experiments` once several
+    experiments have run, will exceed it. `split_message` is the same splitter
+    the message queue uses, so a long card degrades into two messages rather
+    than into a `BadRequest` the caller never sees.
+    """
+    from bot.formatters import split_message
+
+    for chunk in split_message(text):
+        await update.message.reply_text(chunk, parse_mode="MarkdownV2")
 
 
 async def _guarded(update: Update, context: ContextTypes.DEFAULT_TYPE, name: str, build):

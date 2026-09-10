@@ -163,7 +163,6 @@ MATURATION_GRACE_DAYS = 10
 SKIP_LAB_DISABLED = "strategy_lab_disabled"
 SKIP_SHADOW_DISABLED = "strategy_lab_shadow_disabled"
 SKIP_NO_TICKERS = "no_scored_tickers"
-SKIP_UNIVERSE_DISABLED = "universe_arms_disabled"
 
 
 # --------------------------------------------------------------------------- #
@@ -703,14 +702,22 @@ def _forward_bars(
     from sqlalchemy import select
 
     from database import models
-    from strategy_lab import snapshots
+    from strategy_lab import snapshot_builder, snapshots
 
     out: dict[str, tuple] = {}
     for ticker in sorted({(t or "").strip().upper() for t in tickers if t}):
+        # The same security the snapshot was built from. Resolving the uid
+        # rather than querying by ticker matters because tickers are reused: a
+        # forward series assembled by symbol could splice two securities' prices
+        # into one trade, which is the survivorship-shaped error the security
+        # master exists to prevent.
+        uid = snapshot_builder._security_uid_for(session, ticker, after.date())
+        if uid is None:
+            continue
         rows = session.execute(
             select(models.PriceBar)
             .where(
-                models.PriceBar.ticker == ticker,
+                models.PriceBar.security_uid == uid,
                 models.PriceBar.session_date > after.date(),
                 models.PriceBar.session_date <= until.date(),
             )
