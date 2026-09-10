@@ -7,9 +7,10 @@ all ask the same question in the same order, and the order matters:
    spec — a setup that refuses because its evidence plane is Phase 4 work
    refuses *here*, before anything is built, and says `pending_plane` rather
    than `insufficient`;
-2. serve the cached answer if this exact `(setup_hash, as_of, snapshot, depth)`
-   has been answered before, because the same question against the same data
-   vintage has to give the same bytes;
+2. serve the cached answer if this exact
+   `(setup_hash, as_of, snapshot, depth, subject_ticker)` has been answered
+   before, because the same question against the same data vintage has to give
+   the same bytes;
 3. build the cohort from stored rows (`comparables/cohort.py`);
 4. measure it (`comparables/report.py`, unchanged from Phase 3b), once per
    provenance block, because archival facts are never pooled with the others;
@@ -68,6 +69,12 @@ class QueryOutcome:
     citation_id: str | None
     cached: bool
     build: cohort_mod.CohortBuild | None
+    #: `{ticker, qualifies, reason, event_id, event_date}` when the question
+    #: named a subject (Spec L §6.6), `None` when it asked about the pattern
+    #: alone. A dict rather than the record, because a cache hit reconstructs it
+    #: from stored columns and a fresh build reads it off the cohort — and a
+    #: consumer must not be able to tell which.
+    subject: dict | None = None
 
     def payload(self) -> dict:
         """The §8 discriminated answer plus the provenance block, as JSON data."""
@@ -88,6 +95,7 @@ class QueryOutcome:
             "citation_id": self.citation_id,
             "cached": self.cached,
             "citable": self.depth == "full" and self.status != "insufficient",
+            "subject": self.subject,
         }
 
 
@@ -174,6 +182,7 @@ def answer_query(
     parameters: Mapping[str, Any] | None = None,
     setup_spec: Mapping[str, Any] | None = None,
     requester_label: str = "",
+    subject_ticker: str = "",
     use_cache: bool = True,
     query_covariates: Mapping[str, float] | None = None,
     reps: int | None = None,
@@ -183,6 +192,7 @@ def answer_query(
     if depth not in ("quick", "full"):
         raise SetupSpecError(f"depth must be 'quick' or 'full', got {depth!r}")
 
+    subject_symbol = (subject_ticker or "").strip().upper()
     spec, entry = resolve_setup(
         setup=setup, parameters=parameters, setup_spec=setup_spec
     )
@@ -196,6 +206,7 @@ def answer_query(
         cached = registry.cached_answer(
             session, setup_hash=spec.content_hash, as_of=as_of,
             price_snapshot_id=snapshot.snapshot_id, depth=depth,
+            subject_ticker=subject_symbol,
         )
         if cached is not None:
             return QueryOutcome(
@@ -213,10 +224,14 @@ def answer_query(
                 citation_id=citations.citation_id(cached.id),
                 cached=True,
                 build=None,
+                subject=_subject_from_row(cached),
             )
 
     try:
-        build = cohort_mod.build_cohort(session, entry or spec, as_of=as_of, context=context)
+        build = cohort_mod.build_cohort(
+            session, entry or spec, as_of=as_of, context=context,
+            subject_ticker=subject_symbol,
+        )
     except cohort_mod.PendingPlane as exc:
         raise QueryRefused(STATUS_PENDING_PLANE, str(exc)) from exc
     except cohort_mod.CohortConstructionError as exc:
@@ -233,6 +248,7 @@ def answer_query(
             candidate_source=roster.source_for_spec(spec) if entry is None
             else entry.candidate_source,
             refusal_reason=result["refusal_reason"],
+            subject=build.subject,
         )
         answer = report_mod.RefusedAnswer(
             setup=spec, depth=depth, status="insufficient",
@@ -247,6 +263,7 @@ def answer_query(
             depth=depth, status="insufficient", evidence_tier=build.evidence_cap,
             answer_json=report_mod.to_json(answer),
             provenance_mix=build.provenance_mix, query_id=record.query_id,
+            subject=build.subject,
         )
         return QueryOutcome(
             setup=spec, depth=depth, status="insufficient", answer=answer,
@@ -257,6 +274,7 @@ def answer_query(
             query_id=record.query_id,
             citation_id=citations.citation_id(stored.id),
             cached=False, build=build,
+            subject=build.subject.as_dict() if build.subject else None,
         )
 
     trial_registry = registry.StoredTrialRegistry(session)
@@ -286,6 +304,7 @@ def answer_query(
         n_matured=getattr(answer, "n_matured", 0),
         n_distinct_dates=getattr(answer, "n_distinct_dates", 0),
         trials=getattr(answer, "trials_against_this_pattern", None),
+        subject=build.subject,
     )
     stored = registry.store_answer(
         session, spec, as_of=as_of, price_snapshot_id=snapshot.snapshot_id,
@@ -297,6 +316,7 @@ def answer_query(
         provenance_mix=dict(result.provenance_mix),
         family_moments=cohort_moments(build),
         query_id=record.query_id,
+        subject=build.subject,
     )
     return QueryOutcome(
         setup=spec,
@@ -311,7 +331,27 @@ def answer_query(
         citation_id=citations.citation_id(stored.id),
         cached=False,
         build=build,
+        subject=build.subject.as_dict() if build.subject else None,
     )
+
+
+def _subject_from_row(row) -> dict | None:
+    """The subject verdict off a stored row, in the shape a fresh build gives.
+
+    A replayed answer and a freshly computed one have to be indistinguishable to
+    a caller, which is the whole reason the verdict is a stored column and not
+    something re-derived on the way out.
+    """
+    ticker = (getattr(row, "subject_ticker", "") or "").strip()
+    if not ticker:
+        return None
+    event_date = getattr(row, "subject_event_date", None)
+    return {
+        "ticker": ticker,
+        "qualifies": bool(getattr(row, "subject_qualifies", False)),
+        "reason": getattr(row, "subject_reason", "") or "",
+        "event_date": event_date.isoformat() if event_date else None,
+    }
 
 
 @dataclass(frozen=True)

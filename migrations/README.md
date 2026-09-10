@@ -22,6 +22,7 @@ migrations/
     0009_merge_comparables.py        joins the comparable registry to 0008_merge_strategy_lab
     0009_execution_lifecycle.py      Phase 6: proposals + the persistent kill switch (spec L §6)
     0010_merge_execution_lifecycle.py joins Phase 6 to 0009_merge_comparables (the head)
+    0011_comparable_subject_ticker.py  the Spec L §6.6 subject ticker on a query and its answer
 ```
 
 `0009_execution_lifecycle` branches from the single head `0008_merge_strategy_lab`
@@ -30,6 +31,16 @@ foreign keys of its own: `cohort_answer_id` (Spec N), `execution_id`
 (`strategy_trades`, Spec Q) and `account_id` (`brokerage_accounts`, Phase 1) are
 recorded as plain values, so the revision joins the integrated head as a clean
 add with nothing cross-phase to reconcile.
+
+`0011_comparable_subject_ticker` branches from the single head
+`0010_merge_execution_lifecycle` and is the first revision to **change an
+existing unique constraint** rather than add one. It adds `subject_ticker` to
+`uq_cohort_answers_key`, because the citation an agent carries is
+`cohort:<cohort_answers.id>` and a key without the subject would let two
+questions about different names share one row and one id. The swap goes through
+`op.batch_alter_table`, so it is a table rebuild on SQLite and a plain
+`ALTER TABLE ... DROP/ADD CONSTRAINT` on Postgres, and `downgrade()` narrows the
+key back *before* dropping the column it names.
 
 `0007_strategy_lab` is the first revision to carry a **partial unique index**
 (`WHERE` on a unique index). Both engines support it, and it is how two Spec Q

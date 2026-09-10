@@ -86,10 +86,34 @@ class ResolvedCitation:
     answer: dict
     archival_block: dict | None
     provenance_mix: dict
+    #: The security this answer was asked *about* (Spec L §6.6), or `""` when
+    #: the question named none. A `SetupSpec` is a pattern, so this is a fact
+    #: about the query and is recorded at query time or not at all.
+    subject_ticker: str = ""
+    #: Whether that name met the setup's conditions at its most recent candidate
+    #: on or before `as_of`. `None` means no subject was named — which is not
+    #: the same statement as `False`.
+    subject_qualifies: bool | None = None
+    subject_reason: str = ""
+    subject_event_date: date | None = None
 
     @property
     def citable(self) -> bool:
+        """Whether §8 lets this answer be cited **at all**.
+
+        Deliberately not a same-ticker check. `full`/not-`insufficient` is what
+        Spec N §8 governs, and it is the whole rule for a journal note or a
+        write-up quoting the cohort. Spec L §6.6's extra condition — that the
+        answer is for *this* proposal's ticker and that the ticker qualified —
+        is a sizing rule, lives in `portfolio/evidence.py`, and fails toward the
+        discretionary budget rather than toward a refusal.
+        """
         return self.depth == "full" and self.status != "insufficient"
+
+    @property
+    def citable_for(self) -> str:
+        """The one ticker this answer may back an evidenced proposal in, or `""`."""
+        return self.subject_ticker if self.subject_qualifies else ""
 
 
 def resolve(session, answer_id: str | int, *, require_citable: bool = True) -> ResolvedCitation:
@@ -121,6 +145,10 @@ def resolve(session, answer_id: str | int, *, require_citable: bool = True) -> R
         answer=row.answer,
         archival_block=row.archival_block,
         provenance_mix=row.provenance_mix,
+        subject_ticker=(row.subject_ticker or "").strip().upper(),
+        subject_qualifies=row.subject_qualifies,
+        subject_reason=row.subject_reason or "",
+        subject_event_date=row.subject_event_date,
     )
     if require_citable and not resolved.citable:
         if resolved.status == "insufficient":
@@ -160,6 +188,13 @@ def citation_payload(resolved: ResolvedCitation) -> dict:
         "evidence_tier": resolved.evidence_tier,
         "provenance_mix": resolved.provenance_mix,
         "has_archival_block": resolved.archival_block is not None,
+        "subject_ticker": resolved.subject_ticker or None,
+        "subject_qualifies": resolved.subject_qualifies,
+        "subject_reason": resolved.subject_reason or None,
+        "subject_event_date": (
+            resolved.subject_event_date.isoformat()
+            if resolved.subject_event_date else None
+        ),
     }
 
 

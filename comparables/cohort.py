@@ -159,6 +159,47 @@ class ExcludedEvent:
 
 
 @dataclass(frozen=True)
+class SubjectQualification:
+    """Whether one named ticker meets the setup's conditions, and when.
+
+    A `SetupSpec` is a *pattern*, not a name (Spec N §4.0), so "the same ticker"
+    in Spec L §6.6 is not a property of the spec and cannot be recovered from a
+    stored answer after the fact. It is a property of the **query**: the caller
+    said which name it was asking about, and the engine ran that name through
+    the same qualification the cohort members went through and wrote the verdict
+    down beside the answer.
+
+    `qualifies` is about the subject's **most recent candidate at or before
+    `as_of`** — the last time the setup had an opportunity to fire for that
+    name. `event_date` is when that was, and it is stored precisely because
+    "qualified" and "qualified nine months ago" are different statements and the
+    citation-age rule bounds the age of the *answer*, not of the event. A
+    reader gets both.
+    """
+
+    ticker: str
+    qualifies: bool
+    reason: str
+    event_id: str = ""
+    event_date: date | None = None
+
+    def as_dict(self) -> dict:
+        """The wire shape. `event_id` is deliberately absent.
+
+        A replayed answer reconstructs this from stored columns, and the event
+        id is not one of them — the date is what a reader needs and the id would
+        be `None` on half the paths, which is worse than a field that is never
+        there at all.
+        """
+        return {
+            "ticker": self.ticker,
+            "qualifies": self.qualifies,
+            "reason": self.reason,
+            "event_date": self.event_date.isoformat() if self.event_date else None,
+        }
+
+
+@dataclass(frozen=True)
 class UniverseStatus:
     """Whether membership could be established point-in-time (§4.2)."""
 
@@ -218,6 +259,10 @@ class CohortBuild:
     warnings: tuple[str, ...]
     candidate_order: tuple[str, ...]
     n_candidates: int
+    #: The §6.6 subject, when the query named one. `None` means the question was
+    #: asked about the pattern and about no particular name, which is the
+    #: ordinary case and is *not* the same as "the name did not qualify".
+    subject: SubjectQualification | None = None
 
     @property
     def provenance_mix(self) -> dict[str, int]:
@@ -616,8 +661,15 @@ def build_cohort(
     candidate_source: str | None = None,
     candidate_generator: CandidateGenerator | None = None,
     require_sue_at_announcement: bool = False,
+    subject_ticker: str = "",
 ) -> CohortBuild:
     """Turn stored rows into the cohort the report layer measures.
+
+    `subject_ticker` names the one security the question is *about* (Spec L
+    §6.6). It changes nothing about the cohort — the same candidates are
+    generated and the same ones qualify — and is answered by reading the verdict
+    the ordinary qualification pass already reached for that name, so there is
+    one qualification path and not two.
 
     `candidate_generator` is the §4.5 seam for `data/analog_ranker.py`: it may
     reorder or truncate the candidate identifiers, and the qualified set is
@@ -707,7 +759,7 @@ def build_cohort(
         # the qualified set below is built from `candidates`, untouched.
         proposed = tuple(candidate_generator([c.event_id for c in candidates]))
 
-    events, more_excluded, pool, sector_codes, cov_warnings = _qualify(
+    events, more_excluded, pool, sector_codes, cov_warnings, subject = _qualify(
         session,
         spec,
         candidates,
@@ -719,6 +771,7 @@ def build_cohort(
         snapshot=snapshot,
         evidence_cap=evidence_cap,
         cik_map=context.cik_map,
+        subject_ticker=subject_ticker,
     )
     excluded = (*excluded, *more_excluded)
     warnings.extend(cov_warnings)
@@ -754,6 +807,7 @@ def build_cohort(
         warnings=tuple(warnings),
         candidate_order=proposed,
         n_candidates=len(candidates),
+        subject=subject,
     )
 
 
@@ -1163,14 +1217,27 @@ def _qualify(
     snapshot: SnapshotStatus,
     evidence_cap: str,
     cik_map: Mapping[str, str],
+    subject_ticker: str = "",
 ) -> tuple[
     tuple[EventRecord, ...],
     tuple[ExcludedEvent, ...],
     tuple[EventRecord, ...],
     tuple[tuple[str, float], ...],
     list[str],
+    SubjectQualification | None,
 ]:
     excluded: list[ExcludedEvent] = []
+    subject = (subject_ticker or "").strip().upper()
+    #: `(day, event_id, qualifies, reason)` for the subject's latest candidate.
+    #: Days are walked in ascending order below, so the last write wins and is
+    #: the most recent opportunity the setup had to fire for that name.
+    subject_verdict: tuple[date, str, bool, str] | None = None
+
+    def _note_subject(candidate, day, qualifies: bool, reason: str) -> None:
+        nonlocal subject_verdict
+        if subject and candidate.ticker.strip().upper() == subject:
+            subject_verdict = (day, candidate.event_id, qualifies, reason)
+
     pool: list[EventRecord] = []
     series_cache: dict[str, PriceSeries] = {}
     warnings: list[str] = []
@@ -1202,6 +1269,7 @@ def _qualify(
                     candidate.event_id, candidate.ticker, day, "not_a_universe_member",
                     f"{candidate.ticker} was not in {universe.slug} on {day}",
                 ))
+                _note_subject(candidate, day, False, "not_a_universe_member")
                 continue
 
             bars = bars_by_uid.get(candidate.security_uid)
@@ -1210,6 +1278,7 @@ def _qualify(
                 excluded.append(ExcludedEvent(
                     candidate.event_id, candidate.ticker, day, "no_bar_on_event_date", "",
                 ))
+                _note_subject(candidate, day, False, "no_bar_on_event_date")
                 continue
 
             facts = dict(candidate.facts)
@@ -1230,6 +1299,7 @@ def _qualify(
                         "market cap computed from a later count is lookahead "
                         "(Spec N §4.0)",
                     ))
+                    _note_subject(candidate, day, False, "market_cap_no_share_source")
                     continue
                 facts["market_cap_decile"] = float(cap)
             if needs_sector:
@@ -1245,6 +1315,7 @@ def _qualify(
                     "the §5.3 cost model is a half-spread by liquidity decile; "
                     "without one there is no honest net policy return",
                 ))
+                _note_subject(candidate, day, False, "no_liquidity_decile")
                 continue
 
             covariates = tuple(sorted(
@@ -1274,6 +1345,7 @@ def _qualify(
                 excluded.append(ExcludedEvent(
                     candidate.event_id, candidate.ticker, day, "event_rejected", str(exc),
                 ))
+                _note_subject(candidate, day, False, "event_rejected")
                 continue
 
             # Eligible, covariates computed, outcome resolvable: in the pool
@@ -1283,9 +1355,30 @@ def _qualify(
             pool.append(record)
 
             passed, reason = evaluate_conditions(spec.conditions, facts)
+            _note_subject(candidate, day, passed, reason)
             if not passed:
                 excluded.append(ExcludedEvent(
                     candidate.event_id, candidate.ticker, day, reason, "",
+                ))
+                continue
+
+            if not _has_session_zero(calendar, candidate.cutoff):
+                # The conditions held, but session 0 — the open §5.0 says the
+                # simulator enters at — is *after* `as_of`. There is no outcome
+                # to measure at any horizon, so it is not a cohort member: every
+                # measurement downstream resolves session 0, and a member that
+                # cannot would abort the whole answer rather than be censored.
+                #
+                # It stays in the pool, where it already was, so no balance
+                # diagnostic or null draw moves. And the **subject** verdict
+                # above is deliberately taken before this: "the pattern fired
+                # for this name and the trade has not happened yet" is precisely
+                # the state somebody asking about a subject is in (Spec L §6.6).
+                excluded.append(ExcludedEvent(
+                    candidate.event_id, candidate.ticker, day, "no_session_zero",
+                    f"{candidate.ticker} met the conditions on {day}, but the "
+                    f"session it would have been entered at is after the query's "
+                    f"as_of, so it has no measurable outcome yet (Spec N §5.0)",
                 ))
                 continue
 
@@ -1294,8 +1387,46 @@ def _qualify(
             events.append(record)
             warnings.extend(f"{candidate.ticker}: {w}" for w in candidate.warnings)
 
+    qualification: SubjectQualification | None = None
+    if subject:
+        if subject_verdict is None:
+            # Not "the conditions were false": the setup never had an
+            # opportunity to fire for this name inside the cohort's window at
+            # all — it is not in the universe, it has no bars, or its candidate
+            # source produced no event for it. Both are "does not qualify" for
+            # §6.6, and a reader who cannot tell them apart cannot fix either.
+            qualification = SubjectQualification(
+                ticker=subject, qualifies=False, reason="no_candidate",
+            )
+        else:
+            day, event_id, passed, reason = subject_verdict
+            qualification = SubjectQualification(
+                ticker=subject,
+                qualifies=bool(passed),
+                reason=reason,
+                event_id=event_id,
+                event_date=day,
+            )
+
     return (tuple(events), tuple(excluded), tuple(pool),
-            tuple(sorted(sector_codes.items())), warnings)
+            tuple(sorted(sector_codes.items())), warnings, qualification)
+
+
+def _has_session_zero(calendar: TradingCalendar, cutoff: datetime) -> bool:
+    """Whether the calendar reaches the session this event would be entered at.
+
+    It does not, for an event that qualified on the query's own `as_of`: the
+    day-precision convention stamps the fact at that day's close and §5.0 puts
+    entry at the *next* open, which has not happened. Before this check that
+    case raised out of `distinct_event_dates` — a `ValueError` from the middle
+    of the response assembly — so `compare_setups` at `depth='full'` on any day
+    a universe member qualified was an error rather than an answer.
+    """
+    try:
+        calendar.session_zero(cutoff)
+    except ValueError:
+        return False
+    return True
 
 
 def _wants(spec: SetupSpec, fact: str) -> bool:
