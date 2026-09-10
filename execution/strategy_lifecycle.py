@@ -145,6 +145,10 @@ class ArmExecutionRequest:
     expected_hold_sessions: int | None = None
     target1_price: float | None = None
     target2_price: float | None = None
+    #: The experiment tag carried onto the proposal row and into the broker's
+    #: ``client_context`` (Spec Q §15 PR 6: "experiment tags"). Empty means "use
+    #: the arm id alone", which is what PR 5's own tests pass.
+    experiment_tag: str = ""
 
 
 @dataclass
@@ -239,6 +243,37 @@ class StrategyExecutionService:
         )
 
     # -- the gates that must happen before a card exists --------------------
+
+    def _tier_flag_refusal(self, binding: slx.AdapterBinding) -> tuple[str, str] | None:
+        """The Strategy Lab's own per-tier flag (Spec Q §14, PR 6).
+
+        PR 4 shipped ``STRATEGY_LAB_ENABLED`` and ``STRATEGY_LAB_SHADOW_ENABLED``
+        and deliberately no paper or live flag, because nothing read one yet. PR 6
+        added both with the services that read them, and this is where they are
+        read: a tier whose flag is false cannot propose, whatever Phase 6's global
+        ``execution_mode`` says. Absence or invalidity of a flag means *not
+        enabled*, never live (Spec Q §12 invariant 1) — ``getattr`` defaults to
+        false and a missing setting therefore refuses.
+        """
+        if not bool(getattr(self.settings, "strategy_lab_enabled", False)):
+            return (
+                "strategy_lab_disabled",
+                "STRATEGY_LAB_ENABLED is false; no arm may propose an execution. "
+                "Each tier requires every gate below it (Spec Q §14).",
+            )
+        flag = (
+            "strategy_lab_live_enabled"
+            if binding.is_live
+            else "strategy_lab_paper_enabled"
+        )
+        if not bool(getattr(self.settings, flag, False)):
+            return (
+                f"{flag}_false",
+                f"{flag.upper()} is false, so no {binding.mode.value} arm may "
+                "propose an execution. Nothing was placed and nothing is "
+                "reserved (Spec Q §14).",
+            )
+        return None
 
     def _live_authorization(self, session, arm) -> tuple[str, str] | None:
         """Everything §12 invariant 2 requires of a *live* arm, or a refusal.
@@ -392,6 +427,14 @@ class StrategyExecutionService:
                 refusal = self._capability_refusal(binding)
             if refusal is None and binding.is_live:
                 refusal = self._live_authorization(session, arm)
+            # The Strategy Lab's own tier flag is checked *last*, deliberately.
+            # Every gate above it is a statement about the world — the switch is
+            # engaged, the broker cannot protect a position, this arm is not the
+            # champion — and those are what an operator needs told first. The flag
+            # is a statement about the deployment, and naming it before them would
+            # hide a real blocker behind "the feature is off".
+            if refusal is None:
+                refusal = self._tier_flag_refusal(binding)
             if refusal is not None:
                 return self._refuse(session, trade, refusal, now=now)
 
@@ -404,7 +447,7 @@ class StrategyExecutionService:
                 cohort_answer_id=request.cohort_answer_id,
                 expected_hold_sessions=request.expected_hold_sessions,
                 settings=self.settings,
-                requester_token_label=f"arm:{arm.id}",
+                requester_token_label=(request.experiment_tag or f"arm:{arm.id}")[:100],
                 owner_id=self.owner_id,
                 now=now,
                 resolver=self.resolver,

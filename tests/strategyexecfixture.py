@@ -151,6 +151,25 @@ def _arm_at_tier(session, mode, *, risk_budget, promote, activate):
     return live
 
 
+def lab_settings(**overrides):
+    """Phase 6's knobs plus the Strategy Lab tier flags (PR 6).
+
+    ``STRATEGY_LAB_ENABLED`` and ``STRATEGY_LAB_PAPER_ENABLED`` are on here
+    because every execution test asks what happens *given* the tier is enabled;
+    the flag-off refusals are their own tests
+    (``tests/test_strategy_lab_paper.py``), which pass the flags false
+    explicitly. ``STRATEGY_LAB_LIVE_ENABLED`` stays false, so a live test has to
+    say so — the default never means live (Spec Q §12 invariant 1).
+    """
+    base = dict(
+        strategy_lab_enabled=True,
+        strategy_lab_paper_enabled=True,
+        strategy_lab_live_enabled=False,
+    )
+    base.update(overrides)
+    return pf.settings(**base)
+
+
 def service(
     *,
     broker=None,
@@ -164,7 +183,7 @@ def service(
     broker = broker if broker is not None else FakeExecutionBroker(fill_price=100.0)
     return StrategyExecutionService(
         session_factory=get_session,
-        settings=settings or pf.settings(),
+        settings=settings or lab_settings(),
         adapters=adapters if adapters is not None else {venue: broker},
         pager=pager,
         resolver=resolver or pf.resolver_for({}),
@@ -174,9 +193,13 @@ def service(
 
 def live_settings(**overrides):
     """Settings with every live flag on. Never used against a real adapter."""
-    base = dict(allow_live_trading=True, execution_mode="live")
+    base = dict(
+        allow_live_trading=True,
+        execution_mode="live",
+        strategy_lab_live_enabled=True,
+    )
     base.update(overrides)
-    return pf.settings(**base)
+    return lab_settings(**base)
 
 
 def request_for(arm, decision, **overrides) -> ArmExecutionRequest:
@@ -207,6 +230,7 @@ __all__ = [
     "PAPER_VENUE",
     "a_decision",
     "build_lab",
+    "lab_settings",
     "live_settings",
     "request_for",
     "service",

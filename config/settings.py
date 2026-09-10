@@ -285,6 +285,45 @@ class Settings(BaseSettings):
     strategy_lab_report_bootstrap_reps: int = 1000
     strategy_lab_report_seed: int = 20260910
 
+    # --- Strategy Lab tiers above shadow (Spec Q §14, PR 6) ---
+    # PR 4 deliberately shipped no paper or live flag, because the services that
+    # would read one did not exist: a flag nothing reads is a flag nobody can
+    # trust. They exist now (PR 5's execution machine, PR 6's paper dispatcher
+    # and promotion workflow), so the flags arrive with them — both false, and
+    # each one requires every lower gate as well as its own (Spec Q §14).
+    #
+    # `strategy_lab_paper_enabled` gates the post-scan paper dispatcher and the
+    # three scheduled execution jobs (resume, expire, reconcile).
+    # `strategy_lab_live_enabled` is the Strategy Lab's own live gate, on top of
+    # Phase 6's `allow_live_trading`/`execution_mode` and the kill switch: with
+    # it false no live arm may be promoted and no live execution may be
+    # proposed, whatever the global execution mode says.
+    strategy_lab_paper_enabled: bool = False
+    strategy_lab_live_enabled: bool = False
+    # The paper book. Independent of the shadow book and of the production
+    # ledger (Spec Q §11: "shadow and paper arms receive independent virtual
+    # budgets"). These numbers decide what a paper arm proposes; Phase 6's own
+    # caps then apply on top and can only make an order smaller.
+    strategy_lab_paper_equity: float = 100_000.0
+    strategy_lab_paper_risk_budget: float = 0.005
+    strategy_lab_paper_max_open_positions: int = 5
+    strategy_lab_paper_max_position_fraction: float = 0.1
+    # Per-arm virtual notional per dispatch day. 0 means "not configured" and
+    # does not bind, like Phase 6's daily notional.
+    strategy_lab_paper_daily_notional: float = 0.0
+    # How many executions one dispatch pass may propose, across all paper arms.
+    strategy_lab_paper_max_proposals_per_run: int = 5
+    # Spec Q §12 invariant 7: a stale snapshot means abstain. The entry
+    # reference a paper dispatch prices against is the decision's own snapshot
+    # close, so the snapshot's age is the quote's age.
+    strategy_lab_paper_max_snapshot_age_minutes: int = 90
+    # Promotion evidence floors, separate from the scoreboard's display floors
+    # because they gate a tier change rather than a printed number (Spec Q §10
+    # "operational minimums"). `paper` is the floor for shadow -> paper,
+    # `live` for paper -> live.
+    strategy_lab_promotion_floor_shadow_matured: int = 100
+    strategy_lab_promotion_floor_paper_closed: int = 30
+
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
     scoring_model: str = "claude-opus-4-6"

@@ -437,6 +437,17 @@ def open_execution(
     )
 
 
+def decision_of(row) -> StrategyDecision:
+    """Rebuild the domain decision from a ``strategy_decisions`` row.
+
+    The public name for :func:`_decision_of`, which PR 3 kept private because
+    only this module needed it. PR 6's paper dispatcher needs the same rebuild to
+    reach :func:`assess` — the sizing and eligibility rules are here and must not
+    be copied — so the one entry point it uses is named rather than reached into.
+    """
+    return _decision_of(row)
+
+
 def _decision_of(row) -> StrategyDecision:
     """Rebuild the domain decision from its stored canonical JSON."""
     import json

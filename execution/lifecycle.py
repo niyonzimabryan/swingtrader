@@ -159,6 +159,24 @@ class ExecutionResult:
         }
 
 
+def _client_context(proposal: Proposal) -> dict:
+    """What the adapter is told about *why* this order exists.
+
+    ``ref_id`` and ``proposal_id`` are the idempotency keys Phase 6 has always
+    sent. ``experiment`` and ``execution_id`` are added for a Strategy Lab arm
+    (Spec Q §15 PR 6: "experiment tags"): a paper order at Alpaca is
+    attributable to the arm that produced it without joining anything, and an
+    adapter that ignores the key is unaffected. A non-lab proposal carries
+    neither, so the payload is byte-identical to what it was.
+    """
+    context = {"ref_id": proposal.entry_ref_id, "proposal_id": proposal.id}
+    execution_id = getattr(proposal, "execution_id", "") or ""
+    if execution_id:
+        context["execution_id"] = execution_id
+        context["experiment"] = getattr(proposal, "requester_token_label", "") or ""
+    return context
+
+
 class ExecutionService:
     """Drives a proposal from ``approved`` to ``protected`` (or ``unprotected``).
 
@@ -368,7 +386,7 @@ class ExecutionService:
             direction="long",
             stop_loss=proposal.stop,
             requested_notional=proposal.notional,
-            client_context={"ref_id": proposal.entry_ref_id, "proposal_id": proposal.id},
+            client_context=_client_context(proposal),
         )
 
         review = self.broker.review_order(entry_request)
