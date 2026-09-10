@@ -64,10 +64,17 @@ OLD_KEY_COLUMNS = ['setup_hash', 'as_of_date', 'price_snapshot_id', 'depth']
 NEW_KEY_COLUMNS = OLD_KEY_COLUMNS + ['subject_ticker']
 
 
+#: The two NOT NULL string columns, added with a server default and then left
+#: without one. The default exists only to fill existing rows during the ALTER:
+#: `database/models.py` declares these with a Python-side `default=""` like
+#: every other column in these tables, and `tests/test_schema_discipline.py`
+#: compares `upgrade head` against `create_all()` column by column — a server
+#: default left behind is schema drift, and the test is right to say so.
+BACKFILLED = ('subject_ticker', 'subject_reason')
+
+
 def _add_subject_columns(table: str) -> None:
     with op.batch_alter_table(table, schema=None) as batch_op:
-        # A server default on the add, so existing rows get `''` rather than
-        # NULL in a NOT NULL column; the ORM default supplies it thereafter.
         batch_op.add_column(sa.Column(
             'subject_ticker', sa.String(length=20),
             nullable=False, server_default='',
@@ -78,6 +85,15 @@ def _add_subject_columns(table: str) -> None:
             nullable=False, server_default='',
         ))
         batch_op.add_column(sa.Column('subject_event_date', sa.Date(), nullable=True))
+
+    # A separate batch: alembic applies one rebuild per block on SQLite, and a
+    # column cannot be altered in the same block that adds it.
+    with op.batch_alter_table(table, schema=None) as batch_op:
+        for column in BACKFILLED:
+            batch_op.alter_column(
+                column, existing_type=sa.String(), existing_nullable=False,
+                server_default=None,
+            )
 
 
 def _drop_subject_columns(table: str) -> None:
