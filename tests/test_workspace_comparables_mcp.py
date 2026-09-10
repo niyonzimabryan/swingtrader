@@ -36,29 +36,89 @@ def _payload(result) -> dict:
     return json.loads(_text(result))
 
 
+#: The world (prices, filings, universe, snapshot) and the live server are
+#: built once for this whole module rather than once per test: nothing in
+#: `RegistrationTests`/`CompareSetupsTests`/`CohortDetailTests` ever mutates
+#: the world (they only call `compare_setups`/`cohort_detail` over MCP), and
+#: the server's request handlers read whichever database `database.db` is
+#: currently pointed at rather than anything baked into the app at creation
+#: time (`workspace/app.py`'s lifespan only calls `init_db` when nothing has
+#: yet) — so one already-running server can safely answer every test here.
+#: What *does* need resetting per test is the registry `compare_setups`
+#: itself writes to (`comparable_queries`, `cohort_answers`,
+#: `cohort_predictions`): several tests assert an exact trial count or that a
+#: query id was freshly minted, which only holds against an empty registry.
+def setUpModule():
+    global _MODULE_DB, _MODULE_WORLD, _MODULE_SETTINGS, _MODULE_LIVE_CTX, _MODULE_LIVE
+    global _MODULE_APP
+
+    from database.db import get_session, init_db
+    from workspace.app import create_app
+
+    _MODULE_DB = TestDatabase("compare_setups_module")
+    init_db(_MODULE_DB.url)
+    # Short-lived: commits and closes, rather than being held open for the
+    # whole module. Each test below opens its own session against this same
+    # file/schema, and SQLite allows only one writer at a time — a session
+    # left open here would hold a write lock across every one of them, and
+    # across the live server's own request-time sessions.
+    with get_session() as session:
+        base = cf.seed_base_world(session)
+        _MODULE_WORLD = cf.seed_mutable_world(session, base)
+    _MODULE_SETTINGS = cf.settings_for(_MODULE_WORLD, _MODULE_DB.url)
+
+    _MODULE_APP = create_app(_MODULE_SETTINGS)
+    _MODULE_LIVE_CTX = ws.running(_MODULE_APP)
+    _MODULE_LIVE = _MODULE_LIVE_CTX.__enter__()
+
+
+def tearDownModule():
+    _MODULE_LIVE_CTX.__exit__(None, None, None)
+    _MODULE_DB.cleanup()
+
+
+def _reset_registry(session):
+    """Undo whatever the previous test wrote: registry rows and issued tokens."""
+    from database.models import (
+        CohortAnswerRow,
+        CohortPredictionRow,
+        ComparableQuery,
+        WorkspaceToken,
+    )
+
+    session.query(CohortPredictionRow).delete()
+    session.query(CohortAnswerRow).delete()
+    session.query(ComparableQuery).delete()
+    session.query(WorkspaceToken).delete()
+    session.flush()
+
+
 class ComparableToolsTestCase(unittest.TestCase):
-    """A live workspace with the Spec N flag on, over a seeded world."""
+    """The module's shared world and live server, with a clean registry."""
 
     def setUp(self):
-        self.db = TestDatabase("compare_setups")
-        self.addCleanup(self.db.cleanup)
-
+        # Defensive: `FlagOffTests` below calls `init_db` with its own throwaway
+        # database, which repoints the process-global `database.db.engine` this
+        # module's shared server reads through `get_session()`. Whichever of
+        # these classes the loader runs last leaves that global wherever it
+        # left it, so every test here re-points it back before it runs.
         from database.db import get_session, init_db
 
-        init_db(self.db.url)
+        init_db(_MODULE_DB.url)
         with get_session() as session:
-            self.world = cf.seed_world(session)
+            _reset_registry(session)
+        # SQLite reuses a deleted table's lowest rowid, so a reissued token can
+        # carry the same id an earlier test's did; the rate limiter's
+        # in-memory window is keyed by that id and would otherwise treat both
+        # tests' calls as one token's, on a server this module now shares.
+        _MODULE_APP.state.workspace_auth.limiter.reset()
+
+        self.world = _MODULE_WORLD
+        self.settings = _MODULE_SETTINGS
+        self.live = _MODULE_LIVE
 
         self.read_token = ws.issue_token("claude-code", ["read"])
         self.admin_token = ws.issue_token("admin-only", ["admin"])
-
-        settings = cf.settings_for(self.world, self.db.url)
-        from workspace.app import create_app
-
-        self._live = ws.running(create_app(settings))
-        self.live = self._live.__enter__()
-        self.addCleanup(lambda: self._live.__exit__(None, None, None))
-        self.settings = settings
 
     def call(self, name, arguments=None, token=None):
         return asyncio.run(ws.call_tool(

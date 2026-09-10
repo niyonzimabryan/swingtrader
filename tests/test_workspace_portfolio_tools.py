@@ -34,13 +34,42 @@ def _payload(result) -> dict:
 
 
 class WorkspacePortfolioToolTests(unittest.TestCase):
-    def setUp(self):
-        self.db = TestDatabase("workspace_portfolio")
-        self.addCleanup(self.db.cleanup)
+    """One database and one live server for the whole class.
 
+    Every test resyncs its own broker snapshot; `run_sync` reconciles fully
+    against whatever the broker reports (Spec L), so replaying it against an
+    already-synced ledger from a previous test leaves the same state a single
+    fresh sync would — production runs this repeatedly against the same
+    ledger for exactly that reason.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = TestDatabase("workspace_portfolio")
         from database.db import init_db
 
+        init_db(cls.db.url)
+        cls.app, cls.settings = ws.build_app(cls.db.url)
+        cls._live_ctx = ws.running(cls.app)
+        cls.live = cls._live_ctx.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._live_ctx.__exit__(None, None, None)
+        cls.db.cleanup()
+
+    def setUp(self):
+        from database.db import get_session, init_db
+        from database.models import WorkspaceToken
+
         init_db(self.db.url)
+        with get_session() as session:
+            session.query(WorkspaceToken).delete()
+        # See the identical comment in test_workspace_mcp.py: a reissued token
+        # can carry a rowid an earlier test's token did, and the rate limiter
+        # window is keyed by that id.
+        self.app.state.workspace_auth.limiter.reset()
+
         self.read_token = ws.issue_token("claude-code", ["read"])
         self.admin_token = ws.issue_token("admin-only", ["admin"])
 
@@ -66,11 +95,6 @@ class WorkspacePortfolioToolTests(unittest.TestCase):
 
         with get_session() as session:
             run_sync(session, broker, pager=RecordingPager(), now=self.synced_at)
-
-        app, self.settings = ws.build_app(self.db.url)
-        self._live = ws.running(app)
-        self.live = self._live.__enter__()
-        self.addCleanup(lambda: self._live.__exit__(None, None, None))
 
     def _call(self, name, arguments=None, token=None):
         return asyncio.run(

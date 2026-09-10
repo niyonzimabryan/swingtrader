@@ -42,7 +42,14 @@ jobs:
     # SQLite (local dev and the current Railway deploy) and Postgres (the
     # target of the Phase 0b cutover). The SQLite entry stays until the
     # Postgres migration is confirmed in production — spec K section 3.2.
-    name: Python tests (${{ matrix.engine }})
+    #
+    # Each engine is split into SHARD_COUNT shards (scripts/ci_shard.py) so the
+    # ~1,469-test suite runs in parallel instead of serially. The split is a
+    # greedy load-balance over scripts/test_shard_weights.json, a committed
+    # snapshot of measured per-module wall-clock time; a module the weights
+    # file has never seen (freshly added) still runs — it just lands wherever
+    # the balancer puts a module of median weight, never silently skipped.
+    name: Python tests (${{ matrix.engine }}, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -50,6 +57,10 @@ jobs:
       fail-fast: false
       matrix:
         engine: [sqlite, postgres]
+        shard: [0, 1, 2, 3]
+
+    env:
+      SHARD_COUNT: 4
 
     services:
       # Started for both matrix entries; the SQLite entry simply never
@@ -109,12 +120,22 @@ jobs:
         # Exercises the CLI path (alembic.ini + DATABASE_URL) that the in-process
         # ensure_schema() does not cover, and proves the baseline applies cleanly
         # from nothing on this engine. Test coverage for schema equivalence lives
-        # in tests/test_schema_discipline.py.
+        # in tests/test_schema_discipline.py. Every shard does this independently
+        # against its own empty database, exactly as the unsharded job did.
         env:
           DATABASE_URL: ${{ steps.db.outputs.url }}
         run: |
           python -m alembic upgrade head
           python -m alembic current
+
+      - name: Select this shard's test modules
+        id: modules
+        run: |
+          python -m scripts.ci_shard \
+            --shard-index ${{ matrix.shard }} --shard-count "$SHARD_COUNT" \
+            --show-totals > shard_modules.txt
+          echo "-- modules in shard ${{ matrix.shard }} --"
+          cat shard_modules.txt
 
       - name: Run unit tests
         env:
@@ -126,4 +147,80 @@ jobs:
           # lock has no SQLite equivalent. Without this they skip, and a
           # skipped cutover test is not a passing one (spec K section 3.2).
           TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/swingtrader_test
-        run: python -m unittest discover -s tests -p "test_*.py"
+        run: |
+          set +e
+          python -m unittest -v $(cat shard_modules.txt) > test_output.log 2>&1
+          status=$?
+          set -e
+          cat test_output.log
+          grep -oP 'Ran \K[0-9]+(?= tests?)' test_output.log | tail -1 > test_count.txt || echo 0 > test_count.txt
+          echo "This shard ran $(cat test_count.txt) tests."
+          exit "$status"
+
+      - name: Publish this shard's test count
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-count-${{ matrix.engine }}-${{ matrix.shard }}
+          path: test_count.txt
+          if-no-files-found: warn
+          retention-days: 3
+
+  test-count-check:
+    name: Verify sharded test counts (${{ matrix.engine }})
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [sqlite, postgres]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Download this engine's shard counts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-count-${{ matrix.engine }}-*
+          path: shard-counts
+          merge-multiple: false
+
+      - name: Sum shard counts and compare against the unsharded total
+        # The authoritative total is computed the same way `unittest discover`
+        # would collect it — no test runs, so this needs no database and no
+        # TEST_DATABASE_URL/TEST_POSTGRES_URL: a skipped test is still a
+        # *collected* test (the skip happens at run time), so the count is the
+        # same whichever engine the shards targeted.
+        run: |
+          expected=$(python -c "
+          import unittest
+          suite = unittest.TestLoader().discover('tests', pattern='test_*.py')
+          print(suite.countTestCases())
+          ")
+          actual=0
+          for f in shard-counts/test-count-${{ matrix.engine }}-*/test_count.txt; do
+            n=$(cat "$f")
+            echo "  $f: $n"
+            actual=$((actual + n))
+          done
+          echo "sharded total (${{ matrix.engine }}): $actual"
+          echo "unsharded total:                 $expected"
+          if [ "$actual" -ne "$expected" ]; then
+            echo "::error::sharded test count ($actual) does not match the unsharded count ($expected) for ${{ matrix.engine }}"
+            exit 1
+          fi
