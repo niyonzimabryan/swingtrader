@@ -1,0 +1,32 @@
+---
+description: Orchestrated multi-PR build — orchestrator/worker pattern, briefs, integration recipe, handoff
+alwaysApply: false
+---
+
+# Orchestrated build — Cursor
+
+The pattern lives in `.claude/skills/orchestrated-build/SKILL.md` (roles, loop,
+brief, integration recipe, resilience). Read it first. This rule is only what
+differs in Cursor.
+
+- **Roles.** The Cursor agent you are talking to is the **orchestrator**. It
+  reads `docs/<build>/handoff/HANDOFF.md` at the start of every session and
+  updates it in every integration commit.
+- **Workers.** Cursor has no session-spawn primitive. Start each worker as a
+  Background Agent (or a separate chat/worktree) with the brief pasted from
+  `docs/<build>/handoff/briefs/<pr>.md`, on a model chosen per task with cost
+  in mind — strongest where money, safety, statistics or migrations are
+  touched; cheaper where the work is mechanical. Give each worker its own
+  branch and tell it what is concurrently in flight.
+- **Signal.** A Background Agent reports back when done; treat that report plus
+  the PR body as the review packet. When there is no report channel, poll open
+  PRs. Workers stop when their PR is open; they do not babysit CI.
+- **Integration** happens in the orchestrator's checkout: `git fetch origin
+  main` first, a worktree per branch, merge by the file rules, validate with
+  the repo's CI command on CI's interpreter version, push the merge to the PR
+  branch, merge on green.
+- **Timers.** None inside Cursor. Run the check-in on demand or from cron via
+  the CLI; the check-in prompt template is in
+  `.codex/prompts/orchestrated-build.md`.
+- **Close out.** When a PR merges, close its worker and delete any local
+  worktree; nothing a finished worker started should still be running.

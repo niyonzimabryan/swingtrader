@@ -25,23 +25,50 @@ from comparables import setups as roster
 from comparables.setup_spec import Condition, SetupSpec
 
 
-class CohortTestCase(unittest.TestCase):
-    """One disposable database and one seeded world per test."""
+#: The expensive, never-mutated part of the world (prices, filings, share
+#: counts — on the order of 13,000 rows) is seeded once for this whole module
+#: rather than once per test: nothing below ever mutates it, only the universe
+#: and the snapshot, which `seed_mutable_world` cheaply rebuilds every test.
+#: See the comment above `cohortfixture.seed_base_world`.
+def setUpModule():
+    global _MODULE_DB, _MODULE_BASE
 
+    from database.db import get_session, init_db
+
+    _MODULE_DB = TestDatabase("cohort_module")
+    init_db(_MODULE_DB.url)
+    # A short-lived session that commits and closes, not one held open for the
+    # whole module: SQLite allows only one writer at a time, and each test
+    # below opens its own session on the same file/schema. A session left open
+    # across the module would hold a write lock that starves every one of them.
+    with get_session() as session:
+        _MODULE_BASE = cf.seed_base_world(session)
+
+
+def tearDownModule():
+    _MODULE_DB.cleanup()
+
+
+class CohortTestCase(unittest.TestCase):
+    """One short-lived session per test, over the module's shared base world."""
+
+    #: Passed to `cohortfixture.seed_mutable_world`, not to the retired
+    #: `seed_world` — only the universe/audit/snapshot flags apply here, since
+    #: the base (prices, filings, share counts) is module-shared and seeded
+    #: with `cohortfixture.seed_base_world`'s defaults for every class.
     seed_kwargs: dict = {}
 
     def setUp(self):
-        self.db = TestDatabase("cohort")
-        self.addCleanup(self.db.cleanup)
-        from database.db import init_db
+        from database.db import get_session, init_db
 
-        init_db(self.db.url)
-        from database.db import get_session
-
+        # Defensive: nothing else in this module repoints the global engine,
+        # but this keeps the invariant explicit and cheap (ensure_schema on an
+        # already-versioned database is a fast no-op check).
+        init_db(_MODULE_DB.url)
         self._ctx = get_session()
         self.session = self._ctx.__enter__()
         self.addCleanup(lambda: self._ctx.__exit__(None, None, None))
-        self.world = cf.seed_world(self.session, **self.seed_kwargs)
+        self.world = cf.seed_mutable_world(self.session, _MODULE_BASE, **self.seed_kwargs)
 
     def build(self, slug="gap_and_go_v1", *, as_of=None, context=None, **kwargs):
         return cohort_mod.build_cohort(
