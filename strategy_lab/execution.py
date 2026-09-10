@@ -1,75 +1,63 @@
-"""The Spec Q §12 execution state machine, over ``strategy_trades``.
+"""The Spec Q §12 execution *rules*: which venue, which states, what to log.
 
-This module is the *persistence and rules* half of Strategy Lab live safety. It
-holds the §12 state machine, the explicit-mode entry gate, the notional
-reservation, and the redaction allowlist — and it holds **no broker**. The
-placement half is Phase 6's :class:`execution.lifecycle.ExecutionService`, and
-the two are joined in ``execution/strategy_lifecycle.py``, which is on the other
-side of the import boundary this package may not cross (Spec Q §5,
-``tests/test_strategy_lab_import_graph.py``).
+This module is pure. It holds no session, imports no broker, and cannot read a
+setting — `tests/test_strategy_lab_import_graph.py` lists it among the modules
+that reach nothing first-party but `strategy_lab` and `utils`. That is not
+tidiness; it is the enforcement point for Spec Q §12 invariant 11.
 
-That split is not bookkeeping. Spec Q §12 invariant 11 says execution mode is an
-explicit immutable input, never inferred from global mutable settings — and the
-cheapest way to guarantee a module cannot infer a mode from a setting is to make
-``import config`` fail in it. So the rules live here, where nothing can reach a
-setting, a broker, or a model client; the wiring lives in ``execution/``, where
-the import-graph test already forbids the workspace from reaching it at all.
+    "Execution mode is an explicit immutable input, not inferred from global
+    mutable settings. `shadow` cannot reach an order API; `paper` can reach only
+    the Alpaca paper adapter; `live` can reach only the promoted live broker
+    path."
 
-**What this module owns**
+The cheapest way to guarantee a module cannot infer a mode from a setting is to
+make `import config` fail in it. So the rule about which adapter a mode may
+reach lives here, where nothing can reach a setting, a broker, or a session.
 
-*The one non-terminal execution per decision.* :func:`open_execution` commits an
-``execution_id`` **before** any reservation or broker call, and the uniqueness is
-held by the partial unique index ``uq_strategy_trades_open_execution`` — a
-database constraint, not an in-process lock a second worker or a restart would
-not see (§12 invariant 6). A concurrent caller that loses the race gets the
-*existing* row back, which is what makes a retried approval reuse one placement
-rather than create a second.
+**Where the other halves are.** `strategy_lab/registry.py` is the service
+boundary and holds every `strategy_trades` write — PR 3 put `record_execution`,
+`set_execution_state` and `open_execution_for` there and PR 5 adds the
+reservation reads beside them, rather than opening a second writer.
+`execution/strategy_lifecycle.py` does the wiring: it runs these rules, calls
+that registry, and drives Phase 6's `ExecutionService`.
 
-*Every hop checked.* :func:`transition` runs
-``strategy_lab.domain.EXECUTION_TRANSITIONS`` on every move and is a no-op when
-the row is already in the requested state, so a retry replays safely.
+**What is here**
 
-*The reservation, released exactly once.* A reservation is not an event with a
-counter; it is a **predicate on the status column**
-(:data:`RESERVING_EXECUTION_STATES`). A row holds its notional from
-``risk_reserved`` until it reaches a terminal state, and terminal states have no
-outgoing edges — so "released exactly once" is structural rather than asserted,
-and no column can drift out of step with the status that governs it.
-``placement_unknown`` and ``reconciliation_required`` are deliberately inside the
-reserving set: §12 invariant 12 keeps an unknown outcome reserved until
-reconciliation proves no order exists.
+:func:`bind_adapter`
+    the §12 invariant 11 gate. ``shadow`` raises rather than returning an
+    adapter at all; ``paper`` accepts only the Alpaca paper venue; ``live`` only
+    the promoted live venue; the arm's own recorded mode must agree with the
+    requested one; and an adapter that *declares* a different venue is refused
+    on its declaration, which is what catches a mis-registration the venue key
+    alone cannot.
 
-*Which adapter a mode may reach.* :func:`bind_adapter` is the §12 invariant 11
-gate: ``shadow`` raises rather than returning an adapter at all, ``paper``
-accepts only the Alpaca paper venue, ``live`` accepts only the promoted live
-venue, and the arm's own recorded mode has to agree with the requested one.
-Every mismatch is refused here, before a broker review is even formed.
+:data:`RESERVING_EXECUTION_STATES`
+    the reservation, as a predicate on the status column rather than as an event
+    with a counter. A row holds its notional from ``risk_reserved`` until it
+    reaches a terminal state, and terminal states have no outgoing edge — so
+    "every terminal path releases its reservation exactly once" is structural,
+    with no second write to forget, repeat, or disagree with the status.
+    ``placement_unknown`` and ``reconciliation_required`` are deliberately
+    inside the set: §12 invariant 12 keeps an unknown outcome reserved until
+    reconciliation proves no order exists.
 
-*Redaction.* :func:`redact` is the allowlist §12 invariant 8 and Spec Q §17
-require: request ids and named fields survive, everything else is dropped.
+:func:`redact`
+    the allowlist §12 invariant 8 and Spec Q §17 require: request ids and named
+    fields survive, every other value is replaced.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping
 
-from sqlalchemy.exc import IntegrityError
-
-from database import models
 from strategy_lab.domain import (
-    EXECUTION_TRANSITIONS,
     TERMINAL_EXECUTION_STATES,
     ExecutionMode,
     ExecutionState,
     StrategyLabError,
-    is_terminal,
-    require_transition,
 )
-from strategy_lab.registry import NotFound, new_execution_id
 from utils.logger import get_logger
-from utils.timeutils import utcnow_naive
 
 log = get_logger("strategy_lab_execution")
 
@@ -165,7 +153,8 @@ RESERVING_EXECUTION_STATES: frozenset[ExecutionState] = frozenset({
 #: States that block every *new* live entry until a human resolves them
 #: (Spec Q §12 invariant 3, restated by invariant 6 for the unknown case).
 #: ``portfolio.killswitch.entry_block`` reads the same set through
-#: ``database.models.STRATEGY_TRADE_BLOCKING_STATUSES``.
+#: ``database.models.STRATEGY_TRADE_BLOCKING_STATUSES``, which
+#: ``tests/test_strategy_lab_safety.py`` asserts agrees with this one.
 BLOCKING_EXECUTION_STATES: frozenset[ExecutionState] = frozenset({
     ExecutionState.PROTECTION_FAILED,
     ExecutionState.PLACEMENT_UNKNOWN,
@@ -174,30 +163,21 @@ BLOCKING_EXECUTION_STATES: frozenset[ExecutionState] = frozenset({
 
 
 def holds_reservation(state: ExecutionState | str) -> bool:
-    """Whether a row in ``state`` still has its notional reserved."""
+    """Whether a row in ``state`` still has its notional reserved.
+
+    The counting lives in :func:`strategy_lab.registry.reserved_notional`, which
+    is where a session may be held; this is the predicate it counts on, and it
+    is here so a caller can ask the question without one.
+    """
     return ExecutionState(state) in RESERVING_EXECUTION_STATES
 
 
-def reserved_notional(session, *, mode, on_date: date | None = None) -> float:
-    """Notional this mode currently holds reserved, optionally for one day.
-
-    Counted from the status column, so an approval that is racing another one
-    cannot overspend the cap: the first to reach ``risk_reserved`` is visible to
-    the second the moment its transaction commits (Spec Q §12 invariant 6).
-    """
-    mode = ExecutionMode(mode).value
-    query = (
-        session.query(models.StrategyTrade)
-        .filter(models.StrategyTrade.mode == mode)
-        .filter(models.StrategyTrade.status.in_([s.value for s in RESERVING_EXECUTION_STATES]))
-    )
-    if on_date is not None:
-        start = datetime(on_date.year, on_date.month, on_date.day)
-        query = query.filter(
-            models.StrategyTrade.created_at >= start,
-            models.StrategyTrade.created_at < start + timedelta(days=1),
-        )
-    return sum(float(row.notional or 0.0) for row in query.all())
+#: Non-terminal states, as a convenience for the same reason: a reader of this
+#: module should be able to ask "is this row still in flight" without importing
+#: the registry.
+NON_TERMINAL_EXECUTION_STATES: frozenset[ExecutionState] = frozenset(
+    state for state in ExecutionState if state not in TERMINAL_EXECUTION_STATES
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -280,224 +260,6 @@ def bind_adapter(*, arm_mode, requested_mode, venue: str, adapter) -> AdapterBin
             "wiring error, not a preference (Spec Q §11, §12 invariant 11).",
         )
     return AdapterBinding(mode=requested_mode, venue=expected, adapter=adapter)
-
-
-# --------------------------------------------------------------------------- #
-# Persistence: one execution_id, committed before anything external
-# --------------------------------------------------------------------------- #
-
-
-def get_execution(session, execution_id: str):
-    """The row carrying ``execution_id``, or ``None``."""
-    if not execution_id:
-        return None
-    return (
-        session.query(models.StrategyTrade)
-        .filter(models.StrategyTrade.execution_id == execution_id)
-        .first()
-    )
-
-
-def require_execution(session, execution_id: str) -> models.StrategyTrade:
-    row = get_execution(session, execution_id)
-    if row is None:
-        raise NotFound(f"no strategy_trade carries execution_id {execution_id!r}")
-    return row
-
-
-def open_execution_for(session, decision_id: int):
-    """The one non-terminal execution for ``decision_id``, or ``None``."""
-    return (
-        session.query(models.StrategyTrade)
-        .filter(models.StrategyTrade.decision_id == int(decision_id))
-        .filter(
-            models.StrategyTrade.status.notin_([s.value for s in TERMINAL_EXECUTION_STATES])
-        )
-        .order_by(models.StrategyTrade.id.asc())
-        .first()
-    )
-
-
-def open_execution(
-    session,
-    *,
-    arm_id: int,
-    decision_id: int,
-    mode,
-    intended_entry_price: float | None = None,
-    stop_price: float | None = None,
-    target1_price: float | None = None,
-    target2_price: float | None = None,
-    portfolio_context_hash: str = "",
-    now: datetime | None = None,
-) -> models.StrategyTrade:
-    """Create — or re-find — the one non-terminal execution for a decision.
-
-    The ``execution_id`` is generated and flushed **before** any reservation and
-    before any broker call (Spec Q §12 invariant 6), so a process that dies
-    between here and a placement leaves a row a restart can resolve rather than
-    an order nobody knows about.
-
-    Idempotent three ways, which is the point:
-
-    * an existing non-terminal row for the decision is returned unchanged;
-    * a concurrent worker that loses the ``uq_strategy_trades_open_execution``
-      race gets that worker's row back rather than an ``IntegrityError``;
-    * the arm's mode is checked against the requested one, so a retry cannot
-      quietly re-open the same decision in a different mode.
-
-    The insert runs inside a SAVEPOINT so that losing the race rolls back only
-    the failed insert, never the caller's transaction.
-    """
-    now = now or utcnow_naive()
-    mode = ExecutionMode(mode)
-
-    arm = session.get(models.ExperimentArm, int(arm_id))
-    if arm is None:
-        raise NotFound(f"no experiment arm {arm_id}")
-    if ExecutionMode(arm.mode) is not mode:
-        raise ExecutionRefusedLocally(
-            "mode_mismatch",
-            f"arm {arm_id} runs in {arm.mode!r}; an execution was requested in "
-            f"{mode.value!r}. The arm carries the mode (Spec Q §8, §12 "
-            "invariant 11).",
-        )
-    if session.get(models.StrategyDecision, int(decision_id)) is None:
-        raise NotFound(f"no strategy decision {decision_id}")
-
-    existing = open_execution_for(session, decision_id)
-    if existing is not None:
-        if ExecutionMode(existing.mode) is not mode:
-            raise ExecutionConflict(
-                "open_execution_mode_conflict",
-                f"decision {decision_id} already has a non-terminal execution "
-                f"{existing.execution_id} in {existing.mode!r}; it cannot also "
-                f"run in {mode.value!r}.",
-            )
-        return existing
-
-    row = models.StrategyTrade(
-        execution_id=new_execution_id(),
-        arm_id=int(arm_id),
-        decision_id=int(decision_id),
-        mode=mode.value,
-        status=ExecutionState.PROPOSED.value,
-        portfolio_context_hash=portfolio_context_hash or "",
-        intended_entry_price=intended_entry_price,
-        stop_price=stop_price,
-        target1_price=target1_price,
-        target2_price=target2_price,
-        proposed_at=now,
-        created_at=now,
-        updated_at=now,
-    )
-    try:
-        with session.begin_nested():
-            session.add(row)
-            session.flush()
-    except IntegrityError:
-        # Someone else got there first. The constraint is the arbiter, and the
-        # row it protected is the answer — never a second placement.
-        existing = open_execution_for(session, decision_id)
-        if existing is None:
-            raise
-        log.info(
-            "strategy_execution_race_lost",
-            decision_id=int(decision_id),
-            winner=existing.execution_id,
-        )
-        return existing
-
-    log.info(
-        "strategy_execution_opened",
-        execution_id=row.execution_id,
-        arm_id=int(arm_id),
-        decision_id=int(decision_id),
-        mode=mode.value,
-    )
-    return row
-
-
-def transition(
-    session,
-    trade: models.StrategyTrade,
-    to_state,
-    *,
-    reason: str = "",
-    now: datetime | None = None,
-    **fields,
-) -> models.StrategyTrade:
-    """Move one execution along the §12 machine, or refuse the hop.
-
-    Idempotent: re-asserting the state a row is already in updates the supplied
-    fields and returns, which is how a retry behaves. Illegal hops raise
-    ``strategy_lab.domain.InvalidTransition`` with the legal moves listed.
-
-    The reservation needs no bookkeeping here — see
-    :data:`RESERVING_EXECUTION_STATES`. Reaching a terminal state *is* the
-    release, and a terminal state has no outgoing edge, so it happens once.
-    """
-    now = now or utcnow_naive()
-    current = ExecutionState(trade.status)
-    target = require_transition(
-        EXECUTION_TRANSITIONS, current, to_state, label=f"execution {trade.execution_id}"
-    )
-
-    for key, value in fields.items():
-        if not hasattr(trade, key):
-            raise AttributeError(f"strategy_trades has no column {key!r}")
-        setattr(trade, key, value)
-    if reason:
-        trade.blocked_reason = reason[:80]
-
-    if target is not current:
-        trade.status = target.value
-        if target is ExecutionState.OWNER_APPROVED:
-            trade.approved_at = trade.approved_at or now
-        elif target is ExecutionState.SUBMITTED:
-            trade.submitted_at = trade.submitted_at or now
-        elif target in (ExecutionState.FILLED, ExecutionState.PARTIALLY_FILLED):
-            trade.filled_at = trade.filled_at or now
-        elif target is ExecutionState.CLOSED:
-            trade.closed_at = trade.closed_at or now
-    trade.updated_at = now
-    session.flush()
-
-    if target is not current:
-        log.info(
-            "live_order_state_changed",
-            execution_id=trade.execution_id,
-            mode=trade.mode,
-            **redact({"from": current.value, "to": target.value, "reason": reason}),
-        )
-        if is_terminal(target) and holds_reservation(current):
-            log.info(
-                "strategy_reservation_released",
-                execution_id=trade.execution_id,
-                notional=float(trade.notional or 0.0),
-                terminal_state=target.value,
-            )
-    return trade
-
-
-def blocking_executions(session) -> list[models.StrategyTrade]:
-    """Executions whose state blocks every further live entry, newest first."""
-    return (
-        session.query(models.StrategyTrade)
-        .filter(models.StrategyTrade.status.in_([s.value for s in BLOCKING_EXECUTION_STATES]))
-        .order_by(models.StrategyTrade.id.desc())
-        .all()
-    )
-
-
-def resumable_executions(session, *, mode=None) -> list[models.StrategyTrade]:
-    """Non-terminal executions, oldest first — what a restart has to resolve."""
-    query = session.query(models.StrategyTrade).filter(
-        models.StrategyTrade.status.notin_([s.value for s in TERMINAL_EXECUTION_STATES])
-    )
-    if mode is not None:
-        query = query.filter(models.StrategyTrade.mode == ExecutionMode(mode).value)
-    return query.order_by(models.StrategyTrade.id.asc()).all()
 
 
 # --------------------------------------------------------------------------- #

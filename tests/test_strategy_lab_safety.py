@@ -37,6 +37,7 @@ from portfolio import killswitch
 from portfolio.capabilities import PROTECTIVE_EXIT_CAPABILITIES, BrokerCapabilities
 from portfolio.paging import RecordingPager
 from strategy_lab import execution as slx
+from strategy_lab import registry
 from strategy_lab.domain import ExecutionMode, ExecutionState
 from tests import proposalfixture as pf
 from tests import strategyexecfixture as fx
@@ -268,13 +269,13 @@ class ZeroOrderCallTests(SafetyTestCase):
     def test_a_blocking_execution_from_an_earlier_incident(self):
         with get_session() as session:
             arm, decision = fx.build_lab(session, mode=self.mode, ticker="NVDA")
-            trade = slx.open_execution(
-                session, arm_id=arm.id, decision_id=decision.id, mode=self.mode
+            trade = registry.open_execution(
+                session, arm.id, decision.id, mode=self.mode
             )
             # `proposed -> reconciliation_required` is the one blocking state
             # reachable from a fresh row; the machine refuses the rest, which is
             # itself the point (`test_the_machine_refuses_an_illegal_hop`).
-            slx.transition(session, trade, ExecutionState.RECONCILIATION_REQUIRED)
+            registry.advance_execution(session, trade.execution_id, ExecutionState.RECONCILIATION_REQUIRED)
             session.commit()
         card = self.service().propose(self.request, now=self.now)
         self.assertEqual(card.blocked_reason, killswitch.UNRESOLVED_EXECUTION)
@@ -286,11 +287,11 @@ class ZeroOrderCallTests(SafetyTestCase):
 
         with get_session() as session:
             arm, decision = fx.build_lab(session, mode=self.mode, ticker="MSFT")
-            trade = slx.open_execution(
-                session, arm_id=arm.id, decision_id=decision.id, mode=self.mode
+            trade = registry.open_execution(
+                session, arm.id, decision.id, mode=self.mode
             )
             with self.assertRaises(InvalidTransition):
-                slx.transition(session, trade, ExecutionState.PROTECTION_FAILED)
+                registry.advance_execution(session, trade.execution_id, ExecutionState.PROTECTION_FAILED)
             session.rollback()
         self.assertNoOrders()
 

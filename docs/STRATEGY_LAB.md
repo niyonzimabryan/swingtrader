@@ -1,18 +1,20 @@
-# Strategy Lab (Spec Q) — the domain model and its constraints
+# Strategy Lab (Spec Q) — the domain model, the SDK, and the experiment run
 
 One champion, many challengers, over the same market opportunities, with the
 rules frozen before the results arrive. This document covers **PR 1** — the
 domain contracts in `strategy_lab/`, the eight tables in
 `migrations/versions/0007_strategy_lab.py`, and the invariants the database
-holds rather than trusts — and **PR 2**, the point-in-time snapshot builder,
-the deterministic strategy SDK, the execution-policy contract and the initial
-strategy roster (§9 onwards).
+holds rather than trusts; **PR 2**, the point-in-time snapshot builder, the
+deterministic strategy SDK, the execution-policy contract and the initial
+strategy roster (§9–§14); and **PR 3**, the experiment runner, the historical
+replay adapter, the shadow executor, the measurement layer and the scorecard
+CLI (§15 onwards).
 
-Nothing here runs. No strategy is registered by any scheduled job, no pipeline
-calls one, no flag turns anything on, and no broker is reachable from any of
-it. PR 3 adds the runner and the metrics, PR 4 the default-off pipeline hook,
-PR 5 the live order lifecycle, PR 6 the paper tournament and promotion
-workflow.
+Nothing here runs by itself. No scheduled job registers a strategy, no pipeline
+calls one, no flag turns anything on, and no broker is reachable from any of it:
+the runner and the CLI are invoked by a test or by hand. PR 4 adds the
+default-off pipeline hook, PR 5 the live order lifecycle, PR 6 the paper
+tournament and promotion workflow.
 
 Spec: [`specs/investment-workspace/strategy-lab/strategy-lab-architecture.md`](../specs/investment-workspace/strategy-lab/strategy-lab-architecture.md).
 
@@ -318,6 +320,15 @@ python -m unittest tests.test_strategy_lab_execution_policy \
                    tests.test_strategy_lab_validation \
                    tests.test_strategy_lab_snapshot_builder
 
+# PR 3: replay against the one simulator, experiment registration and the
+# idempotent multi-arm run, the decision/execution split, the measurement
+# refusals, and the acceptance fixture with its byte-identical scorecards.
+python -m unittest tests.test_strategy_lab_replay \
+                   tests.test_strategy_lab_runner \
+                   tests.test_strategy_lab_shadow \
+                   tests.test_strategy_lab_metrics \
+                   tests.test_strategy_lab_scoreboard
+
 # How a given database will be classified before it is migrated. Read-only.
 python -m scripts.schema_status sqlite:///copy-of-prod.db
 ```
@@ -500,7 +511,7 @@ remembered.
 
 ---
 
-## 14. What PR 2 does not do
+## 14. What PR 2 did not do
 
 * Nothing is wired into `orchestrator/pipeline.py`. No scheduled job builds a
   snapshot, no arm runs, no decision is persisted by anything but a test.
@@ -514,7 +525,250 @@ remembered.
 
 ---
 
-## 15. The execution machine (PR 5, Spec Q §12)
+## 15. The run: registration, then N arms over one snapshot
+
+`strategy_lab/runner.py`. Two jobs, and the order between them is the point.
+
+**Registration freezes the question.** `register_experiment` stores the
+pre-registration — hypothesis, primary metric, guardrails, universe, benchmarks,
+data cutoff, end criteria, planned variant count — and creates one arm per
+strategy version and mode *before* a single decision exists. Four refusals fire
+before any arm row is written: an unknown strategy, a version that is not the
+one on disk, a structurally shadow-only version asked for a paper or live tier,
+and **more arms than the experiment pre-registered variants for**. That last one
+matters because `planned_variants` is the multiple-testing denominator: raising
+it after seeing results is how a tournament launders luck into evidence.
+
+**A run is idempotent, and a failure is one arm's.** `run_snapshot` records the
+snapshot once and evaluates every arm against it, so two arms of one rebalance
+reference one `market_snapshots` row. Each arm is guarded independently —
+manifest drift, a forbidden tier, a refused historical replay, a scope
+mismatch — and its refusal is recorded on that arm's result rather than aborting
+the run. An experiment in which one broken arm quietly removes itself is worse
+than one that says which arm broke.
+
+Re-running writes nothing: `registry.record_decision` returns the stored row for
+an identical decision and refuses a *different* one for the same
+`(arm, snapshot, ticker)`. `long`, `flat` and `abstain` are all persisted, one
+row per constituent for a universe arm.
+
+The runner opens no session. It takes one and hands every write to
+`registry.py`, which stays the only module in the package importing `database` —
+`tests/test_strategy_lab_import_graph.py` now asserts that about `runner.py` and
+`shadow.py` by name.
+
+### Every variant tried
+
+`runner.variant_ledger` counts every `(strategy version, mode)` ever created
+under the experiment — retired and paused arms included — against the
+pre-registered count, and the scorecard uses the larger of the two as the
+multiple-testing denominator. Running more variants than were declared is a
+warning code on the card (`variants_run_beyond_preregistration`), not a silent
+adjustment.
+
+---
+
+## 16. Replay: one simulator, three refusals
+
+`strategy_lab/replay.py` is the **only** module in the package that imports
+`backtest`, and the import-graph test enforces it. It owns no exit logic: it
+resolves the execution policy against the T+1 entry reference, expands
+`ResolvedExecutionPlan.policy_spec_fields()` into absolute prices exactly the way
+`comparables/outcomes.py::_replay` does, and calls `simulate_trade`.
+`tests/test_strategy_lab_replay.py` builds a real `comparables.outcomes.PolicySpec`
+from the same dict and asserts the identical trade, entry, exit, rule and P&L —
+so "the Strategy Lab and the cohort engine fill the same way" is checked rather
+than claimed.
+
+Three refusals fire before a bar is touched:
+
+1. `historically_replayable=False` — the compatibility arm freezes an LLM's
+   conclusion, which is not reconstructible at a historical T (§7A).
+2. A snapshot carrying `not_point_in_time` or `archival_reconstructed` cannot
+   produce clean evidence. It may still be replayed *as an exploratory report*,
+   which `classify_evidence` labels and `require_clean_replay` refuses.
+3. An observation whose `known_at_utc` is after the decision cutoff is
+   **rejected**, not filtered: `reject_after_cutoff` raises naming it, because a
+   replay that quietly drops a look-ahead fact reports a smaller sample and
+   calls it clean. `resolve_as_of` is the deliberate filter — one fact per
+   `(ticker, fact_type, valid_at)`, the greatest `known_at_utc <= cutoff` — so a
+   2026 restatement does not leak into a 2024 replay.
+
+**There is no promotion-eligible replay in this deployment.**
+`snapshot_builder.REPLAY_ELIGIBLE_PRICE_SOURCES` is empty, so every snapshot
+built from stored bars is `archival_reconstructed`. The scorecard says so in its
+own section header. Nothing routes around it.
+
+### Maturity
+
+`ReplayOutcome.matured` is false when the bars ran out before
+`entry_date + max_holding_days` and no stop or target fired: the position is
+**open**, not flat at zero. Spec Q §9 forbids ranking a long-horizon strategy
+against a five-day one on incomplete positions, and this is the field that keeps
+that promise. `metrics.py` counts open observations, names their tickers, and
+excludes them from every statistic.
+
+Costs are explicit or absent. `CostAssumptions(slippage_bps, half_spread_bps,
+commission_bps)` has no default constructor: a replay without one produces a
+gross number that the measurement layer refuses to score.
+
+---
+
+## 17. Shadow: the decision/execution split
+
+`strategy_lab/shadow.py` refuses any arm whose mode is not `shadow` — a paper
+arm belongs to the Alpaca adapter (PR 6), a live arm to the promoted broker path
+(PR 5) — and the package imports no broker at all, so "sends no order" is
+structural rather than conditional.
+
+The split it exists to make:
+
+| | Reproducible from | Recomputed |
+|---|---|---|
+| `strategy_decisions` | the snapshot alone | never |
+| `strategy_trades` | a fresh `PortfolioContext`, hashed onto the row | every attempt |
+
+So the same decision is executed on Monday and refused on Tuesday because the
+portfolio changed, and neither outcome mutates or duplicates the decision.
+`tests/test_strategy_lab_shadow.py` asserts exactly that: two attempts, two
+context hashes, one unchanged `strategy_decisions` row, two `strategy_trades`
+rows.
+
+An execution is identified by `(decision, portfolio_context_hash)`, so a whole
+shadow run re-runs idempotently; on top of that a decision has at most one
+non-terminal execution, held by the partial unique index, so a retry against a
+*different* context reuses the open row rather than creating a second placement.
+
+Sizing is arithmetic, never a choice: `risk_dollars = equity × arm_risk_budget ×
+position_risk_pct`, notional is that over the stop distance, and every cap that
+bound the result is named on the row (`max_position_fraction`,
+`max_daily_notional`). Percentage returns and R are what the scorecard ranks on,
+precisely because they do not depend on the virtual budget an arm happened to
+get.
+
+A shadow fill walks the same §12 state machine live will —
+`proposed → owner_approved → risk_reserved → submitted → accepted → filled →
+protection_pending → protected → closing → closed` — with the lab standing in
+for owner, risk desk and broker, and every hop checked against
+`domain.EXECUTION_TRANSITIONS`. That is deliberate: PR 5's machine should be
+exercised by months of shadow evidence rather than met for the first time with
+money on it. `mode` says `shadow` on every one of those rows.
+
+---
+
+## 18. Measurement, and what it refuses to say
+
+`strategy_lab/metrics.py` is pure stdlib. It computes net after explicit costs,
+gross beside it, mean and median R, win rate, profit factor, maximum drawdown
+and time under water, exposure, turnover, benchmark-relative return, and the
+overlap and correlation between every pair of arms — all with `n` and warning
+codes attached.
+
+**The bootstrap is not reimplemented here.** Spec N's `comparables/inference.py`
+is this repository's one implementation of the stationary block bootstrap, the
+effective sample size and Romano–Wolf step-M, and `strategy_lab/` may not import
+`comparables`. So `metrics.py` declares two protocols and
+`scripts/strategy_lab_scoreboard.py` implements them over `comparables.inference`.
+A run without them prints `uncertainty_unavailable` and refuses to name a winner
+rather than falling back to a normal approximation.
+
+The refusals, in the order they fire:
+
+| Condition | Result |
+|---|---|
+| Clean and reconstructed evidence in one set | raises `MixedEvidence` |
+| A matured trade with no cost model | `blocked` — **no return metric at all** |
+| Bars ran out before the horizon | counted, named, excluded |
+| Below a floor | computed and shown *with n*, status `insufficient_evidence` |
+
+Floors default to Spec Q §10's own operational minimums (100 matured, 20
+distinct dates, 30 closed, 60 shadow days), are configurable, and are printed
+beside every result.
+
+**Chronological only.** `chronological_folds` produces contiguous walk-forward
+splits and purges from training every observation whose label window reaches
+into the validation block or its embargo. There is no random-shuffle option,
+because that is the mistake the function exists to prevent. `reserve_holdout`
+cuts the most recent slice off by entry date, and `evaluate_arm` **raises** if a
+development evaluation touches it — unsealing is an explicit argument someone
+types once, at the end, on purpose.
+
+### When the word "winner" may be used
+
+`rank_arms` always produces the ordering — hiding it would be its own kind of
+dishonesty — but `winner` is `None` and the label is `insufficient_evidence`
+unless *all* of these hold:
+
+- the evidence is clean rather than reconstructed;
+- no arm is blocked and every arm clears its floors;
+- the leader has an uncertainty interval and a multiplicity-adjusted one;
+- the adjusted lower bound is above zero;
+- the leader beats its benchmark;
+- the adjusted lower bound clears the runner-up's point estimate;
+- Romano–Wolf step-M rejects for the leader across the family.
+
+The gate's conservatism is the project's, not a citation, and it is printed on
+every card. It gates a *recommendation*: promotion is owner-only (§3, §8), and
+nothing in this package performs one.
+
+The multiplicity adjustment is Šidák written for a confidence level rather than
+a p-value — each interval taken at `level ** (1 / m)` for `m` trials — and
+`tests/test_strategy_lab_metrics.py` asserts the exact round trip against
+`inference.sidak_adjusted` rather than trusting the algebra.
+
+---
+
+## 19. The scorecard CLI
+
+```bash
+python -m scripts.strategy_lab_scoreboard \
+    --database-url sqlite:///swing_trader.db \
+    --experiment q1_2026_roster \
+    --cutoff 2026-06-30T21:00:00 \
+    --json artifacts/scoreboard.json \
+    --markdown artifacts/scoreboard.md \
+    --slippage-bps 10 --half-spread-bps 5 \
+    --reps 2000 --seed 20260908
+```
+
+Read-only: it places no order, writes no experiment row and performs no
+promotion. The same database, cutoff and options produce **byte-identical**
+files — every collection is sorted, every float goes through one formatter, the
+seed is an explicit option printed on the card, and the only clock in the
+artifact is the cutoff the caller passed. A card that changed because it was
+generated twice would be worthless as evidence.
+
+The card carries, in this order: the inputs (floors, gate, cost assumptions),
+every variant tried against the pre-registered count, a **clean** section and an
+**exploratory `archival_reconstructed`** section that are never combined, each
+with its arm table, uncertainty intervals with their seed and replication count,
+the pairwise overlap and correlation matrix, and a verdict with the reasons it
+is what it is. Then the arms that produced nothing and why, and the warning
+codes.
+
+---
+
+## 20. What PR 3 does not do
+
+* Nothing is wired into `orchestrator/pipeline.py`, no scheduler job exists, and
+  no flag is added — PR 4 owns the hook and the flags that gate it.
+* No broker, paper or live, is reachable. `shadow.py` refuses a non-shadow arm
+  outright; PR 5 and PR 6 own those paths.
+* No promotion is performed or recommended as an authorisation. A cleared gate
+  is a reason to look at the evidence, and `promotion.py` remains PR 6's.
+* No table is added. PR 1's eight are still enough: executions are
+  `strategy_trades` rows and evaluations are `experiment_metric_snapshots`.
+* **No promotion-eligible replay is possible yet** (§16). Every scorecard this
+  deployment can produce today is exploratory, and it says so.
+* Probability-of-backtest-overfitting (CSCV) is **deferred**. The
+  multiple-testing control that ships is Šidák-adjusted intervals plus
+  Romano–Wolf step-M, both from `comparables/inference.py`; a CSCV
+  implementation is its own PR against Spec N's inference layer rather than a
+  second, differently-shaped copy inside `strategy_lab/`.
+
+---
+
+## 20. The execution machine (PR 5, Spec Q §12)
 
 PR 5 makes a Strategy Lab arm able to execute — on Phase 6's service, not beside
 it. Phase 6 already owns signed single-use approval, fresh risk re-evaluation,
@@ -530,8 +784,9 @@ off, and no order has been placed against a real broker by any of it.
 
 | Concern | Module | May reach |
 |---|---|---|
-| the §12 states, the reservation, the mode→venue rule, redaction | `strategy_lab/execution.py` | `strategy_lab`, `database`, `utils` |
-| gates, the observer, resume, reconcile | `execution/strategy_lifecycle.py` | everything above plus `execution/`, `portfolio/` |
+| the §12 rules: mode→venue, the reserving/blocking state sets, redaction | `strategy_lab/execution.py` | `strategy_lab`, `utils` — **pure** |
+| every `strategy_trades` write, PR 3's and PR 5's alike | `strategy_lab/registry.py` | the above plus `database` |
+| gates, the observer, resume, reconcile | `execution/strategy_lifecycle.py` | the above plus `execution/`, `portfolio/` |
 | placement, protection, the read-back | `execution/lifecycle.py` (Phase 6) | the broker |
 | does the broker agree with the ledger | `tracking/position_reconciliation.py` | `database`, `strategy_lab.domain` |
 
@@ -539,8 +794,17 @@ The first row is the load-bearing one. Spec Q §12 invariant 11 says execution
 mode is an explicit immutable input, never inferred from global mutable
 settings — so the module that decides *which venue a mode may reach* is the one
 module that cannot read a setting. `import config` fails there, by test
-(`tests/test_strategy_lab_import_graph.py`), and so does `import execution` and
-`import portfolio`. The rules cannot be talked out of themselves.
+(`tests/test_strategy_lab_import_graph.py`), and so do `database`, `execution`
+and `portfolio`: it is in `PURE_SDK_MODULES` alongside the strategy SDK. The
+rules cannot be talked out of themselves.
+
+The second row matters for a different reason. PR 3 made `registry.py` the one
+writer of `strategy_trades` — `record_execution`, `set_execution_state`,
+`open_execution_for` — and PR 5 adds `open_execution` (reuse-on-race),
+`advance_execution` (the timestamps and the release log), `reserved_notional`,
+`blocking_executions` and `resumable_executions` **beside** them rather than
+opening a second writer. Two writers for one table is how two workers end up
+with two placements.
 
 ### One execution per decision, and one id before anything
 

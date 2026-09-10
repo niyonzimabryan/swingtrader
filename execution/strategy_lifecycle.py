@@ -19,6 +19,13 @@ Neither of those is duplicated here. What is here is the join:
   resolved from the broker's own answer, and **no new entry order is ever
   placed** by either — protection may be re-placed, an entry may not.
 
+Every ``strategy_trades`` write goes through ``strategy_lab/registry.py``, the
+package's service boundary and PR 3's writer for the same table. Nothing here
+opens a second one: ``registry.open_execution`` and
+``registry.advance_execution`` are the only two functions this module uses to
+change a row, and the rules they enforce come from ``strategy_lab/execution.py``,
+which is pure and cannot reach a session or a setting at all.
+
 Three properties are worth stating because they are easy to lose:
 
 **The reservation is persisted before the external order call.** Phase 6
@@ -54,7 +61,12 @@ from portfolio.capabilities import CapabilityRefused, OrderIntent, gate_intent
 from portfolio.paging import log_pager
 from strategy_lab import execution as slx
 from strategy_lab import registry
-from strategy_lab.domain import ExecutionMode, ExecutionState, InvalidTransition
+from strategy_lab.domain import (
+    TERMINAL_EXECUTION_STATES,
+    ExecutionMode,
+    ExecutionState,
+    InvalidTransition,
+)
 from tracking import position_reconciliation as recon
 from utils.logger import get_logger
 from utils.timeutils import utcnow_naive
@@ -91,6 +103,16 @@ _OBSERVER_STATES: Mapping[str, tuple[ExecutionState, ...]] = {
     p6.ON_PROTECTION_FAILED: (ExecutionState.PROTECTION_FAILED,),
     p6.ON_STOP_REPLACED: (ExecutionState.PROTECTED,),
 }
+
+
+def _execution_or_none(session, execution_id: str):
+    """The row for ``execution_id``, or ``None``. A read, so it stays local."""
+    if not execution_id:
+        return None
+    try:
+        return registry.execution_row(session, execution_id)
+    except registry.NotFound:
+        return None
 
 
 class ArmExecutionRefused(Exception):
@@ -319,27 +341,50 @@ class StrategyExecutionService:
             arm = registry.require_arm(session, request.arm_id)
             binding = self._bind(arm, request.mode)
 
-            trade = slx.open_execution(
+            # The portfolio context is read *before* the row is opened, so the
+            # attempt is identified by the book it was judged against — which is
+            # the idempotency key `registry.record_execution` uses, and what
+            # makes "the same decision, re-proposed against an unchanged book"
+            # resolve to one execution rather than two (Spec Q §8).
+            context_hash = proposals_mod.read_context(
+                session, now=now, symbol=request.ticker
+            ).context_hash
+            trade = registry.open_execution(
                 session,
-                arm_id=request.arm_id,
-                decision_id=request.decision_id,
+                request.arm_id,
+                request.decision_id,
                 mode=binding.mode,
+                portfolio_context_hash=context_hash,
                 intended_entry_price=request.entry,
                 stop_price=request.stop,
                 target1_price=request.target1_price,
                 target2_price=request.target2_price,
-                now=now,
             )
             session.commit()
 
             if trade.status != ExecutionState.PROPOSED.value:
-                # An earlier attempt is already under way. Idempotent by
-                # construction: hand back the row rather than starting a second.
+                # An earlier attempt resolved to this row. Idempotent by
+                # construction: hand it back rather than starting a second.
+                # Two shapes, and the message says which — a non-terminal row is
+                # in flight and holds the decision's one open slot; a terminal
+                # one is `registry.record_execution`'s
+                # `(decision, portfolio_context_hash)` rule, which means this
+                # decision was already settled against *this* book. Re-proposing
+                # it needs a genuinely different portfolio context, which is what
+                # makes "the owner cancelled this and it did not come straight
+                # back" true (Spec Q §8).
+                settled = trade.status in {s.value for s in TERMINAL_EXECUTION_STATES}
                 return ArmExecutionCard(
                     execution_id=trade.execution_id,
                     status=trade.status,
                     proposal_id=self._proposal_id_for(session, trade.execution_id),
-                    message="an execution for this decision is already in flight.",
+                    blocked_reason=(trade.blocked_reason or "") if settled else "",
+                    message=(
+                        f"this decision already has a settled execution ({trade.status}) "
+                        "against this portfolio context; nothing was placed."
+                        if settled
+                        else "an execution for this decision is already in flight."
+                    ),
                 )
 
             refusal = killswitch.entry_block(session)
@@ -395,8 +440,8 @@ class StrategyExecutionService:
 
     def _refuse(self, session, trade, refusal, *, now, proposal_id: int | None = None) -> ArmExecutionCard:
         code, reason = refusal
-        slx.transition(
-            session, trade, ExecutionState.RISK_REJECTED, reason=code, now=now
+        registry.advance_execution(
+            session, trade.execution_id, ExecutionState.RISK_REJECTED, reason=code, now=now
         )
         session.commit()
         self.pager(
@@ -444,7 +489,7 @@ class StrategyExecutionService:
         observer (so every hop lands on ``strategy_trades`` as it happens).
         """
         with self.session_factory() as session:
-            trade = slx.require_execution(session, execution_id)
+            trade = registry.execution_row(session, execution_id)
             arm = registry.require_arm(session, trade.arm_id)
             binding = self._bind(arm, trade.mode)
             proposal_id = self._proposal_id_for(session, execution_id)
@@ -478,7 +523,7 @@ class StrategyExecutionService:
         if not states:
             return
         with self.session_factory() as session:
-            trade = slx.get_execution(session, execution_id)
+            trade = _execution_or_none(session, execution_id)
             if trade is None:
                 return
             fields = self._observer_fields(event, proposal, detail)
@@ -495,7 +540,10 @@ class StrategyExecutionService:
                     # carries the outcome.
                     continue
                 try:
-                    slx.transition(session, trade, state, reason=self._reason(event, detail), **fields)
+                    trade = registry.advance_execution(
+                        session, execution_id, state,
+                        reason=self._reason(event, detail), **fields
+                    )
                 except InvalidTransition as exc:
                     # A hop the machine forbids is a real defect, not something
                     # to paper over: it is logged with both states and the row
@@ -583,9 +631,10 @@ class StrategyExecutionService:
         """
         now = now or utcnow_naive()
         with self.session_factory() as session:
-            trade = slx.require_execution(session, execution_id)
-            slx.transition(
-                session, trade, ExecutionState.CANCELLED, reason=reason or f"cancelled_by:{by}", now=now
+            trade = registry.execution_row(session, execution_id)
+            registry.advance_execution(
+                session, trade.execution_id, ExecutionState.CANCELLED,
+                reason=reason or f"cancelled_by:{by}", now=now,
             )
             self._void_proposal(session, execution_id, status="cancelled", reason=reason or f"cancelled by {by}")
             session.commit()
@@ -611,10 +660,13 @@ class StrategyExecutionService:
                 .all()
             )
             for proposal in rows:
-                trade = slx.get_execution(session, proposal.execution_id or "")
+                trade = _execution_or_none(session, proposal.execution_id or "")
                 if trade is None or trade.status != ExecutionState.PROPOSED.value:
                     continue
-                slx.transition(session, trade, ExecutionState.EXPIRED, reason="approval_expired", now=now)
+                registry.advance_execution(
+                    session, trade.execution_id, ExecutionState.EXPIRED,
+                    reason="approval_expired", now=now,
+                )
                 proposal.status = "expired"
                 proposal.updated_at = now
                 expired.append(trade.execution_id)
@@ -630,12 +682,12 @@ class StrategyExecutionService:
         """
         now = now or utcnow_naive()
         with self.session_factory() as session:
-            trade = slx.require_execution(session, execution_id)
+            trade = registry.execution_row(session, execution_id)
             if trade.status not in (ExecutionState.CLOSING.value, ExecutionState.CLOSED.value):
-                slx.transition(session, trade, ExecutionState.CLOSING, now=now)
-            slx.transition(
+                registry.advance_execution(session, execution_id, ExecutionState.CLOSING, now=now)
+            trade = registry.advance_execution(
                 session,
-                trade,
+                execution_id,
                 ExecutionState.CLOSED,
                 now=now,
                 exit_price=exit_price,
@@ -677,7 +729,7 @@ class StrategyExecutionService:
         now = now or utcnow_naive()
         actions: list[ResumeAction] = []
         with self.session_factory() as session:
-            rows = slx.resumable_executions(session)
+            rows = registry.resumable_executions(session)
             plan = [(row.execution_id, row.status, row.arm_id) for row in rows]
         for execution_id, status, arm_id in plan:
             try:
@@ -887,7 +939,7 @@ class StrategyExecutionService:
         """
         with self.session_factory() as session:
             row = session.get(Proposal, proposal.id)
-            trade = slx.get_execution(session, execution_id)
+            trade = _execution_or_none(session, execution_id)
             current = ExecutionState(trade.status) if trade else ExecutionState(status)
             qty = int(float(row.filled_quantity or row.quantity or 0))
             if qty <= 0:
@@ -990,11 +1042,13 @@ class StrategyExecutionService:
 
     def _set(self, execution_id: str, state: ExecutionState, *, now, reason: str = "", **fields) -> None:
         with self.session_factory() as session:
-            trade = slx.get_execution(session, execution_id)
+            trade = _execution_or_none(session, execution_id)
             if trade is None:
                 return
             try:
-                slx.transition(session, trade, state, reason=reason, now=now, **fields)
+                registry.advance_execution(
+                    session, execution_id, state, reason=reason, now=now, **fields
+                )
             except InvalidTransition as exc:
                 log.error("strategy_resume_illegal_transition", execution_id=execution_id, error=str(exc))
                 session.rollback()

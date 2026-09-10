@@ -50,6 +50,7 @@ from execution.strategy_lifecycle import ArmExecutionRefused
 from portfolio import killswitch
 from portfolio.paging import RecordingPager
 from strategy_lab import execution as slx
+from strategy_lab import registry
 from strategy_lab.domain import ExecutionMode, ExecutionState
 from tests import proposalfixture as pf
 from tests import strategyexecfixture as fx
@@ -117,7 +118,7 @@ class ExecutionTestCase(unittest.TestCase):
         """A detached snapshot of the row, safe to read after the session closes."""
         with get_session() as session:
             if execution_id:
-                row = slx.require_execution(session, execution_id)
+                row = registry.execution_row(session, execution_id)
             else:
                 row = session.query(StrategyTrade).order_by(StrategyTrade.id.asc()).first()
             if row is None:
@@ -130,7 +131,7 @@ class ExecutionTestCase(unittest.TestCase):
 
     def reserved(self) -> float:
         with get_session() as session:
-            return slx.reserved_notional(session, mode=self.mode)
+            return registry.reserved_notional(session, mode=self.mode)
 
     def entry_block(self):
         with get_session() as session:
@@ -231,8 +232,8 @@ class OpenExecutionTests(ExecutionTestCase):
     def test_the_database_refuses_a_second_open_execution(self):
         """The constraint, not the query, is what holds it (§12 invariant 6)."""
         with get_session() as session:
-            first = slx.open_execution(
-                session, arm_id=self.arm_id, decision_id=self.decision_id, mode=self.mode
+            first = registry.open_execution(
+                session, self.arm_id, self.decision_id, mode=self.mode
             )
             session.commit()
             execution_id = first.execution_id
@@ -252,13 +253,43 @@ class OpenExecutionTests(ExecutionTestCase):
             rows = session.query(StrategyTrade).all()
             self.assertEqual([r.execution_id for r in rows], [execution_id])
 
-    def test_a_terminal_execution_frees_the_decision_for_a_new_one(self):
-        """The index is partial on purpose: terminal rows do not hold the slot."""
+    def test_a_cancelled_execution_does_not_come_straight_back(self):
+        """PR 3's second idempotency rule, and it is the safer one.
+
+        The partial index would allow a fresh execution once the first is
+        terminal, but `registry.record_execution` identifies an attempt by
+        `(decision, portfolio_context_hash)` — so re-proposing a decision the
+        owner just cancelled, against a book that has not moved, resolves to the
+        cancelled row rather than re-minting a card. Placing nothing is the
+        point; the message says the execution is settled.
+        """
         self.build()
         first = self.propose()
         self.service.cancel(execution_id=first.execution_id, by="bryan", now=self.now)
         second = self.propose()
+        self.assertEqual(first.execution_id, second.execution_id)
+        self.assertEqual(second.status, ExecutionState.CANCELLED.value)
+        self.assertIn("settled", second.message)
+        self.assertEqual(self.broker.order_calls, 0)
+        with get_session() as session:
+            self.assertEqual(session.query(StrategyTrade).count(), 1)
+
+    def test_a_moved_book_is_a_new_attempt(self):
+        """A genuinely different portfolio context gets its own row.
+
+        Which is how "the same decision was blocked on Tuesday" stays
+        answerable, and why the index is partial rather than total.
+        """
+        self.build()
+        first = self.propose()
+        self.service.cancel(execution_id=first.execution_id, by="bryan", now=self.now)
+        with get_session() as session:
+            trade = registry.execution_row(session, first.execution_id)
+            trade.portfolio_context_hash = "a-different-book"
+            session.commit()
+        second = self.propose()
         self.assertNotEqual(first.execution_id, second.execution_id)
+        self.assertEqual(second.status, ExecutionState.PROPOSED.value)
         with get_session() as session:
             self.assertEqual(session.query(StrategyTrade).count(), 2)
 
@@ -274,10 +305,10 @@ class OpenExecutionTests(ExecutionTestCase):
                 for _ in range(5):
                     try:
                         with get_session() as session:
-                            row = slx.open_execution(
+                            row = registry.open_execution(
                                 session,
-                                arm_id=self.arm_id,
-                                decision_id=self.decision_id,
+                                self.arm_id,
+                                self.decision_id,
                                 mode=self.mode,
                             )
                             session.commit()
@@ -515,10 +546,10 @@ class ProtectionFailureTests(ExecutionTestCase):
     def test_a_blocking_execution_alone_still_blocks_entries(self):
         """The §12 reason on its own, with no Phase 6 proposal in the way."""
         with get_session() as session:
-            trade = slx.open_execution(
-                session, arm_id=self.arm_id, decision_id=self.decision_id, mode=self.mode
+            trade = registry.open_execution(
+                session, self.arm_id, self.decision_id, mode=self.mode
             )
-            slx.transition(session, trade, ExecutionState.RECONCILIATION_REQUIRED)
+            registry.advance_execution(session, trade.execution_id, ExecutionState.RECONCILIATION_REQUIRED)
             session.commit()
             execution_id = trade.execution_id
         block = self.entry_block()
@@ -776,7 +807,7 @@ class ReconciliationTests(ExecutionTestCase):
         card = self.propose()
         self.approve(card)
         with get_session() as session:
-            trade = slx.require_execution(session, card.execution_id)
+            trade = registry.execution_row(session, card.execution_id)
             trade.quantity = 80.0  # someone sold 30 shares in the app
             session.commit()
 

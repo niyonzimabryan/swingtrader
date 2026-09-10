@@ -34,45 +34,54 @@ PACKAGE = REPO_ROOT / "strategy_lab"
 #: First-party packages the whole Strategy Lab package may reach.
 ALLOWED_FIRST_PARTY = {"strategy_lab", "utils"}
 
-#: The modules allowed a database session. `registry.py` is the service
+#: The one module allowed to reach `backtest`. Phase 3's replay adapter must
+#: reuse `backtest/simulator.py` rather than reinterpret its fill semantics
+#: (Spec Q §15 PR 3), and confining the import to one file is what makes "there
+#: is one simulator, called from one place" checkable rather than asserted.
+SIMULATOR_ALLOWED = {"replay.py"}
+
+#: The two modules allowed a database session. `registry.py` is the service
 #: boundary for every experiment-table write; `snapshot_builder.py` is Phase 2's
 #: deliberate pure/impure split — `snapshots.py` states the point-in-time rules
 #: and holds no session, the builder holds the session and hands it normalized
-#: value objects (Spec Q §6, PR 2 requirement 1); `execution.py` is Phase 5's
-#: Spec Q §12 state machine over `strategy_trades`, which is persistence by
-#: definition — the invariant it enforces ("at most one non-terminal execution
-#: per decision") is a database constraint, and a module that cannot reach the
-#: database cannot hold it.
-#:
-#: Widening this set is a deliberate act and does not widen anything else:
-#: `execution.py` is still swept by every test below, so it still may not import
-#: `execution/`, `portfolio/`, `config`, a broker, or a model client. That is
-#: the whole reason the §12 *rules* live in `strategy_lab/` and the §12 *wiring*
-#: lives in `execution/strategy_lifecycle.py` — a module that decides which
-#: venue a mode may reach must not be able to read a setting and infer one
-#: (Spec Q §12 invariant 11).
-SESSION_ALLOWED = {"registry.py", "snapshot_builder.py", "execution.py"}
+#: value objects (Spec Q §6, PR 2 requirement 1).
+SESSION_ALLOWED = {"registry.py", "snapshot_builder.py"}
 
-#: Phase 2's SDK. Every one of these is pure: a strategy receives an immutable
-#: snapshot and returns decisions, and a helper it reaches must be equally
-#: unable to open a session. Named explicitly, on top of the whole-package
-#: sweeps below, so that deleting one from the package is a visible test
-#: failure rather than a silently narrower guarantee.
+#: The pure modules: Phase 2's SDK, Phase 3's `metrics.py`, and Phase 5's
+#: `execution.py`. Every one of them is pure — a strategy receives an immutable
+#: snapshot and returns decisions, a measurement receives observations and
+#: returns numbers, and `execution.py` answers "which venue may this mode reach"
+#: from its arguments alone. That last one is the load-bearing case: Spec Q §12
+#: invariant 11 says execution mode is an explicit immutable input and never
+#: inferred from a global setting, so the module holding that rule is exactly the
+#: module that must not be able to read one. Its `strategy_trades` writes live in
+#: `registry.py` with every other write to that table. A helper any of them
+#: reaches must be equally unable to open a session. Named explicitly, on top of
+#: the whole-package sweeps below, so that deleting one from the package is a
+#: visible test failure rather than a silently narrower guarantee.
 PURE_SDK_MODULES = {
+    "execution.py",
     "execution_policy.py",
     "indicators.py",
+    "metrics.py",
     "snapshots.py",
     "universe.py",
     "validation.py",
 }
 
+#: Phase 3's modules that take a session as an argument but must never import
+#: one. Every write they make goes through `registry.py`, which stays the only
+#: module in the package holding `database`. Naming them here means adding a
+#: Phase 3 module that opens its own session is a visible test failure.
+SESSION_TAKING_BUT_NOT_HOLDING = {"runner.py", "shadow.py"}
+
 #: Pure stdlib, and staying that way: this is what a strategy imports.
 NO_FIRST_PARTY_AT_ALL = {"domain.py"}
 
 #: Every first-party package the Strategy Lab must not reach. `config` is here
-#: for the reason in the module docstring; `backtest` is absent from the
-#: allowlist rather than forbidden because Phase 3 will reuse its simulator and
-#: should widen the allowlist deliberately when it does.
+#: for the reason in the module docstring. `backtest` is neither forbidden nor
+#: globally allowed: Phase 3 widened the allowlist for exactly one module, named
+#: in `SIMULATOR_ALLOWED` above.
 FORBIDDEN_FIRST_PARTY = {
     "agents", "bot", "comparables", "config", "data", "evals", "execution",
     "filings", "main", "memo", "orchestrator", "portfolio", "research",
@@ -146,6 +155,8 @@ class StrategyLabImportGraphTests(unittest.TestCase):
             allowed = set(ALLOWED_FIRST_PARTY)
             if path.name in SESSION_ALLOWED:
                 allowed.add("database")
+            if path.name in SIMULATOR_ALLOWED:
+                allowed.add("backtest")
             unexpected = sorted(reached - allowed)
             if unexpected:
                 offenders[path.name] = unexpected
@@ -169,6 +180,47 @@ class StrategyLabImportGraphTests(unittest.TestCase):
             [],
             "registry.py is the service boundary; no other Strategy Lab module "
             "may hold a database session (Spec Q §5, §6).",
+        )
+
+    def test_only_the_replay_adapter_reaches_the_simulator(self):
+        """Spec Q §15 PR 3: one simulator, and one caller of it."""
+        present = {p.name for p in _module_files()}
+        self.assertEqual(
+            sorted(SIMULATOR_ALLOWED - present), [],
+            "the module allowed to import backtest has left the package",
+        )
+        offenders = sorted(
+            path.name
+            for path in _module_files()
+            if path.name not in SIMULATOR_ALLOWED and "backtest" in _imported_roots(path)
+        )
+        self.assertEqual(
+            offenders,
+            [],
+            "backtest/simulator.py is reached from strategy_lab/replay.py alone; "
+            "a second caller is a second place for fill semantics to drift "
+            "(Spec Q §15 PR 3).",
+        )
+
+    def test_the_phase_three_modules_take_a_session_but_never_import_one(self):
+        """runner.py and shadow.py delegate every write to the registry."""
+        present = {p.name for p in _module_files()}
+        self.assertEqual(
+            sorted(SESSION_TAKING_BUT_NOT_HOLDING - present), [],
+            "a Phase 3 module named here has disappeared from the package",
+        )
+        offenders = []
+        for path in _module_files():
+            if path.name not in SESSION_TAKING_BUT_NOT_HOLDING:
+                continue
+            for root in sorted(_imported_roots(path) & {"database", "sqlalchemy"}):
+                offenders.append(f"{path.name} imports {root}")
+        self.assertEqual(
+            offenders,
+            [],
+            "the runner and the shadow executor receive a session and hand "
+            "every write to registry.py; importing database here would make a "
+            "second service boundary (Spec Q §5, §6).",
         )
 
     def test_the_pure_sdk_and_every_strategy_hold_no_session(self):
