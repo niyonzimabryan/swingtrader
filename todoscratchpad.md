@@ -821,6 +821,39 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
                   percentage). Spec Q §6 asks for the full context hash; closing
                   the gap is a change to the scoring pipeline, which PR 2 does
                   not own.
+      - [ ] **PR 3 — experiment runner, replay, and honest measurement** — in
+            review on `claude/strategy-lab-3-runner`: `strategy_lab/runner.py`
+            (registration freezes the plan and the variant count before any arm
+            runs; N arms over one shared snapshot, idempotently, keeping `long`,
+            `flat` and `abstain`, with a refusal recorded per arm rather than
+            aborting the run); `replay.py` (the only importer of
+            `backtest/simulator.py` — it expands
+            `ResolvedExecutionPlan.policy_spec_fields()` exactly as
+            `comparables/outcomes.py::_replay` does, and a test builds a real
+            `PolicySpec` from the same dict and asserts the identical trade);
+            `shadow.py` (a portfolio context rebuilt and hashed per attempt, so
+            the same decision can be blocked after the portfolio changes without
+            mutating or duplicating it); `metrics.py` (pure; costs missing
+            blocks a result rather than zeroing it, open positions are excluded
+            rather than scored as zero, and a small-sample leader is never a
+            winner); and `scripts/strategy_lab_scoreboard.py` (byte-identical
+            JSON and Markdown, with the bootstrap, `n_eff` and Romano–Wolf
+            step-M taken from `comparables/inference.py` through two injected
+            protocols rather than reimplemented). No flag, no pipeline hook, no
+            broker, no new table.
+            - [ ] **Probability-of-backtest-overfitting (CSCV) is deferred.**
+                  The multiple-testing control that shipped is Šidák-adjusted
+                  intervals plus Romano–Wolf step-M, both from
+                  `comparables/inference.py`. A CSCV implementation belongs in
+                  Spec N's inference layer, as its own PR, rather than as a
+                  second differently-shaped copy inside `strategy_lab/`.
+            - [ ] **The scorecard's ranking gate is a project decision, not a
+                  citation.** Spec Q §10 only says "never select a winner from
+                  raw return alone". The specific conservatism — adjusted lower
+                  bound above zero, above the benchmark, and above the
+                  runner-up's point estimate, plus a step-M rejection — is ours,
+                  is printed on every card, and gates a *recommendation*.
+                  Worth revisiting once a real shadow sample exists.
 - [ ] **Phase 6 — order proposal→approval→execution** — gated on Phases 0–3 **and** on
       documenting whether Robinhood can place a protective exit that survives our
       process. Human-in-the-loop, not an autonomous goal run.

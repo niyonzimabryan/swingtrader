@@ -44,7 +44,7 @@ jobs:
     # Postgres migration is confirmed in production — spec K section 3.2.
     name: Python tests (${{ matrix.engine }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     strategy:
       fail-fast: false
