@@ -94,9 +94,9 @@ export WORKSPACE_TOKEN=<printed token>
 
 ## 4. Prices and cohorts (Sharadar 10-year Prices tier)
 
-`SHARADAR_API_KEY` is already on the bot. The adapter is being ported to
-Sharadar's direct API (PR on `claude/sharadar-direct-api`); until it merges the
-backfill fails against the wrong host. After it merges:
+`SHARADAR_API_KEY` is already on the bot. The adapter targets Sharadar's
+direct API (`https://api.sharadar.com/v1.0`, merged as #70); `docs/vendors/sharadar.md`
+is the vendor reference. Then:
 
 ```bash
 railway variables --service swingtrader --set "PRICE_PLANE_ENABLED=true" --set "PRICE_PLANE_SOURCE=sharadar"
