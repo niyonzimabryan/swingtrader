@@ -73,7 +73,14 @@ SKIP_RUN_CAP = "dispatch_cap_reached"
 
 
 def paper_enabled(settings) -> bool:
-    """Both gates: the master switch and the paper switch (Spec Q §14)."""
+    """Both gates: the master switch and the paper switch (Spec Q §14).
+
+    This is also the gate on the three execution jobs, and it covers live as well
+    as paper because a live arm requires the paper flag too
+    (:meth:`execution.strategy_lifecycle.StrategyExecutionService._tier_flag_refusal`).
+    Without that rule, ``live on, paper off`` would be live positions that nothing
+    resumes after a restart and nothing reconciles against the broker.
+    """
     return bool(getattr(settings, "strategy_lab_enabled", False)) and bool(
         getattr(settings, "strategy_lab_paper_enabled", False)
     )
@@ -601,15 +608,37 @@ def expire_stale_approvals(settings, *, adapters, service=None) -> list[str]:
 
 
 def reconcile(settings, *, adapters, mode=None, service=None):
-    """Compare the paper execution ledger against the broker, and fail closed.
+    """Compare the execution ledger against the broker, and fail closed.
 
     Every mismatch moves its execution to ``reconciliation_required``, which
     blocks new entries through the existing kill-switch gate rather than a second
     switch, and pages with a recovery instruction (Spec Q §12 invariant 10).
+
+    With no ``mode`` this reconciles **every enabled execution tier whose adapter
+    is registered**, not only paper. A live champion whose positions were never
+    compared against the broker would be the one flow where "fails closed" quietly
+    did not apply, and the reconciliation that never runs is the one that matters.
+    A tier whose adapter is absent is skipped rather than raising: there is nothing
+    to compare it against, and the propose path already refuses it.
     """
     from strategy_lab.domain import ExecutionMode
+    from strategy_lab.execution import MODE_VENUES
 
     if not paper_enabled(settings):
         return None
     service = service or build_service(settings, adapters=adapters)
-    return service.reconcile(mode=mode or ExecutionMode.PAPER)
+    if mode is not None:
+        return service.reconcile(mode=mode)
+
+    reports = []
+    for candidate in (ExecutionMode.PAPER, ExecutionMode.LIVE):
+        if candidate is ExecutionMode.LIVE and not bool(
+            getattr(settings, "strategy_lab_live_enabled", False)
+        ):
+            continue
+        if (adapters or {}).get(MODE_VENUES[candidate]) is None:
+            continue
+        reports.append(service.reconcile(mode=candidate))
+    if not reports:
+        return None
+    return reports[0] if len(reports) == 1 else reports

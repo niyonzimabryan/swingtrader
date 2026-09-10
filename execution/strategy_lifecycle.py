@@ -261,18 +261,23 @@ class StrategyExecutionService:
                 "STRATEGY_LAB_ENABLED is false; no arm may propose an execution. "
                 "Each tier requires every gate below it (Spec Q §14).",
             )
-        flag = (
-            "strategy_lab_live_enabled"
-            if binding.is_live
-            else "strategy_lab_paper_enabled"
-        )
-        if not bool(getattr(self.settings, flag, False)):
-            return (
-                f"{flag}_false",
-                f"{flag.upper()} is false, so no {binding.mode.value} arm may "
-                "propose an execution. Nothing was placed and nothing is "
-                "reserved (Spec Q §14).",
-            )
+        # Spec Q §14: each higher tier requires every lower tier's gate as well
+        # as its own. For the two *execution* tiers that means live requires paper,
+        # and the reason is operational rather than ceremonial: the three jobs that
+        # resume, expire and reconcile an execution are gated on the paper flag, so
+        # `live on, paper off` would be live positions that nothing recovers after a
+        # restart and nothing reconciles against the broker.
+        flags = ("strategy_lab_paper_enabled",)
+        if binding.is_live:
+            flags = ("strategy_lab_paper_enabled", "strategy_lab_live_enabled")
+        for flag in flags:
+            if not bool(getattr(self.settings, flag, False)):
+                return (
+                    f"{flag}_false",
+                    f"{flag.upper()} is false, so no {binding.mode.value} arm may "
+                    "propose an execution. Nothing was placed and nothing is "
+                    "reserved (Spec Q §14: each tier requires every tier below it).",
+                )
         return None
 
     def _live_authorization(self, session, arm) -> tuple[str, str] | None:

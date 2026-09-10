@@ -391,6 +391,33 @@ class FlagTests(PaperFixture):
         self.assertEqual(card.status, ExecutionState.RISK_REJECTED.value)
         self.assertNoOrders()
 
+    def test_live_requires_the_paper_flag_too(self):
+        """Spec Q §14: each tier requires every tier below it.
+
+        Operationally, not ceremonially: the three jobs that resume, expire and
+        reconcile an execution are gated on the paper flag, so `live on, paper
+        off` would be live positions nothing recovers after a restart.
+        """
+        from execution.strategy_lifecycle import ArmExecutionRequest
+
+        card = self.service(
+            settings=self.settings_for(
+                strategy_lab_paper_enabled=False,
+                strategy_lab_live_enabled=True,
+                allow_live_trading=True,
+                execution_mode="live",
+            )
+        ).propose(
+            ArmExecutionRequest(
+                arm_id=self.arm_id, decision_id=self.decision_ids[0],
+                mode=ExecutionMode.PAPER, ticker="AMD",
+                entry=100.0, stop=95.0, risk_fraction=0.005,
+            ),
+            now=NOW,
+        )
+        self.assertEqual(card.blocked_reason, "strategy_lab_paper_enabled_false")
+        self.assertNoOrders()
+
     def test_a_settings_object_missing_the_flag_entirely_refuses(self):
         """Spec Q §12 invariant 1: absence of a flag is not a true one."""
         from types import SimpleNamespace
@@ -701,6 +728,24 @@ class ScheduledJobTests(PaperFixture):
         )
         self.assertIsInstance(actions, list)
         self.assertEqual(self.paper_broker.calls.get("place_order", 0), 0)
+
+    def test_reconcile_covers_only_the_tiers_whose_adapter_is_registered(self):
+        """A live tier with no adapter is skipped, not raised — and not silent.
+
+        The live tier is off here, so only paper is reconciled, and the live fake
+        is never touched. The mirror case — live enabled *and* registered — is in
+        `tests/test_strategy_lab_e2e.py`.
+        """
+        self.dispatch()
+        report = paper.reconcile(
+            self.settings,
+            adapters={PAPER_VENUE: self.paper_broker, LIVE_VENUE: self.live_broker},
+            service=self.service(
+                adapters={PAPER_VENUE: self.paper_broker, LIVE_VENUE: self.live_broker}
+            ),
+        )
+        self.assertIsNotNone(report)
+        self.assertEqual(self.live_broker.calls, {}, self.live_broker.calls)
 
     def test_reconcile_reads_positions_and_never_places(self):
         self.dispatch()

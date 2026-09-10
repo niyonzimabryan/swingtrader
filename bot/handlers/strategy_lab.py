@@ -638,7 +638,25 @@ async def _tier_change(update: Update, context: ContextTypes.DEFAULT_TYPE, *, to
         ]]
     )
     text = render_promotion(plan, confirmable=True, expires_at=expires_at)
-    await update.message.reply_text(text, parse_mode="MarkdownV2", reply_markup=markup)
+    await _reply_with_buttons(update, text, markup)
+
+
+async def _reply_with_buttons(update: Update, text: str, markup) -> None:
+    """Send the card with its buttons, falling back to plain text.
+
+    The confirmation card is the one message in this module whose *buttons* are
+    the point: a MarkdownV2 rejection that lost them would leave the owner with a
+    promotion they cannot confirm and no way to tell why. So a formatting failure
+    degrades to an unformatted card with the same buttons rather than to silence.
+    """
+    try:
+        await update.message.reply_text(
+            text, parse_mode="MarkdownV2", reply_markup=markup
+        )
+    except Exception as exc:
+        log.warning("promotion_card_markdown_failed", error=str(exc)[:200])
+        plain = text.replace("\\", "").replace("*", "").replace("`", "")
+        await update.message.reply_text(plain, parse_mode=None, reply_markup=markup)
 
 
 def render_promotion(plan, *, confirmable: bool, expires_at=None) -> str:

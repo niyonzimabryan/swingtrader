@@ -260,7 +260,11 @@ nobody can trust.
 | `STRATEGY_LAB_PAPER_ENABLED` | the post-scan **paper dispatcher** and the three scheduled execution jobs (`resume` every 30 min in market hours, stale-approval `expire` hourly, `reconcile` at 16:45 ET) |
 | `STRATEGY_LAB_LIVE_ENABLED` | the Strategy Lab's **own** live gate, on top of `ALLOW_LIVE_TRADING`, `EXECUTION_MODE=live`, the kill switch, the broker's declared exit capability, and an owner promotion of the one global champion |
 
-Each tier needs every gate below it. Paper additionally needs
+Each tier needs every gate below it, and that is enforced rather than advised: a
+**live** arm requires `STRATEGY_LAB_PAPER_ENABLED` as well as
+`STRATEGY_LAB_LIVE_ENABLED`, because the three jobs that resume, expire and
+reconcile an execution are gated on the paper flag — `live on, paper off` would be
+live positions nothing recovers after a restart. Paper additionally needs
 `PHASE6_EXECUTION_ENABLED=true` (§9) and `EXECUTION_APPROVAL_SECRET` set — without
 the secret no approval card can be minted, which is the correct failure.
 

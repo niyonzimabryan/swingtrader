@@ -25,7 +25,7 @@ absent, empty, or unparseable reads as false — absence never means live (Spec 
 | `STRATEGY_LAB_UNIVERSE_ENABLED` | false | the one cross-sectional snapshot per cutoff (needs `PRICE_PLANE_ENABLED` and `universe_membership`) |
 | `PHASE6_EXECUTION_ENABLED` | false | the proposal → approval → execution path at all (Spec L §6) |
 | `STRATEGY_LAB_PAPER_ENABLED` | false | the paper dispatcher and the three execution jobs (resume / expire / reconcile) |
-| `STRATEGY_LAB_LIVE_ENABLED` | false | the Strategy Lab's own live gate — on top of `ALLOW_LIVE_TRADING` and `EXECUTION_MODE=live` |
+| `STRATEGY_LAB_LIVE_ENABLED` | false | the Strategy Lab's own live gate — on top of `ALLOW_LIVE_TRADING`, `EXECUTION_MODE=live`, **and `STRATEGY_LAB_PAPER_ENABLED`**, which live requires because the resume/expire/reconcile jobs are gated on it |
 | `STRATEGY_LAB_LIVE_RISK_BUDGET` | `0.0` | a live champion's sizing. Zero means the champion can exist and place nothing |
 
 Variables are set with `railway variables set KEY=VALUE` and are never committed.

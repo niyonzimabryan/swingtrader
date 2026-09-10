@@ -1223,7 +1223,13 @@ work rather than only the next schedule.
 |---|---|---|
 | `strategy_lab_resume` | `mon-fri 9-16 */30m` | Re-derives every non-terminal execution from the broker's own answer. **Never places an entry**; may re-place a protective stop, which is the whole point of surviving a restart with an unprotected fill. A read that fails is not an answer. |
 | `strategy_lab_expire` | hourly at :05 | Terminates `proposed` executions whose approval reference has lapsed, freeing the decision's one open-execution slot. Releases nothing, because a `proposed` row reserved nothing. |
-| `strategy_lab_reconcile` | `mon-fri 16:45` | Compares the execution ledger against the broker. Every mismatch moves to `reconciliation_required`, which blocks new entries through the **existing** kill switch rather than a second one, and pages with a recovery instruction. |
+| `strategy_lab_reconcile` | `mon-fri 16:45` | Compares the execution ledger against the broker, for **every enabled tier whose adapter is registered** — not only paper. Every mismatch moves to `reconciliation_required`, which blocks new entries through the **existing** kill switch rather than a second one, and pages with a recovery instruction. |
+
+All three are gated on `STRATEGY_LAB_PAPER_ENABLED`, and that is also why a *live*
+arm requires the paper flag as well as its own (Spec Q §14: each tier requires
+every tier below it). The reason is operational rather than ceremonial: `live on,
+paper off` would be live positions that nothing resumes after a restart and
+nothing reconciles against the broker.
 
 The adapter map the jobs use registers the live venue **only** when the primary
 broker declares itself to be that venue. Registering the `BrokerRouter` would
