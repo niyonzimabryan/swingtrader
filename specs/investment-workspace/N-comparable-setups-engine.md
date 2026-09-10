@@ -699,3 +699,65 @@ Ratified 2026-09-09 from the Phase 3p build (PR #48):
   comes from ACTIONS where present, else `unknown`, which §4.4 treats as censored.
 - `consensus_eps_news` lives in `news/`, not `filings/` as §4.0 named it: it parses
   article bodies and belongs on the licence-bounded side. Same code, different file.
+
+Ratified 2026-09-10 from the Phase 3c build (PR #56), with the integration
+decisions taken at merge:
+
+- **`gap_and_go_v1` enters on the session *after* the gap.** §5.0's open-of-
+  session-0 entry is unachievable when the signal *is* that open; the ledger's
+  day-precision convention (a dated fact is known at the close of its day) puts
+  session 0 on the next session. One session of drift beats a systematically
+  optimistic cohort. One line to change if overruled.
+- **An earnings event whose XBRL EPS lands with the 10-Q is dated at the 10-Q,
+  not at the announcement**, carrying `sue_known_after_announcement`;
+  `require_sue_at_announcement=True` drops those events instead. The alternative
+  qualifies an event on a number that did not exist yet.
+- **A stale-SUE leak is closed by `SUE_MAX_ANNOUNCEMENT_LAG_DAYS = 100`**: a
+  latest-known quarter more than 100 days before the release means the quarter
+  is absent, not that the previous quarter's surprise applies. Found by the
+  lookahead harness (`comparables/lookahead.py`), which truncates every fact
+  table at each event's cutoff and demands a byte-identical answer; the harness
+  has a test that plants a leak and asserts it fails.
+- **Shrinkage pools a family at each cohort's longest horizon**, one mean per
+  cohort. §6.4 names no horizon; mixing horizons inside a family is a units
+  error, not a prior.
+- **Regime labels are calendar half-years** (`2023H1`) until Spec O's regime
+  plane is joined; named so nobody mistakes them for a bull/bear classifier.
+- **An unknown membership source is `archival_reconstructed`**, and **a
+  performance delisting on an unclassified venue is censored**, never given a
+  guessed terminal return. A merger with no stored deal terms is censored too.
+- **`pending_plane` is a distinct refusal from `insufficient`.** The first means
+  the evidence plane does not exist yet (`insider_cluster_v1` before Form 4);
+  the second means the engine looked. The setup is hashed now so its first real
+  cohort is trial one of a family defined before anybody saw a result.
+- **The import-graph rule is per module, not per package.** The computation
+  core (`setup_spec`, `outcomes`, `inference`, `report`, `balance`, `config`,
+  `fixtures`, `setups/`) reaches nothing but `comparables` and `backtest`; the
+  persistence half (`cohort`, `query`, `registry`, `lookahead`, `citations`)
+  may reach `data.prices.{base,derived,store}`, `filings.observations`,
+  `database` and `sqlalchemy`, enumerated by name. A new module must choose a
+  half. `filings.sec_minimal` is on neither list.
+- **`data/analog_ranker.py` blends one post-event feature** (`outcome_completeness`)
+  into its score. It was out of scope and is untouched; what makes that safe is
+  that the cohort seam takes candidate identifiers only and computes the
+  qualified set over every candidate regardless, so the ranker can propose but
+  never select. Drop the feature next time the ranker is touched.
+- **Citation seam, as merged.** Phase 2's `research_workspace.citations`
+  exposes `register_answer_resolver`; Phase 3c's `workspace/tools.py` binds
+  `_resolve_stored_citation` into it at registration, returning a
+  `ResolvedCitation` of the stored row with `require_citable=False` so
+  `journal_append` refuses `quick`/`insufficient`/`inconclusive` with its own
+  reason. The journal hashes the stored JSON as written; nothing rebuilds a
+  number from text (`cohort_answer_from_text` raises by design). The identifier
+  a journal entry carries is `cohort:<cohort_answers.id>`.
+- **Migration graph.** `0005_comparable_registry` branched from
+  `0004_merge_price_plane` and is joined by `0009_merge_comparables`; Phase 6's
+  `0009_execution_lifecycle` is joined by `0010_merge_execution_lifecycle`, the
+  current single head.
+- **Open at merge:** a real answer carries `PolicySummary.net` but no lower-90%
+  bound and no subject ticker, so Spec L §6.6's evidenced budget cannot fire on
+  a real citation yet. Closed by the follow-up on
+  `claude/evidenced-budget-closure` (a `net_ci` on the policy leg, a
+  `subject_ticker` recorded at query time, and an evidence gate that reads the
+  stored answer).
+

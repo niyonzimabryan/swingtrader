@@ -194,3 +194,8 @@ keep `EXECUTION_MODE=live` off.
 6. Buy Sharadar Prices, run the delisting audit and the price backfill (§6),
    then set `COMPARABLE_BENCHMARK_SECURITY_UID` and flip
    `COMPARABLE_SETUPS_ENABLED` (§7).
+7. Paper execution: `PHASE6_EXECUTION_ENABLED=true` on both services,
+   `EXECUTION_APPROVAL_SECRET` set, `EXECUTION_MODE=paper`, a token with the
+   `propose` scope; call `propose_order`, approve the card in Telegram, and
+   watch the paper lifecycle reach `protected` (§9). Live stays off until the
+   Robinhood stop probe passes.
