@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from execution.brokers.base import (
+    FINISHED_ORDER_STATES,
     BrokerOrderRequest,
     BrokerOrderResult,
     BrokerOrderReview,
@@ -302,6 +303,31 @@ class FakeExecutionBroker:
     ``drop_stops``           symbols whose stops silently vanish, for the daily
                              missing-stop replacement job.
 
+    Phase 5 (Spec Q §12) adds the rest of the lifecycle's failure vocabulary,
+    each one a flag for the same reason:
+
+    ``fill_ratio``           the fraction of the requested quantity that fills.
+                             ``0.5`` is the partial fill that protection has to
+                             be resized for.
+    ``place_rejects``        the broker rejects the entry outright — terminal,
+                             no order exists, the reservation releases.
+    ``placement_unknown``    the placement response is *ambiguous*: an error
+                             with a payload and no order id. Not terminal, and
+                             it may not release its reservation until
+                             reconciliation says so (§12 invariant 12).
+    ``phantom_ref_ids``      ref_ids that :meth:`find_order_by_ref_id` finds
+                             even though placement reported failure — the
+                             "unknown outcome, but the order does exist" case.
+                             An unknown outcome whose ref_id is *not* here is
+                             the verified-no-order case.
+
+    Two properties exist for the safety regressions rather than for the
+    lifecycle: :attr:`calls` counts every method by name, and
+    :attr:`order_calls` counts only the two that can create an order at a real
+    broker. A safety test asserts that number is zero; counting it here rather
+    than mocking is what makes "zero order calls" a statement about the code
+    under test instead of about a patch.
+
     It declares the same capabilities as Robinhood, so a capability gate that
     passes here passes there, and it enforces the same whole-share rule on
     stops so a fractional stop is a failure here too.
@@ -329,12 +355,46 @@ class FakeExecutionBroker:
     stop_place_succeeds: bool = True
     review_approves: bool = True
     drop_stops: tuple = ()
+    fill_ratio: float = 1.0
+    place_rejects: bool = False
+    placement_unknown: bool = False
+    phantom_ref_ids: tuple = ()
 
     def __post_init__(self):
         self._orders: dict[str, _StoredOrder] = {}
         self._seq = 0
         self.placed_entries: list[BrokerOrderRequest] = []
         self.placed_stops: list[dict] = []
+        self.calls: dict[str, int] = {}
+
+    def _record(self, name: str) -> None:
+        self.calls[name] = self.calls.get(name, 0) + 1
+
+    @property
+    def order_calls(self) -> int:
+        """Calls that could create an order at a real broker. Zero is the claim."""
+        return self.calls.get("place_order", 0) + self.calls.get("place_stop", 0)
+
+    def _live_order_with_ref(self, ref_id: str, order_type: str | None = None):
+        """A *currently open* order carrying ``ref_id``, or ``None``.
+
+        The idempotency key deduplicates against live orders only, which is what
+        the upstream does and what the daily replacement job needs: a stop that
+        has vanished from the book must be re-placeable under the same ref_id,
+        while a retry against a stop that is still there must not create a
+        second one.
+        """
+        if not ref_id:
+            return None
+        for order in self._orders.values():
+            if order.ref_id != ref_id:
+                continue
+            if order_type and order.order_type != order_type:
+                continue
+            if (order.status or "").strip().lower() in FINISHED_ORDER_STATES:
+                continue
+            return order
+        return None
 
     @property
     def supports_fractional(self) -> bool:
@@ -348,6 +408,7 @@ class FakeExecutionBroker:
         return f"{prefix}-{self._seq:04d}"
 
     def review_order(self, order: BrokerOrderRequest) -> BrokerOrderReview:
+        self._record("review_order")
         if not self.review_approves:
             return BrokerOrderReview(
                 broker=self.name,
@@ -363,14 +424,55 @@ class FakeExecutionBroker:
         )
 
     def place_order(self, reviewed_order: BrokerOrderReview) -> BrokerOrderResult:
+        self._record("place_order")
         order = reviewed_order.request
         if not reviewed_order.approved:
             return BrokerOrderResult(broker=self.name, success=False, error="not approved")
         ref_id = order.client_context.get("ref_id", "")
+
+        # Idempotency, as the upstream does it: a retry carrying a ref_id that
+        # is already working returns *that* order rather than a second one.
+        # This is the whole reason the execution service may retry the
+        # fill-to-stop race at all (Spec L §5.1).
+        existing = self._live_order_with_ref(ref_id)
+        if existing is not None:
+            return BrokerOrderResult(
+                broker=self.name,
+                success=True,
+                order_id=existing.order_id,
+                status=existing.status,
+                filled_qty=existing.filled_quantity or None,
+                filled_avg_price=existing.average_fill_price,
+                raw={"ref_id": ref_id, "deduplicated": True},
+            )
+
+        if self.place_rejects:
+            return BrokerOrderResult(
+                broker=self.name,
+                success=False,
+                error="fake_exec: the broker rejected the entry.",
+            )
+        if self.placement_unknown:
+            # Ambiguous, not failed: an error carrying a payload and no order
+            # id. Spec Q §12 invariant 8 — never guessed successful, never
+            # released. Whether an order actually exists is answered by
+            # `find_order_by_ref_id`, which is what `phantom_ref_ids` controls.
+            return BrokerOrderResult(
+                broker=self.name,
+                success=False,
+                error="fake_exec: the placement response was unknown.",
+                raw={"ref_id": ref_id, "http_status": 504},
+            )
+
         order_id = self._next_id("entry")
         price = self.fill_price or order.limit_price or 0.0
+        requested = float(order.quantity or 0)
         if self.fill_entry:
-            status, filled_qty, avg = "filled", float(order.quantity or 0), float(price)
+            filled_qty = float(int(requested * float(self.fill_ratio)))
+            status = "filled" if filled_qty >= requested else "partially_filled"
+            avg = float(price)
+            if filled_qty <= 0:
+                status, avg = "accepted", None
         else:
             status, filled_qty, avg = "accepted", 0.0, None
         self._orders[order_id] = _StoredOrder(
@@ -379,7 +481,7 @@ class FakeExecutionBroker:
             side=order.side,
             order_type=order.order_type,
             status=status,
-            quantity=float(order.quantity or 0),
+            quantity=requested,
             ref_id=ref_id,
             limit_price=order.limit_price,
             time_in_force=order.time_in_force,
@@ -398,6 +500,7 @@ class FakeExecutionBroker:
         )
 
     def place_stop(self, *, symbol, quantity, stop_price, ref_id, side="sell") -> BrokerOrderResult:
+        self._record("place_stop")
         if int(quantity) != float(quantity) or int(quantity) <= 0:
             return BrokerOrderResult(
                 broker=self.name,
@@ -406,6 +509,19 @@ class FakeExecutionBroker:
             )
         if not ref_id:
             return BrokerOrderResult(broker=self.name, success=False, error="fake_exec: stop needs a ref_id.")
+        existing = self._live_order_with_ref(ref_id, order_type="stop_market")
+        if existing is not None:
+            # Same idempotency rule as the entry. A stop that is still working
+            # is not re-placed, which is what makes the protection retry safe.
+            return BrokerOrderResult(
+                broker=self.name,
+                success=True,
+                order_id=existing.order_id,
+                stop_order_id=existing.order_id,
+                status=existing.status,
+                order_strategy="standalone_gtc_stop",
+                raw={"ref_id": ref_id, "deduplicated": True},
+            )
         self.placed_stops.append(
             {"symbol": symbol.upper(), "quantity": int(quantity), "stop_price": float(stop_price), "ref_id": ref_id}
         )
@@ -437,8 +553,7 @@ class FakeExecutionBroker:
         )
 
     def read_open_orders(self, *, symbol: str | None = None):
-        from execution.brokers.base import OpenOrder
-
+        self._record("read_open_orders")
         wanted = (symbol or "").strip().upper()
         out = []
         for order in self._orders.values():
@@ -463,6 +578,7 @@ class FakeExecutionBroker:
         return out
 
     def get_order_status(self, order_id: str) -> dict:
+        self._record("get_order_status")
         order = self._orders.get(order_id)
         if order is None:
             return {}
@@ -471,6 +587,7 @@ class FakeExecutionBroker:
             "status": order.status,
             "filled_qty": order.filled_quantity,
             "filled_avg_price": order.average_fill_price or 0.0,
+            "quantity": order.quantity,
             "symbol": order.symbol,
         }
 
@@ -491,8 +608,86 @@ class FakeExecutionBroker:
         return len(removed)
 
     def cancel_order(self, order_id: str):
+        self._record("cancel_order")
         order = self._orders.get(order_id)
         if order is None:
-            return {"success": False, "error": "unknown order"}
+            # Idempotent: cancelling an order that is already gone succeeds,
+            # because the caller's intent ("this must not be working") holds.
+            return {"success": True, "already_gone": True}
         order.status = "cancelled"
         return {"success": True}
+
+    # --- reconciliation reads (Spec Q §12, Phase 5) ------------------------
+
+    def find_order_by_ref_id(self, ref_id: str) -> dict | None:
+        """Resolve an ambiguous placement: does an order with this ref_id exist?
+
+        The one question that decides whether an unknown outcome releases its
+        reservation. ``phantom_ref_ids`` is the "yes, it did land" case; a
+        ref_id absent from both the live book and that tuple is the
+        verified-no-order case, which is terminal.
+        """
+        self._record("find_order_by_ref_id")
+        if not ref_id:
+            return None
+        order = self._live_order_with_ref(ref_id)
+        if order is not None:
+            return {
+                "id": order.order_id,
+                "ref_id": order.ref_id,
+                "symbol": order.symbol,
+                "state": order.status,
+                "quantity": order.quantity,
+                "filled_quantity": order.filled_quantity,
+            }
+        if ref_id in set(self.phantom_ref_ids):
+            return {"id": f"phantom-{ref_id}", "ref_id": ref_id, "state": "queued"}
+        return None
+
+    def get_positions_detail(self) -> list[dict]:
+        """Positions implied by what has filled here, for reconciliation tests."""
+        self._record("get_positions_detail")
+        rows: dict[str, dict] = {}
+        for order in self._orders.values():
+            if order.order_type == "stop_market" or (order.side or "").lower() != "buy":
+                continue
+            if not order.filled_quantity:
+                continue
+            row = rows.setdefault(
+                order.symbol,
+                {
+                    "ticker": order.symbol,
+                    "qty": 0.0,
+                    "entry_price": order.average_fill_price or 0.0,
+                    "side": "long",
+                },
+            )
+            row["qty"] += float(order.filled_quantity)
+        for row in rows.values():
+            row["market_value"] = row["qty"] * float(row["entry_price"] or 0.0)
+        return list(rows.values())
+
+    def fill_remainder(self, order_id: str) -> float:
+        """Fill the rest of a partially filled entry. Test seam.
+
+        Models the second half of a partial fill arriving after the first stop
+        was already placed, which is the case §12 requires protection to be
+        resized for, idempotently.
+        """
+        order = self._orders.get(order_id)
+        if order is None:
+            return 0.0
+        remainder = float(order.quantity) - float(order.filled_quantity)
+        if remainder <= 0:
+            return 0.0
+        order.filled_quantity = float(order.quantity)
+        order.status = "filled"
+        return remainder
+
+    def reject_order(self, order_id: str) -> bool:
+        """Move a working order to ``rejected``. Test seam for the timeout path."""
+        order = self._orders.get(order_id)
+        if order is None:
+            return False
+        order.status = "rejected"
+        return True

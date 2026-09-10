@@ -46,6 +46,17 @@ the one live capital runs.
 
 The broker and the page are **injected**, never imported by anything the
 workspace can see: ``main.py`` constructs the real ones and the tests pass fakes.
+
+**The observer seam (Phase 5).** Spec Q §12 runs the same lifecycle over
+``strategy_trades`` with a longer vocabulary — ``risk_reserved``,
+``partially_filled``, ``protection_pending``, ``reconciliation_required`` — and
+needs to know each hop as it happens, so that the row a restart resumes from is
+already correct. Rather than a second lifecycle beside this one, an optional
+``observer`` is notified at every state change here and
+``execution/strategy_lifecycle.py`` maps those events onto the §12 machine. The
+observer is **advisory**: it is called after the transaction that made the
+change, its exceptions are swallowed and logged, and with no observer injected
+this module behaves exactly as Phase 6 shipped it.
 """
 
 from __future__ import annotations
@@ -70,6 +81,25 @@ UNPROTECTED_FILL = "execution_unprotected_fill"
 PLACEMENT_UNKNOWN = "execution_placement_unknown"
 STOP_REPLACED = "execution_stop_replaced"
 STOP_REPLACE_FAILED = "execution_stop_replace_failed"
+
+#: Observer events, one per state change this service can make. Stable strings,
+#: for the same reason the page events are: something downstream matches on them.
+#: They are Phase 6 vocabulary, not Spec Q §12 vocabulary — the mapping between
+#: the two is the Phase 5 bridge's job, and keeping it there is what stops this
+#: module from having to know that Strategy Lab exists.
+ON_APPROVED = "approved"
+ON_REVIEW_REJECTED = "review_rejected"
+ON_SUBMITTED = "submitted"
+ON_PLACEMENT_FAILED = "placement_failed"
+ON_PLACEMENT_UNKNOWN = "placement_unknown"
+ON_ACCEPTED = "accepted"
+ON_PARTIALLY_FILLED = "partially_filled"
+ON_FILLED = "filled"
+ON_PROTECTION_PENDING = "protection_pending"
+ON_PROTECTED = "protected"
+ON_PROTECTION_FAILED = "protection_failed"
+ON_STOP_REPLACED = "stop_replaced"
+ON_RISK_REJECTED = "risk_rejected"
 
 
 class ExecutionRefused(Exception):
@@ -113,12 +143,47 @@ class ExecutionService:
     the import-graph assertion true with this file in the tree.
     """
 
-    def __init__(self, *, session_factory, broker, settings, pager=None, resolver=None):
+    def __init__(
+        self,
+        *,
+        session_factory,
+        broker,
+        settings,
+        pager=None,
+        resolver=None,
+        observer=None,
+    ):
         self.session_factory = session_factory
         self.broker = broker
         self.settings = settings
         self.pager = pager or log_pager
         self.resolver = resolver
+        #: Optional ``(event: str, proposal: Proposal, detail: dict) -> None``.
+        #: Phase 5 injects one to drive the Spec Q §12 machine over
+        #: ``strategy_trades``; with none injected nothing about this service
+        #: changes.
+        self.observer = observer
+
+    def _notify(self, event: str, proposal: Proposal, **detail) -> None:
+        """Tell the observer about a state change. Never unwind a good fill.
+
+        Called *after* the commit that made the change, so an observer reading
+        the row sees the state it is being told about. Its failure is logged and
+        swallowed for the same reason ``_journal_fill`` swallows its own: the
+        position is real either way, and an exception here would abandon a fill
+        mid-protection to report a bookkeeping problem.
+        """
+        if self.observer is None:
+            return
+        try:
+            self.observer(event, proposal, dict(detail))
+        except Exception as exc:  # pragma: no cover - observer-specific
+            log.error(
+                "execution_observer_failed",
+                event=event,
+                proposal_id=getattr(proposal, "id", None),
+                error=str(exc),
+            )
 
     # -- gating -------------------------------------------------------------
 
@@ -235,6 +300,12 @@ class ExecutionService:
                 proposal.approval_consumed_at = now
                 proposal.updated_at = now
                 session.commit()
+                self._notify(
+                    ON_RISK_REJECTED,
+                    proposal,
+                    reason_code=rejection.code,
+                    reason=rejection.reason,
+                )
                 raise ExecutionRefused(
                     "risk_recomputed_rejected",
                     f"the book changed since this was proposed: {rejection.reason} "
@@ -256,6 +327,13 @@ class ExecutionService:
             proposal.entry_ref_id = proposal.entry_ref_id or f"p6-entry-{proposal.proposal_uid}"
             proposal.updated_at = now
             session.commit()
+            self._notify(
+                ON_APPROVED,
+                proposal,
+                quantity=int(proposal.quantity),
+                notional=float(proposal.notional or 0.0),
+                entry_ref_id=proposal.entry_ref_id or "",
+            )
 
             return self._place_and_protect(session, proposal, fresh_size, now)
 
@@ -284,6 +362,9 @@ class ExecutionService:
             proposal.rejection_reason = " | ".join(review.errors) or "broker review rejected the entry."
             proposal.updated_at = utcnow_naive()
             session.commit()
+            self._notify(
+                ON_REVIEW_REJECTED, proposal, reason=proposal.rejection_reason
+            )
             raise ExecutionRefused("broker_review_rejected", proposal.rejection_reason)
 
         result = self.broker.place_order(review)
@@ -298,6 +379,9 @@ class ExecutionService:
             proposal.rejection_reason = result.error or "the broker did not accept the entry."
             proposal.updated_at = utcnow_naive()
             session.commit()
+            self._notify(
+                ON_PLACEMENT_FAILED, proposal, reason=proposal.rejection_reason
+            )
             raise ExecutionRefused("placement_failed", proposal.rejection_reason)
 
         proposal.entry_broker_order_id = result.order_id
@@ -305,12 +389,21 @@ class ExecutionService:
         proposal.submitted_at = utcnow_naive()
         proposal.updated_at = proposal.submitted_at
         session.commit()
+        self._notify(
+            ON_SUBMITTED,
+            proposal,
+            order_id=result.order_id,
+            entry_ref_id=proposal.entry_ref_id or "",
+        )
 
         fill = self._poll_fill(result)
         if not fill.get("filled"):
             # Submitted but not yet filled inside the poll window. Not a failure
             # and not terminal: the daily job picks it up. It is left `submitted`
-            # so nothing treats it as an open, unprotected position.
+            # so nothing treats it as an open, unprotected position. Spec Q §12
+            # calls the broker-acknowledged-but-unfilled state `accepted`, which
+            # is what the observer is told.
+            self._notify(ON_ACCEPTED, proposal, order_id=result.order_id)
             return ExecutionResult(
                 proposal_id=proposal.id,
                 status="submitted",
@@ -328,6 +421,22 @@ class ExecutionService:
         proposal.updated_at = proposal.filled_at
         session.commit()
 
+        # Spec Q §12 separates `partially_filled` from `filled`, and the
+        # difference is the quantity the protective stop has to cover. Phase 6
+        # already protects `filled_quantity` rather than the requested size, so
+        # this changes nothing about what is placed; it makes the distinction
+        # *visible* to the §12 machine, which needs it to resize protection when
+        # the remainder fills later.
+        requested = int(proposal.quantity or 0)
+        filled_qty = int(float(proposal.filled_quantity or 0))
+        self._notify(
+            ON_PARTIALLY_FILLED if 0 < filled_qty < requested else ON_FILLED,
+            proposal,
+            requested_quantity=requested,
+            filled_quantity=filled_qty,
+            average_fill_price=proposal.average_fill_price,
+        )
+
         return self._protect(session, proposal, now)
 
     def _protect(self, session, proposal: Proposal, now) -> ExecutionResult:
@@ -341,6 +450,13 @@ class ExecutionService:
         """
         proposal.stop_ref_id = proposal.stop_ref_id or f"p6-stop-{proposal.proposal_uid}"
         qty = int(proposal.filled_quantity or proposal.quantity)
+        self._notify(
+            ON_PROTECTION_PENDING,
+            proposal,
+            quantity=qty,
+            stop_price=proposal.stop,
+            stop_ref_id=proposal.stop_ref_id,
+        )
 
         place = self.broker.place_stop(
             symbol=proposal.ticker,
@@ -367,6 +483,14 @@ class ExecutionService:
             session.commit()
             self._journal_fill(session, proposal)
             session.commit()
+            self._notify(
+                ON_PROTECTED,
+                proposal,
+                quantity=qty,
+                stop_price=proposal.stop,
+                stop_ref_id=proposal.stop_ref_id,
+                stop_order_id=proposal.stop_broker_order_id or "",
+            )
             return ExecutionResult(
                 proposal_id=proposal.id,
                 status="protected",
@@ -399,6 +523,14 @@ class ExecutionService:
                     "proposal. The daily job will also retry the stop."
                 ),
             },
+        )
+        self._notify(
+            ON_PROTECTION_FAILED,
+            proposal,
+            quantity=qty,
+            stop_price=proposal.stop,
+            stop_ref_id=proposal.stop_ref_id,
+            reason=(place.error if not place.success else "stop not readable at the broker"),
         )
         return ExecutionResult(
             proposal_id=proposal.id,
@@ -457,6 +589,13 @@ class ExecutionService:
                             "recovery": "A missing protective stop was re-placed and verified.",
                         },
                     )
+                    self._notify(
+                        ON_STOP_REPLACED,
+                        proposal,
+                        quantity=qty,
+                        stop_ref_id=proposal.stop_ref_id or "",
+                        stop_order_id=proposal.stop_broker_order_id or "",
+                    )
                     actions.append({"proposal_id": proposal.id, "action": "replaced"})
                 else:
                     proposal.status = "unprotected"
@@ -475,6 +614,13 @@ class ExecutionService:
                                 "stop by hand and confirm it in get_equity_orders."
                             ),
                         },
+                    )
+                    self._notify(
+                        ON_PROTECTION_FAILED,
+                        proposal,
+                        quantity=qty,
+                        stop_ref_id=proposal.stop_ref_id or "",
+                        reason=place.error or "a re-placed stop could not be read back",
                     )
                     actions.append({"proposal_id": proposal.id, "action": "unprotected"})
         return actions
@@ -581,6 +727,12 @@ class ExecutionService:
                     f"ref_id {proposal.entry_ref_id!r}."
                 ),
             },
+        )
+        self._notify(
+            ON_PLACEMENT_UNKNOWN,
+            proposal,
+            entry_ref_id=proposal.entry_ref_id or "",
+            reason=proposal.rejection_reason,
         )
         return ExecutionResult(
             proposal_id=proposal.id,
