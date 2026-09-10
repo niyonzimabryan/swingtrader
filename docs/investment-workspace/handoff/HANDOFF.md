@@ -6,55 +6,47 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-10 08:00 UTC, by the orchestrating session
+**Last updated:** 2026-09-10 08:22 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 
 ## 1. Where main is
 
 | | |
 |---|---|
-| `main` head | `7eab7da` (#66) |
+| `main` head | `ee5bb46` (#68) |
 | Alembic head | `0011_comparable_subject_ticker` (single) |
-| Tests | ~1,600 on SQLite (3 Postgres-only skips); CI adds 8 with `TEST_POSTGRES_URL` |
+| Tests | ~1,700 on SQLite (3 Postgres-only skips); CI: 4 shards per engine, ~7 min |
 | CI | `.github/workflows/ci.yml` — sqlite + postgres matrix, Python **3.12** |
 
 Merged, in order: Phase 0a/0b, 3a, 3b-core, 3p, 1, 2, 4, P, Strategy Lab 1 (#54),
 ENV_SETUP (#52), rulings (#55), **Phase 3c (#56), Phase 6 (#57), Strategy Lab 2
-(#58), rulings (#59), handoff (#62), Strategy Lab 3 (#60), Sharadar reference (#63), evidenced-budget closure (#61), Strategy Lab 4 (#64), orchestrated-build skill (#67), OWNER_SETUP (#69), mirror-test fix (#71), CI sharding (#66 — every shard ≤ 6.5 min)**.
+(#58), rulings (#59), handoff (#62), Strategy Lab 3 (#60), Sharadar reference (#63), evidenced-budget closure (#61), Strategy Lab 4 (#64), orchestrated-build skill (#67), OWNER_SETUP (#69), mirror-test fix (#71), CI sharding (#66), Sharadar direct-API port (#70), Strategy Lab 5 (#65), service-role guard (#68)**.
 
 ## 2. What is in flight
 
 | PR / branch | What | Session | State |
 |---|---|---|---|
-| #65 `claude/strategy-lab-5-live-closure` | Strategy Lab 5: §12 execution state machine on Phase 6's `ExecutionService`; five Phase 6 defects closed; no flag, no migration | `session_01Gc5Z2SZAoLiUnssSjHLYrM` | open; local 3.12 green (1,662 tests) apart from the mirror test #71 fixed; main re-merged, sharded CI running |
-| #70 `claude/sharadar-direct-api` | price adapter on `api.sharadar.com` (observed payload shapes recorded as fixtures), bulk `years=` backfill | `session_01XjuLkVf7G2vuJkFksJira3` (Sonnet) | open; local 3.12 green (1,565); main re-merged, CI running |
-| #68 `claude/service-role-guard` | `main.py` hands off to the workspace server when `SERVICE_ROLE=workspace` | orchestrator | open; main re-merged, CI running |
+| `claude/strategy-lab-6-tournament` | Strategy Lab 6: paper tournament through PR 5's entry point, audited promotion, `STRATEGY_LAB_PAPER_ENABLED`/`_LIVE_ENABLED`, E2E release proof, rollout checklist | `session_01KjN1qSEpxSgJxpHmLSgUqV` (Opus) | building since 08:20Z |
 
 ## 3. What is left, in order
 
-1. Merge #65 (SL5), #70 (Sharadar) and #68 on green CI.
-4. **Spawn Strategy Lab 6** once SL4 and SL5 are merged, with
-   `briefs/strategy-lab-6.md` verbatim (branch `claude/strategy-lab-6-tournament`).
-5. Merge SL6. Then a docs PR: rulings from SL3–SL6 into Spec Q (add a "Rulings
-   log" section at the end of
-   `specs/investment-workspace/strategy-lab/strategy-lab-architecture.md`, same
-   shape as Spec N §12), and refresh `docs/ENV_SETUP.md` §10 (Strategy Lab
-   flags) and the order-of-operations list.
-6. **Port `data/prices/sharadar.py` to the direct API** (`docs/vendors/sharadar.md`):
-   base `https://api.sharadar.com/v1.0/data/{table}`, `x-api-key` header,
-   `ticker`/`from`/`to`/`fields`/`limit`/`offset`, tables `stocks` (SEP),
-   `actions`, `tickers`, `sp500`; keep the fixture path and every existing test;
-   record the real JSON shape from the owner's laptop
-   (`curl "https://api.sharadar.com/v1.0/data/stocks?api_key=test-api-key&ticker=AAPL&limit=3&format=json"`,
-   same for `actions` and `tickers`) into `tests/fixtures/sharadar_direct/`
-   before writing the parser — the build sandbox cannot reach sharadar.com.
-   Small enough for a Sonnet session.
-7. Write the owner summary (§7 below is the skeleton).
+1. Merge SL6 when it opens (integrate per §4; it may add a migration off
+   `0011_comparable_subject_ticker`).
+2. Docs PR: Spec Q rulings log (a "Rulings log" section at the end of
+   `specs/investment-workspace/strategy-lab/strategy-lab-architecture.md`,
+   same shape as Spec N §12) covering SL3–SL6; refresh `docs/ENV_SETUP.md`
+   §10 and the order-of-operations list; note in Spec N §12 the Sharadar port's
+   mapping decisions if #70 did not already.
+3. The owner summary (§7 below is the skeleton).
+4. Owner-side, in `docs/OWNER_SETUP.md` order: link the repo to the Railway
+   `workspace` service (safe now that #68 is on `main`), the Postgres cutover,
+   workspace variables + token, Sharadar backfill, paper trade submission.
 
-Each spawn: Claude Code cloud session, model `claude-opus-5`, source
-`niyonzimabryan/swingtrader` @ `main`, outcome branch as named in the brief.
-Codex/Cursor: open the repo at `main`, paste the brief as the first message,
-work on the named branch.
+Known follow-ups not blocking a usable system: rename `Settings.nasdaq_data_link_api_key`
+(the adapter reads `SHARADAR_API_KEY` first); `memos` has no run id (PR 4 pairs
+memo to ledger row by time); CSCV/PBO in `comparables/inference.py`; the
+`analog_ranker` post-event feature; `docs/robinhood/tool_schemas.json` still
+uncommitted (owner).
 
 ## 4. How to integrate a PR (the recipe that has worked ten times)
 
