@@ -384,3 +384,48 @@ where it already sits.
 - The 30-day unattended refresh log has started on Railway (the schema dump is done:
   `docs/robinhood/tool_schemas.json`).
 - The import-graph test proves no agent path to a broker placement.
+
+## 10. Rulings log (post-build)
+
+Ratified 2026-09-10 from the Phase 6 build (PR #57):
+
+- **Two import-graph facts, asserted statically.** The workspace, `propose_order`
+  included, imports no `execution/`, `bot/`, `orchestrator/` or `agents/` and
+  names no placement call; `propose_order` calls `portfolio.proposals`, which
+  lives on the ledger side. `execution/lifecycle.py::on_approval` is reachable
+  from exactly one file, `bot/handlers/proposals.py`, the out-of-band channel.
+  No MCP tool and no REST route can trigger it.
+- **`propose_order` is registered only behind `PHASE6_EXECUTION_ENABLED`** and
+  refuses a `quantity` argument. A `risk_rejected` proposal is returned with its
+  reason, never dropped. The approval card is handed to an *injected* channel;
+  the workspace process posts to Telegram over HTTPS without importing `bot/`.
+- **Approval is a signed, single-use, expiring, owner-bound reference.** On
+  approval the execution service re-runs every risk check from fresh state,
+  checks the kill switch and both live flags, reviews, places the entry, polls
+  the fill, places the `gtc` `stop_market`, and **reads the stop back**; a fill
+  whose stop is not read back within the window is `unprotected`, pages, and
+  blocks further entries. A daily job re-places a vanished stop.
+- **The kill switch is a persistent database row** (`execution_kill_switch`),
+  survives restart, and is toggled only by the owner's `/live_kill on|off`.
+- **Live needs all of** `PHASE6_EXECUTION_ENABLED=true`, `ALLOW_LIVE_TRADING=true`,
+  `EXECUTION_MODE=live`, a recorded owner approval, and the kill switch off, and
+  only in the Agentic account. Absence or invalidity of any one never means live.
+  Paper routes to Alpaca paper through the same lifecycle.
+- **The evidence gate is `advisory` by default** (`EVIDENCE_GATE_MODE`); `strict`
+  restores zero-sizing on `LB ≤ 0`. Sizing is whole-share under the two budgets
+  and every cap over the *combined* book; a size rounding to zero is refused.
+- **Everything touching Robinhood placement was exercised against
+  `FakeExecutionBroker` and recorded-shape fixtures only.** The request shape
+  (`stop_market`, `gtc`, `regular_hours`, whole shares, `ref_id`) is asserted
+  against the real builder; no assertion has touched the live server. The
+  §5.1 live probe (`docs/EXECUTION_LIFECYCLE.md` §6) is an owner action; until
+  it passes, `EXECUTION_MODE=live` stays off.
+- **Evidenced-budget gap at merge.** A real Spec N answer carries the policy net
+  point estimate but no lower-90% interval and no ticker, so every real
+  citation is labelled `discretionary` with `citation_no_policy_lower_bound`.
+  This fails toward the smaller budget. The closure is on
+  `claude/evidenced-budget-closure` (Spec N §12, last entry).
+- **Migration graph.** `0009_execution_lifecycle` branched from
+  `0008_merge_strategy_lab`; `0010_merge_execution_lifecycle` joins it to the
+  comparables head and is the current single head.
+
