@@ -72,20 +72,34 @@ def an_experiment() -> ExperimentSpec:
 
 
 class AcceptanceTestCase(unittest.TestCase):
-    """Registers the roster once and drives it end to end."""
+    """Registers the roster once per class and drives it end to end.
 
-    def setUp(self):
-        self.db = TestDatabase("strategy_lab_scoreboard")
-        self.addCleanup(self.db.cleanup)
+    The fixture is built in ``setUpClass``, not ``setUp``. Driving the whole
+    pipeline — four arms, three snapshots, a 55-name universe, eight runs and
+    the shadow fills — costs about two seconds on SQLite and considerably more
+    on Postgres, and every assertion below except one reads the *result* of that
+    run rather than changing it. Rebuilding it per test method would multiply
+    the cost by the number of tests for no extra coverage, and this repository's
+    CI already runs the suite twice, once per engine.
+
+    The one test that writes, ``test_a_second_identical_pass_writes_no_new_rows``,
+    re-runs the pipeline deliberately — and its whole claim is that doing so
+    writes nothing, so it cannot disturb a later test in the class.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = TestDatabase("strategy_lab_scoreboard")
+        cls.addClassCleanup(cls.db.cleanup)
         from database.db import get_session, init_db
 
-        init_db(self.db.url)
-        self._ctx = get_session()
-        self.session = self._ctx.__enter__()
-        self.addCleanup(lambda: self._ctx.__exit__(None, None, None))
-        self.versions = strategies.build_versions()
-        self.registered = runner.register_experiment(
-            self.session,
+        init_db(cls.db.url)
+        cls._ctx = get_session()
+        cls.session = cls._ctx.__enter__()
+        cls.addClassCleanup(lambda: cls._ctx.__exit__(None, None, None))
+        cls.versions = strategies.build_versions()
+        cls.registered = runner.register_experiment(
+            cls.session,
             an_experiment(),
             [
                 runner.ArmPlan(slug, ExecutionMode.SHADOW, risk_budget=0.01)
@@ -95,8 +109,8 @@ class AcceptanceTestCase(unittest.TestCase):
                 )
             ],
         )
-        runner.start_experiment(self.session, EXPERIMENT)
-        self.reports = self._run_every_arm()
+        runner.start_experiment(cls.session, EXPERIMENT)
+        cls.reports = cls._run_every_arm()
 
     # -- the fixture ------------------------------------------------------- #
 
@@ -128,27 +142,28 @@ class AcceptanceTestCase(unittest.TestCase):
         ))
         return universe, earnings, composite
 
-    def _run_every_arm(self):
-        universe, earnings, composite = self._snapshots()
-        self.universe, self.earnings, self.composite = universe, earnings, composite
+    @classmethod
+    def _run_every_arm(cls):
+        universe, earnings, composite = cls._snapshots()
+        cls.universe, cls.earnings, cls.composite = universe, earnings, composite
         arms = {
-            "momentum_v1": (universe, self.versions["momentum_v1"]),
-            "short_term_reversal_v1": (universe, self.versions["short_term_reversal_v1"]),
-            "earnings_drift_v1": (earnings, self.versions["earnings_drift_v1"]),
+            "momentum_v1": (universe, cls.versions["momentum_v1"]),
+            "short_term_reversal_v1": (universe, cls.versions["short_term_reversal_v1"]),
+            "earnings_drift_v1": (earnings, cls.versions["earnings_drift_v1"]),
             "swingtrader_composite_v1": (
-                composite, self.versions["swingtrader_composite_v1"]
+                composite, cls.versions["swingtrader_composite_v1"]
             ),
         }
         reports = {}
         for slug, (snapshot, version) in arms.items():
-            arm = self.registered.arm(slug)
+            arm = cls.registered.arm(slug)
             # Every replayable arm is asked for a historical replay first; the
             # ones that cannot support one say so and are shadowed forward
             # instead, which is the split Spec Q §10 requires.
             historical = runner.run_snapshot(
-                self.session, snapshot, [arm.arm_id], historical=True
+                cls.session, snapshot, [arm.arm_id], historical=True
             )
-            forward = runner.run_snapshot(self.session, snapshot, [arm.arm_id])
+            forward = runner.run_snapshot(cls.session, snapshot, [arm.arm_id])
             reports[slug] = (historical, forward)
 
             run = forward.arm_runs[0]
@@ -164,14 +179,14 @@ class AcceptanceTestCase(unittest.TestCase):
                 for decision in run.decisions
             }
             shadow.execute_arm(
-                self.session, arm.arm_id, version, snapshot, longs, bars,
+                cls.session, arm.arm_id, version, snapshot, longs, bars,
                 context=shadow.PortfolioContext(
                     as_of_utc=CUTOFF, equity=100_000.0,
                     max_open_positions=20, max_daily_notional=500_000.0,
                 ),
                 costs=COSTS,
             )
-        self.session.commit()
+        cls.session.commit()
         return reports
 
     # -- helpers ----------------------------------------------------------- #
