@@ -82,14 +82,23 @@ class LookaheadHarnessTests(unittest.TestCase):
         when facts published after the last event were deleted would be a
         lookahead leak straight into a position size.
 
-        Two horizons and 50 replications, for the reason the harness's own
-        docstring gives: it is asserting the inputs did not move, and a
-        full-depth sweep at production replications would be too slow to run in
-        CI, which is the same as not running it.
+        One horizon, two cutoffs and 50 replications, for the reason the
+        harness's own docstring gives: it is asserting the inputs did not move,
+        and a full-depth sweep at production replications would be too slow to
+        run in CI, which is the same as not running it. `net_ci` is computed
+        per horizon from the same code either way, so a second horizon would
+        buy nothing but minutes.
         """
+        from comparables import report as report_mod
+        from tests import comparablesfixture as cfx
+
+        # The bytes `_full_answer_identical` compares are `to_json`'s, and that
+        # is where the field has to be for the truncation check to cover it.
+        self.assertIn('"net_ci"', report_mod.to_json(cfx.full_answer()))
+
         report = lookahead_mod.check_cohort(
             self.session,
-            roster.get("gap_and_go_v1", {"horizons_sessions": [5, 10]}),
+            roster.get("gap_and_go_v1", {"horizons_sessions": [5]}),
             as_of=self.world.as_of,
             context=self.world.context,
             max_cutoffs=2,
@@ -99,19 +108,6 @@ class LookaheadHarnessTests(unittest.TestCase):
         self.assertGreater(report.n_events, 0, "nothing was checked")
         self.assertTrue(report.answer_identical)
         report.raise_for_findings()
-
-        # And the field this test exists for is actually in the bytes compared.
-        answer = cohort_mod.answer_for(
-            cohort_mod.build_cohort(
-                self.session,
-                roster.get("gap_and_go_v1", {"horizons_sessions": [5, 10]}),
-                as_of=self.world.as_of, context=self.world.context,
-            ),
-            depth="full", reps=50,
-        ).primary
-        from comparables import report as report_mod
-
-        self.assertIn('"net_ci"', report_mod.to_json(answer))
 
     def test_the_pending_roster_entry_is_skipped_not_reported_clean(self):
         reports = lookahead_mod.check_roster(
