@@ -6,33 +6,36 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-10 11:25 UTC, by the orchestrating session
+**Last updated:** 2026-09-10 11:30 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 
 ## 1. Where main is
 
 | | |
 |---|---|
-| `main` head | `816e499` (#73) — #74 SL6 merging |
+| `main` head | #74 (Strategy Lab 6) merged on top of `816e499`; this docs PR next |
 | Alembic head | `0011_comparable_subject_ticker` (single) |
 | Tests | 1,793 on SQLite (3 Postgres-only skips); CI: 4 shards per engine, ~8 min |
 | CI | `.github/workflows/ci.yml` — sqlite + postgres matrix, Python **3.12** |
 
 Merged, in order: Phase 0a/0b, 3a, 3b-core, 3p, 1, 2, 4, P, Strategy Lab 1 (#54),
 ENV_SETUP (#52), rulings (#55), **Phase 3c (#56), Phase 6 (#57), Strategy Lab 2
-(#58), rulings (#59), handoff (#62), Strategy Lab 3 (#60), Sharadar reference (#63), evidenced-budget closure (#61), Strategy Lab 4 (#64), orchestrated-build skill (#67), OWNER_SETUP (#69), mirror-test fix (#71), CI sharding (#66), Sharadar direct-API port (#70), Strategy Lab 5 (#65), service-role guard (#68)**.
+(#58), rulings (#59), handoff (#62), Strategy Lab 3 (#60), Sharadar reference (#63), evidenced-budget closure (#61), Strategy Lab 4 (#64), orchestrated-build skill (#67), OWNER_SETUP (#69), mirror-test fix (#71), CI sharding (#66), Sharadar direct-API port (#70), Strategy Lab 5 (#65), service-role guard (#68), rulings PRs 2–5 (#73), Strategy Lab 6 (#74)**.
 
 ## 2. What is in flight
 
 | PR / branch | What | Session | State |
 |---|---|---|---|
-| #74 `claude/strategy-lab-6-tournament` | Strategy Lab 6: paper dispatcher on PR 5's entry point, audited promotion, two signed callbacks on one HMAC, the three deferred jobs scheduled, E2E + global-live-mode safety proof; one P0 and two P1s found by its own review and fixed | `session_01KjN1qSEpxSgJxpHmLSgUqV` | CI green; merging |
+| `claude/spec-q-rulings-pr6` | Spec Q §21 rulings for PR 6; this handoff refresh | orchestrator | opening |
+
+No worker session is building. Every Strategy Lab and Investment Workspace
+build PR is on `main`.
 
 ## 3. What is left, in order
 
-1. Docs PR: append PR 6's rulings to Spec Q §21.
-2. The owner summary (§7 below is the skeleton).
-3. Owner-side, in `docs/OWNER_SETUP.md` order: link the repo to the Railway
+1. The owner summary (§7 below is the skeleton; delivered in chat by the
+   orchestrator once this PR merges).
+2. Owner-side, in `docs/OWNER_SETUP.md` order: link the repo to the Railway
    `workspace` service (safe now that #68 is on `main`), the Postgres cutover,
    workspace variables + token, Sharadar backfill, paper trade submission.
 
@@ -131,3 +134,6 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   and `--bulk years=5|10|full` on `scripts/price_backfill.py` for the 10-year
   Prices tier. `PRICE_PLANE_SOURCE=sharadar` no longer needs the port; it
   needs `SHARADAR_API_KEY` (`docs/ENV_SETUP.md` §6).
+- 2026-09-10 11:30Z — #74 (Strategy Lab 6) merged; the build queue is empty.
+  PR 6's rulings appended to Spec Q §21. What remains is owner-side
+  (`docs/OWNER_SETUP.md`), plus the non-blocking follow-ups in §3.
