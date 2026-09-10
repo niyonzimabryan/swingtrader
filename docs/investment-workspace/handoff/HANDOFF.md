@@ -6,35 +6,36 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-10 06:40 UTC, by the orchestrating session
+**Last updated:** 2026-09-10 07:15 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 
 ## 1. Where main is
 
 | | |
 |---|---|
-| `main` head | `6ea211d` (#61) |
+| `main` head | `703a800` (#67) |
 | Alembic head | `0011_comparable_subject_ticker` (single) |
-| Tests | ~1,620 on SQLite (3 Postgres-only skips); CI adds 8 with `TEST_POSTGRES_URL` |
+| Tests | ~1,600 on SQLite (3 Postgres-only skips); CI adds 8 with `TEST_POSTGRES_URL` |
 | CI | `.github/workflows/ci.yml` — sqlite + postgres matrix, Python **3.12** |
 
 Merged, in order: Phase 0a/0b, 3a, 3b-core, 3p, 1, 2, 4, P, Strategy Lab 1 (#54),
 ENV_SETUP (#52), rulings (#55), **Phase 3c (#56), Phase 6 (#57), Strategy Lab 2
-(#58), rulings (#59), handoff (#62), Strategy Lab 3 (#60), Sharadar reference (#63), evidenced-budget closure (#61)**.
+(#58), rulings (#59), handoff (#62), Strategy Lab 3 (#60), Sharadar reference (#63), evidenced-budget closure (#61), Strategy Lab 4 (#64), orchestrated-build skill (#67)**.
 
 ## 2. What is in flight
 
 | PR / branch | What | Session | State |
 |---|---|---|---|
-| #64 `claude/strategy-lab-4-integration` | Strategy Lab 4: shadow hook, 21 flags (all off), owner-only Telegram, weekly scoreboard; fixed two PR 2 adapter defects | `session_018v2CF9dZuYupY7w6iXq3PV` | open; SQLite CI green, Postgres running; main merged in cleanly |
-| `claude/strategy-lab-5-live-closure` | Strategy Lab 5: §12 execution state machine on Phase 6's `ExecutionService` | `session_01Gc5Z2SZAoLiUnssSjHLYrM` (Opus) | suite running, PR imminent |
-| `claude/ci-test-speed` | shard the CI matrix, reuse schemas and MCP servers | `session_01RN9ppgNtXgCHcMaKL1f4Td` (Sonnet) | validating, PR imminent |
+| #65 `claude/strategy-lab-5-live-closure` | Strategy Lab 5: §12 execution state machine on Phase 6's `ExecutionService`; five Phase 6 defects closed; no flag, no migration | `session_01Gc5Z2SZAoLiUnssSjHLYrM` | open; local 3.12 green pre-SL4; main (SL4) merged in with two doc unions; validating again |
+| #68 `claude/service-role-guard` | `main.py` hands off to the workspace server when `SERVICE_ROLE=workspace` (Railway applies `railway.toml`'s start command to every service) | orchestrator | open; CI running |
+| `claude/ci-test-speed` | shard the CI matrix, reuse schemas and MCP servers | `session_01RN9ppgNtXgCHcMaKL1f4Td` (Sonnet) | measuring Postgres timings, PR imminent |
+| `claude/sharadar-direct-api` | port the price adapter to `api.sharadar.com`, bulk backfill | `session_01XjuLkVf7G2vuJkFksJira3` (Sonnet) | building since 06:49Z |
 
 ## 3. What is left, in order
 
-1. Merge #64 (SL4) on green Postgres CI, then SL5 and the CI-speed PR when
-   they open (SL5 may touch `bot/`; the CI-speed PR touches `ci.yml` and test
-   fixtures — union at merge; SL4's `timeout-minutes: 40` must survive).
+1. Merge #65 (SL5) and #68 on green CI; then the CI-speed and Sharadar PRs
+   when they open (CI-speed touches `ci.yml` and test fixtures — union at
+   merge; the `timeout-minutes: 40` must survive unless shards are measured).
 4. **Spawn Strategy Lab 6** once SL4 and SL5 are merged, with
    `briefs/strategy-lab-6.md` verbatim (branch `claude/strategy-lab-6-tournament`).
 5. Merge SL6. Then a docs PR: rulings from SL3–SL6 into Spec Q (add a "Rulings
