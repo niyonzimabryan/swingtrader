@@ -164,6 +164,10 @@ class WeeklyReport:
         from tracking.shadow_ledger import calibration_report
         calibration = calibration_report()
 
+        # Strategy Lab scorecard (Spec Q §13, §15 PR 4). Off by default and
+        # isolated: a Strategy Lab failure costs the section, never the report.
+        strategy_lab = self._strategy_lab_scoreboard()
+
         return {
             "week_start": week_start.strftime("%b %d"),
             "week_end": week_end.strftime("%b %d, %Y"),
@@ -186,7 +190,26 @@ class WeeklyReport:
             "profitable_positions": sum(1 for p in position_data if p["pnl_pct"] > 0),
             "calibration": calibration,
             "cohort_pnl": cohort_pnl,
+            "strategy_lab": strategy_lab,
         }
+
+    def _strategy_lab_scoreboard(self):
+        """The Strategy Lab scorecard payload, or ``None``.
+
+        Every number in it is computed by `scripts/strategy_lab_scoreboard.py`
+        over `strategy_lab/metrics.py` and `comparables/inference.py`. This
+        report renders those values and computes none of its own — the Sonnet
+        narrative below never sees them and never produces one (AGENTS.md §1.2).
+        """
+        if not bool(getattr(self.settings, "strategy_lab_enabled", False)):
+            return None
+        try:
+            from orchestrator.strategy_lab_shadow import scoreboard
+
+            return scoreboard(self.settings)
+        except Exception as e:
+            log.error("weekly_strategy_lab_failed", error=str(e)[:300])
+            return None
 
     def _generate_narrative(self, data: dict) -> str:
         """Use Sonnet to generate 'What Worked' / 'What Didn't' narrative."""
@@ -301,6 +324,17 @@ Generate the WHAT WORKED and WHAT DIDN'T sections."""
                     text += (
                         f"  {escape_md(dirn)}: n\\=`{s['count']}` `{s['win_rate']:.0f}%` `{med_str}`\n"
                     )
+
+        # Strategy Lab scorecard — last, after the existing sections, so the
+        # report Bryan already reads is unchanged above this line. The renderer
+        # is shared with `/strategy` and only formats what the scoreboard
+        # computed (Spec Q §13's weekly order: challenger league table, then
+        # correlation/overlap, then the informational recommendations).
+        lab = data.get("strategy_lab")
+        if lab:
+            from bot.handlers.strategy_lab import scoreboard_lines
+
+            text += "\n" + "\n".join(scoreboard_lines(lab)) + "\n"
 
         # I2: auto-cohort realized P&L (paper), once trades close.
         cohort_pnl = data.get("cohort_pnl") or {}

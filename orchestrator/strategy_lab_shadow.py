@@ -344,12 +344,23 @@ def ensure_experiment(session, settings):
     from strategy_lab.domain import ExperimentStatus
 
     versions = strategies.build_versions()
+    spec = experiment_spec(settings)
+    # Re-assert the status the row is already in rather than the status a first
+    # registration would take. `registered -> registered` is a no-op and
+    # `running -> running` is a no-op; `running -> registered` is not a legal
+    # transition at all, and asking for it would make the second scan of the day
+    # fail registration on an experiment the first scan started.
+    existing = registry.get_experiment(session, spec.name)
+    status = (
+        ExperimentStatus(existing.status)
+        if existing is not None
+        else ExperimentStatus.REGISTERED
+    )
     registered = runner.register_experiment(
-        session, experiment_spec(settings), arm_plans(settings), versions=versions
+        session, spec, arm_plans(settings), versions=versions, status=status
     )
     runner.promote_versions_to_shadow(session, versions)
-    row = registry.require_experiment(session, registered.name)
-    if ExperimentStatus(row.status) is ExperimentStatus.REGISTERED:
+    if ExperimentStatus(registered.status) is ExperimentStatus.REGISTERED:
         runner.start_experiment(session, registered.name)
     return registered
 
