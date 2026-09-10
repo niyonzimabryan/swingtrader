@@ -972,3 +972,56 @@ class ResumeWalksEveryLegalHopTests(ExecutionTestCase):
         self.service.resume(now=self.now)
         self.assertEqual(self.status(card.execution_id), ExecutionState.EXPIRED.value)
         self.assertEqual(self.reserved(), 0.0)
+
+
+class UnexpectedPositionTests(ExecutionTestCase):
+    """The broker holds shares this system did not think it had filled.
+
+    `known_tickers` narrows the check to names a non-terminal execution is
+    responsible for — without it, every unrelated holding in a shared account
+    would read as a mismatch, and a reconciliation that cries wolf gets muted.
+    The case that survives the narrowing is the one worth catching: a ticker
+    whose execution says "not filled" while the broker says otherwise.
+    """
+
+    def test_a_position_the_execution_has_not_filled_is_a_mismatch(self):
+        self.build(broker=FakeExecutionBroker(fill_price=100.0, fill_entry=False))
+        card = self.propose()
+        self.approve(card)
+        self.assertEqual(self.status(card.execution_id), ExecutionState.ACCEPTED.value)
+
+        # The broker reports a position for it anyway.
+        self.broker.get_positions_detail = lambda: [
+            {"ticker": "AMD", "qty": 50.0, "entry_price": 100.0, "side": "long"}
+        ]
+        report = self.service.reconcile(mode=self.mode, now=self.now)
+        self.assertEqual([f.kind for f in report.mismatches], ["unexpected_at_broker"])
+        self.assertIn("broker_reconciliation_mismatch", self.pager.events())
+
+    def test_an_unrelated_holding_is_not_a_mismatch(self):
+        """The control: reconciliation that cries wolf gets muted."""
+        self.build()
+        card = self.propose()
+        self.approve(card)
+        existing = self.broker.get_positions_detail()
+        self.broker.get_positions_detail = lambda: existing + [
+            {"ticker": "KO", "qty": 300.0, "entry_price": 60.0, "side": "long"}
+        ]
+        report = self.service.reconcile(mode=self.mode, now=self.now)
+        self.assertTrue(report.ok, report.as_dict())
+        self.assertEqual(self.status(card.execution_id), ExecutionState.PROTECTED.value)
+
+    def test_an_execution_whose_ticker_cannot_be_resolved_fails_closed(self):
+        """"I could not check" is reported as `unsupported`, never as `matched`."""
+        from tracking import position_reconciliation as recon
+
+        self.build()
+        card = self.propose()
+        self.approve(card)
+        with get_session() as session:
+            trade = registry.execution_row(session, card.execution_id)
+            trade.decision_id = 99999  # a decision row that does not exist
+            report = recon.reconcile_executions(session, positions=[], mode=self.mode.value)
+            session.rollback()
+        self.assertEqual([f.kind for f in report.findings], [recon.UNSUPPORTED])
+        self.assertFalse(report.ok)

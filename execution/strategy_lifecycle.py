@@ -1109,7 +1109,6 @@ class StrategyExecutionService:
         now = now or utcnow_naive()
         mode = ExecutionMode(mode)
         with self.session_factory() as session:
-            arm = registry.active_live_arm(session) if mode is ExecutionMode.LIVE else None
             venue = slx.MODE_VENUES.get(mode)
             adapter = self.adapters.get(venue) if venue else None
             if adapter is None:
@@ -1119,7 +1118,6 @@ class StrategyExecutionService:
                     f"{mode.value} executions cannot be reconciled. A flow that "
                     "cannot be checked fails closed rather than passing.",
                 )
-            del arm
             positions = adapter.get_positions_detail()
             report = recon.reconcile_executions(
                 session,
