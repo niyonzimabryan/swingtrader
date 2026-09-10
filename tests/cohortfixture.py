@@ -473,8 +473,105 @@ def seed_share_counts(session, *, sessions: list[date]) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# The whole world
+# The whole world, split for cheap per-test reseeding
 # --------------------------------------------------------------------------- #
+#
+# `seed_prices` writes on the order of 13,000 rows and dominates `seed_world`'s
+# cost (~90% of it); nothing in this file's test suites ever mutates the
+# securities or bars it writes, so `seed_base_world` seeds prices and share
+# counts once and never again. Filings stay in the cheap, per-test bucket
+# despite being seeded alongside prices in `seed_world`, because
+# `test_sue_from_xbrl_only` (tests/test_comparables_cohort.py) deletes every
+# `eps_diluted` observation to test the "no XBRL EPS" path — a base seeded
+# once would stay deleted for every test after it. The universe and the price
+# snapshot are the other two things a test rewrites (Spec N §10's "without
+# universe"/"without audit" cases). `seed_mutable_world` (re)seeds all three
+# every test, which also *undoes* whatever the previous test did to them —
+# `replace_universe`/`record_snapshot`/`write_observations` are keyed by slug
+# or by (source, entity, fact_type, valid_at, accession), so reseeding is
+# equivalent to starting over, not a merge.
+#
+# A test module that seeds the base once per process (`setUpModule`) and calls
+# `seed_mutable_world` at the top of every test gets exactly the isolation
+# `seed_world` per test gave, at a fraction of the cost. `seed_world` itself is
+# unchanged and still builds everything fresh in one call, for suites that
+# only seed a world once (or need the with_* flags on the whole world, though
+# nothing in this repo currently calls it with a non-default flag).
+
+
+def seed_base_world(
+    session, *, start: date = date(2022, 1, 3), n_sessions: int = N_SESSIONS,
+) -> dict:
+    """Seed the expensive, never-mutated part of the world: prices and shares.
+
+    Returns the raw materials `seed_mutable_world` needs to assemble a full
+    `World` around freshly (re)seeded filings, universe, and snapshot.
+    """
+    sessions = business_days(start, n_sessions)
+    delisting_date = sessions[int(n_sessions * 0.72)]
+    merger_date = sessions[int(n_sessions * 0.80)]
+
+    _paths_unused, gap_sessions = seed_prices(
+        session, sessions=sessions, delisting_date=delisting_date,
+        merger_date=merger_date,
+    )
+    seed_share_counts(session, sessions=sessions)
+
+    return {
+        "sessions": tuple(sessions),
+        "gap_sessions": tuple(gap_sessions),
+        "delisting_date": delisting_date,
+        "merger_date": merger_date,
+        "cik_by_ticker": tuple((ticker_for(i), cik_for(i)) for i in range(N_SECURITIES)),
+    }
+
+
+def seed_mutable_world(
+    session,
+    base: dict,
+    *,
+    with_universe: bool = True,
+    with_audit: bool = True,
+    audit_synthesised: bool = True,
+    with_filings: bool = True,
+    snapshot_slug: str = SNAPSHOT_SLUG,
+) -> World:
+    """(Re)seed the filings, the universe, and the snapshot; assemble a `World`.
+
+    Call this at the top of every test that shares a `seed_base_world` base: it
+    rebuilds `liquid_us_equity_v1`, the named snapshot, and every filings
+    observation from scratch, which is a clean slate regardless of what the
+    previous test deleted or replaced. Filings are cheap to reseed
+    (`write_observations` is idempotent by payload hash, so re-seeding the same
+    facts a previous test did not touch is close to a no-op).
+    """
+    sessions = list(base["sessions"])
+    if with_universe:
+        seed_universe(session, sessions)
+    seed_snapshot(
+        session, slug=snapshot_slug,
+        audit=audit_blob(synthesised=audit_synthesised) if with_audit else None,
+    )
+    earnings_dates = seed_filings(session, sessions=sessions) if with_filings else []
+    return World(
+        as_of=sessions[-1],
+        context=CohortContext(
+            universe_slug=UNIVERSE_SLUG,
+            price_snapshot_slug=snapshot_slug,
+            benchmark_security_uid=BENCH_UID,
+            cik_by_ticker=base["cik_by_ticker"],
+        ),
+        sessions=tuple(sessions),
+        tickers=tuple(ticker_for(i) for i in range(N_SECURITIES)),
+        gap_sessions=base["gap_sessions"],
+        earnings_dates=tuple(earnings_dates),
+        delisted_ticker=ticker_for(DELISTED_INDEX),
+        delisting_date=base["delisting_date"],
+        merged_ticker=ticker_for(MERGED_INDEX),
+        late_eps_ticker=ticker_for(LATE_EPS_INDEX),
+        no_shares_ticker=ticker_for(NO_SHARES_INDEX),
+        cik_by_ticker=base["cik_by_ticker"],
+    )
 
 
 def seed_world(
