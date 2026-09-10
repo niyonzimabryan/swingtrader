@@ -61,6 +61,12 @@ AGENTS_MD = REPO_ROOT / "AGENTS.md"
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 AGENT_DIR = REPO_ROOT / ".claude" / "agents"
 PROMPT_DIR = REPO_ROOT / ".codex" / "prompts"
+#: Files under .codex/prompts/ that are pasteable *skills* rather than
+#: subagent-brief mirrors. Each has a Claude Code twin under .claude/skills/.
+#: Declared explicitly so a renamed brief still fails as an orphan below.
+NON_BRIEF_PROMPTS = frozenset({"orchestrated-build"})
+SKILLS_DIR = PROMPT_DIR.parent.parent / ".claude" / "skills"
+
 
 #: The MCP server name Claude Code exposes the workspace under (`.mcp.json`).
 #: Tools appear to a session as ``mcp__swingtrader-workspace__<tool>``.
@@ -341,10 +347,21 @@ class CodexPromptMirrorTests(unittest.TestCase):
 
     def test_every_brief_has_a_codex_counterpart(self):
         self.assertEqual(
-            {p.stem for p in PROMPT_DIR.glob("*.md")},
+            {p.stem for p in PROMPT_DIR.glob("*.md")} - NON_BRIEF_PROMPTS,
             set(self.subagents),
-            ".codex/prompts/ must hold one file per .claude/agents/ brief",
+            ".codex/prompts/ must hold one file per .claude/agents/ brief "
+            "(plus the skills declared in NON_BRIEF_PROMPTS, nothing else)",
         )
+        for stem in NON_BRIEF_PROMPTS:
+            self.assertTrue(
+                (PROMPT_DIR / f"{stem}.md").exists(),
+                f"NON_BRIEF_PROMPTS names {stem} but .codex/prompts/{stem}.md is absent",
+            )
+            self.assertTrue(
+                (SKILLS_DIR / stem / "SKILL.md").exists(),
+                f".codex/prompts/{stem}.md is a skill mirror; its Claude Code twin "
+                f".claude/skills/{stem}/SKILL.md is absent",
+            )
 
     def test_codex_prompt_body_matches_the_brief_verbatim(self):
         for stem, (_front, body, _tools) in self.subagents.items():
