@@ -445,12 +445,22 @@ class OverviewRenderingTests(unittest.TestCase):
 
 
 class CommandSurfaceTests(unittest.TestCase):
-    """Promotion and the live tier are PR 5/PR 6's, and must not appear here."""
+    """What the owner surface is, and the two things it still may not contain.
 
-    def test_the_module_exposes_no_promotion_or_live_command(self):
+    PR 4 asserted that the tier controls were *absent*, because the promotion path
+    did not exist. PR 6 built that path, so the same two properties are now stated
+    about the surface that exists: the tier commands are registered, and neither
+    they nor anything else in this module can reach a broker or stand up a second
+    kill switch.
+    """
+
+    def test_the_module_exposes_the_tier_commands(self):
         exported = dir(handlers)
-        for forbidden in ("promote_arm_command", "promote_command", "live_command"):
-            self.assertNotIn(forbidden, exported)
+        for expected in (
+            "promote_arm_command", "demote_arm_command", "promotions_command",
+            "handle_promotion_callback",
+        ):
+            self.assertIn(expected, exported)
 
     def test_no_strategy_lab_handler_names_an_order_call(self):
         import inspect
@@ -465,19 +475,97 @@ class CommandSurfaceTests(unittest.TestCase):
                 f"{forbidden!r} appears in the Strategy Lab bot handlers",
             )
 
-    def test_the_bot_registers_the_five_commands_and_not_a_sixth(self):
+    def test_the_promotion_card_says_it_is_not_an_entry_approval(self):
+        """Spec Q §13: a strategy promotion never approves an individual entry."""
+        plan = _a_plan()
+        text = _plain(handlers.render_promotion(plan, confirmable=True))
+        self.assertIn("not", text)
+        self.assertIn("approval of any entry", text)
+        self.assertIn("single-use", text)
+
+    def test_a_blocked_plan_renders_every_refusal_and_no_buttons(self):
+        plan = _a_plan(
+            refusals=("the target arm is active",),
+            external_refusals=("STRATEGY_LAB_LIVE_ENABLED is false",),
+        )
+        text = _plain(handlers.render_promotion(plan, confirmable=False))
+        self.assertIn("the target arm is active", text)
+        self.assertIn("STRATEGY_LAB_LIVE_ENABLED is false", text)
+        self.assertIn("Nothing was changed", text)
+
+    def test_the_bot_registers_the_tier_commands_and_one_kill_switch(self):
         import bot.telegram_bot as module
 
         source = inspect_source(module)
         for command in (
             "experiments", "strategies", "strategy",
             "pause_experiment", "resume_experiment",
+            "promote_arm", "demote_arm", "promotions",
         ):
             self.assertIn(f'CommandHandler("{command}"', source)
-        for command in ("promote_arm", "promote", "strategy_promote"):
-            self.assertNotIn(f'CommandHandler("{command}"', source)
-        # Phase 6's kill switch is untouched and still registered.
+        # Phase 6's kill switch is untouched, still registered, and still the
+        # only one: a second switch would be a second thing to remember to set.
         self.assertIn('CommandHandler("live_kill", live_kill_command)', source)
+        self.assertEqual(source.count('CommandHandler("live_kill"'), 1)
+        for forbidden in ("lab_kill", "kill_lab", "strategy_kill"):
+            self.assertNotIn(f'CommandHandler("{forbidden}"', source)
+
+
+def _a_plan(*, refusals=(), external_refusals=()):
+    """A `PromotionPlan` built by hand, so the renderer is tested without a database."""
+    from datetime import datetime
+
+    from strategy_lab import promotion as pm
+    from strategy_lab.domain import ExecutionMode, PromotionKind
+
+    evidence = pm.EvidenceCompleteness(
+        metric_snapshot_id=7,
+        arm_id=1,
+        complete=True,
+        missing=(),
+        warnings=("small_sample_in_one_regime",),
+        warnings_acknowledged=True,
+        n_decisions=400,
+        n_matured=120,
+        n_closed=45,
+        floor_name="paper_closed_executions",
+        floor_value=30,
+        floor_met=True,
+        cutoff_utc=datetime(2026, 4, 1, 20, 0),
+    )
+    request = pm.PromotionRequest(
+        source_arm_id=1,
+        target_arm_id=2,
+        evidence_metric_snapshot_id=7,
+        requested_mode=ExecutionMode.LIVE,
+        requested_risk_budget=0.0,
+        owner="bryan",
+        reason="preregistered gate met",
+    )
+    return pm.PromotionPlan(
+        request=request,
+        kind=PromotionKind.PROMOTION,
+        from_mode=ExecutionMode.PAPER,
+        to_mode=ExecutionMode.LIVE,
+        source={
+            "arm_id": 1, "experiment": "shadow_roster_v1", "slug": "momentum_v1",
+            "version": "1.0.0", "strategy_version_id": 3, "mode": "paper",
+            "status": "active", "risk_budget": 0.005, "promoted_from_arm_id": None,
+        },
+        target={
+            "arm_id": 2, "experiment": "shadow_roster_v1", "slug": "momentum_v1",
+            "version": "1.0.0", "strategy_version_id": 3, "mode": "live",
+            "status": "inactive", "risk_budget": 0.0, "promoted_from_arm_id": 1,
+        },
+        evidence=evidence,
+        refusals=tuple(refusals),
+        external_refusals=tuple(external_refusals),
+        recommendation=pm.READY_FOR_OWNER_REVIEW,
+        notes=(
+            "Promotion is not entry approval: every proposed live execution "
+            "still needs its own signed, expiring, single-use owner callback.",
+        ),
+    )
 
 
 def inspect_source(module) -> str:

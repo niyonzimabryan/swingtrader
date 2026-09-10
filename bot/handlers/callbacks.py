@@ -38,6 +38,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_proposal_callback(query, context)
         return
 
+    # Strategy Lab tier changes (Spec Q §13, PR 6). A separate prefix because it
+    # is a different decision with a different consequence: this one activates an
+    # arm, the one above places an order. Neither is the other's approval.
+    if data.startswith(("slpr:", "slpx:")):
+        from bot.handlers.strategy_lab import handle_promotion_callback
+
+        await handle_promotion_callback(query, context)
+        return
+
     if data.startswith("approve_"):
         await handle_approve(query, context, int(data.split("_")[1]))
     elif data.startswith("reject_"):

@@ -1,18 +1,20 @@
-"""Owner-only Strategy Lab commands (Spec Q §13, §15 PR 4).
-
-Five commands, all read-only except the two that move an experiment's status:
+"""Owner-only Strategy Lab commands (Spec Q §13, §15 PR 4 and PR 6).
 
 ``/experiments``       running experiments, their arms and the tier distribution
 ``/strategies``        the roster: champion, challengers, versions, statuses
 ``/strategy <slug>``   one strategy's decisions, executions and recent activity
 ``/pause_experiment``  and ``/resume_experiment`` — Spec Q §13's pause controls
                        (by name or row id; the configured experiment by default)
+``/promote_arm``       and ``/demote_arm`` — a tier change, rendered then confirmed
+``/promotions``        the append-only audit trail of every tier change
 
-**Not here, on purpose.** ``/promote_arm`` and the live-tier controls are Spec Q
-§13 commands whose safety services are PR 5 and PR 6: an owner-only button that
-calls a promotion path which does not exist yet would be worse than no button.
-``/live_kill`` already exists from Phase 6 (``bot/handlers/proposals.py``) and is
-untouched.
+PR 4 shipped the first five and deliberately not the tier controls, because "an
+owner-only button that calls a promotion path which does not exist yet would be
+worse than no button". PR 6 added the path — ``strategy_lab/promotion.py`` for the
+bindings, ``orchestrator/strategy_lab_promotion.py`` for the deployment gates —
+so the buttons arrive with it. ``/live_kill`` is still Phase 6's switch
+(``bot/handlers/proposals.py``) and is untouched: one kill switch, one row, one
+command.
 
 **Nothing here produces a number.** Counts are ``len()`` over stored rows.
 Performance figures come from ``scripts/strategy_lab_scoreboard.py`` through
@@ -508,3 +510,322 @@ async def pause_experiment_command(update: Update, context: ContextTypes.DEFAULT
 async def resume_experiment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """`/resume_experiment [name]` — Spec Q §13."""
     await _set_paused(update, context, paused=False)
+
+
+# --------------------------------------------------------------------------- #
+# /promote_arm, /demote_arm and the confirmation callback (Spec Q §13, PR 6)
+# --------------------------------------------------------------------------- #
+#
+# PR 4's header said these were deliberately absent, because "an owner-only
+# button that calls a promotion path which does not exist yet would be worse than
+# no button". The path exists now: `strategy_lab/promotion.py` holds the bindings
+# and `orchestrator/strategy_lab_promotion.py` the deployment gates. What lives
+# here is only the rendering and the callback plumbing.
+#
+# Nothing here decides anything. The card prints the plan's own refusal lists
+# verbatim, the recommendation label is computed arithmetically from the stored
+# counts and the configured floors, and the word "promote" never appears as a
+# system recommendation — Spec Q §3 keeps promotion authority with the owner.
+#
+# `/live_kill` is Phase 6's switch and is untouched: one kill switch, one row, one
+# command (`bot/handlers/proposals.py`).
+
+PROMOTE_TIMEOUT_S = 120
+
+
+def _pending(context):
+    """The process-local pending-promotion store, created on first use."""
+    from orchestrator.strategy_lab_promotion import PendingPromotions
+
+    store = context.bot_data.get("strategy_lab_pending_promotions")
+    settings = _settings(context)
+    if store is None or getattr(store, "settings", None) is not settings:
+        store = PendingPromotions(settings)
+        context.bot_data["strategy_lab_pending_promotions"] = store
+    return store
+
+
+def _adapters(context):
+    """The venue -> adapter map `main.py` wired, or an empty one.
+
+    An empty map is not a failure mode to paper over: the live capability gate
+    treats a missing adapter as an adapter that cannot protect a position, so a
+    deployment that never wired one cannot promote to live. That is the intended
+    refusal (Spec L §5).
+    """
+    return context.bot_data.get("strategy_lab_adapters") or {}
+
+
+async def _tier_change(update: Update, context: ContextTypes.DEFAULT_TYPE, *, to_tier: str | None):
+    from strategy_lab.domain import ExecutionMode
+
+    settings = _settings(context)
+    if settings is None:
+        await update.message.reply_text("System initializing...", parse_mode=None)
+        return
+    if not _lab().lab_enabled(settings):
+        await update.message.reply_text(DISABLED_TEXT, parse_mode=None)
+        return
+
+    args = list(context.args or [])
+    verb = "demote_arm" if to_tier == "down" else "promote_arm"
+    usage = (
+        f"Usage: /{verb} <source_arm_id> <tier> [reason...]\n"
+        "  tier: shadow | paper | live   (see /experiments for arm ids)"
+    )
+    if len(args) < 2:
+        await update.message.reply_text(usage, parse_mode=None)
+        return
+    try:
+        source_arm_id = int(args[0])
+        mode = ExecutionMode(str(args[1]).strip().lower())
+    except (TypeError, ValueError):
+        await update.message.reply_text(usage, parse_mode=None)
+        return
+    reason = " ".join(args[2:]).strip() or f"owner {verb} via Telegram"
+    owner_id = str(update.effective_chat.id)
+    owner = str(getattr(settings, "strategy_lab_experiment_owner", "") or "bryan")
+
+    def build():
+        from database.db import get_session
+        from orchestrator import strategy_lab_promotion as wiring
+
+        with get_session() as session:
+            request = wiring.build_request(
+                session,
+                settings,
+                source_arm_id=source_arm_id,
+                to_mode=mode,
+                owner=owner,
+                reason=reason,
+            )
+            session.commit()
+        return wiring.plan(settings, request, adapters=_adapters(context)), request
+
+    try:
+        plan, request = await run_blocking(operation=verb, fn=build, timeout_s=PROMOTE_TIMEOUT_S)
+    except BlockingCallTimeout:
+        await update.message.reply_text(f"{verb} timed out.", parse_mode=None)
+        return
+    except Exception as exc:
+        log.error("strategy_lab_command_failed", command=verb, error=str(exc)[:300])
+        await update.message.reply_text(f"Refused: {str(exc)[:400]}", parse_mode=None)
+        return
+
+    if not plan.confirmable:
+        await _reply(update, render_promotion(plan, confirmable=False))
+        return
+
+    try:
+        _token, confirm_cb, cancel_cb, expires_at = _pending(context).offer(
+            request, owner_id=owner_id
+        )
+    except Exception as exc:
+        # An unset EXECUTION_APPROVAL_SECRET lands here, and the card is not
+        # rendered with buttons — a confirmation nobody can authenticate is not a
+        # confirmation (Spec L §6.3).
+        await update.message.reply_text(
+            f"Cannot mint a confirmation: {str(exc)[:300]}", parse_mode=None
+        )
+        return
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    markup = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("✅ Confirm tier change", callback_data=confirm_cb),
+            InlineKeyboardButton("❌ Cancel", callback_data=cancel_cb),
+        ]]
+    )
+    text = render_promotion(plan, confirmable=True, expires_at=expires_at)
+    await update.message.reply_text(text, parse_mode="MarkdownV2", reply_markup=markup)
+
+
+def render_promotion(plan, *, confirmable: bool, expires_at=None) -> str:
+    """The promotion card. Pure: a function of the plan only.
+
+    Spec Q §13 names what it must show — the source arm's immutable strategy
+    version, the evidence snapshot, the warnings, the proposed inactive target arm
+    and the budget. All five are here, and so is every refusal, because a card
+    that hides the third of three reasons is how an owner ends up re-running a
+    command five times.
+    """
+    if plan is None:
+        return escape_md(DISABLED_TEXT)
+    evidence = plan.evidence
+    kind = plan.kind.value
+    lines = [
+        f"*🔁 {escape_md(kind.upper())} — owner confirmation required*",
+        "",
+        f"*source* arm `#{plan.source['arm_id']}` "
+        f"`{_code(plan.source['slug'])}@{_code(plan.source['version'])}` "
+        f"— `{_code(plan.source['mode'])}`/`{_code(plan.source['status'])}`",
+        f"*target* arm `#{plan.target['arm_id']}` "
+        f"— `{_code(plan.target['mode'])}`/`{_code(plan.target['status'])}` "
+        f"\\| risk budget `{_fmt(plan.target['risk_budget'])}`",
+        f"*strategy version id* `{plan.source['strategy_version_id']}` "
+        f"\\(shared: a rule change is a new version and needs its own evidence\\)",
+        "",
+        f"*evidence* snapshot `#{evidence.metric_snapshot_id}` at "
+        f"`{_code(str(evidence.cutoff_utc or ''))}`",
+        f"  decisions `{evidence.n_decisions}` \\| matured `{evidence.n_matured}` "
+        f"\\| closed `{evidence.n_closed}`",
+        f"  floor `{_code(evidence.floor_name)}` \\= `{evidence.floor_value}` — "
+        + ("met" if evidence.floor_met else "*NOT met*"),
+        f"  complete: {'yes' if evidence.complete else '*no*'}"
+        + (f" \\(missing {escape_md(', '.join(evidence.missing))}\\)" if evidence.missing else ""),
+        f"  warnings acknowledged: {'yes' if evidence.warnings_acknowledged else '*no*'}",
+    ]
+    for warning in evidence.warnings:
+        lines.append(f"  ⚠️ `{_code(str(warning))}`")
+    lines += ["", f"*recommendation* `{_code(plan.recommendation)}`"]
+
+    if plan.refusals or plan.external_refusals:
+        lines += ["", "*REFUSED*"]
+        for item in list(plan.refusals) + list(plan.external_refusals):
+            lines.append(f"  ⛔ {escape_md(_clip(str(item), 300))}")
+    for note in plan.notes:
+        lines.append(f"  _{escape_md(_clip(str(note), 300))}_")
+    if confirmable:
+        lines += [
+            "",
+            "_Confirming appends an append\\-only `promotion_events` row and "
+            "activates the target arm\\. It is **not** approval of any entry: "
+            "every proposed live execution still needs its own signed, expiring, "
+            "single\\-use callback\\._",
+        ]
+        if expires_at is not None:
+            lines.append(
+                f"_This confirmation expires at `{_code(expires_at.isoformat())}`Z\\._"
+            )
+    else:
+        lines += ["", "_Nothing was changed\\. No arm was activated\\._"]
+    return "\n".join(lines)
+
+
+@authorized
+async def promote_arm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """`/promote_arm <source_arm_id> <tier> [reason]` — Spec Q §13."""
+    await _tier_change(update, context, to_tier="up")
+
+
+@authorized
+async def demote_arm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """`/demote_arm <source_arm_id> <tier> [reason]` — the same machinery, downward.
+
+    A demotion additionally stands the source arm down, which is the one
+    asymmetry: promoting says nothing about the arm you promoted from, demoting
+    says everything.
+    """
+    await _tier_change(update, context, to_tier="down")
+
+
+@authorized
+async def promotions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """`/promotions` — the append-only audit trail."""
+
+    def build(settings):
+        from database.db import get_session
+        from strategy_lab import promotion as pm
+
+        with get_session() as session:
+            return pm.promotion_history(session, limit=15)
+
+    rows = await _guarded(update, context, "promotions_command", build)
+    if rows is None:
+        return
+    await _reply(update, render_promotions(rows))
+
+
+def render_promotions(rows) -> str:
+    if not rows:
+        return (
+            "*🔁 PROMOTION EVENTS*\n\nNone\\. Every arm in the tournament is where "
+            "it was created, and only an owner confirmation moves one\\."
+        )
+    lines = ["*🔁 PROMOTION EVENTS* \\(newest first\\)", ""]
+    for row in rows:
+        lines.append(
+            f"`#{row['promotion_id']}` `{_code(row['kind'])}` "
+            f"arm `#{row['source_arm_id']}` → `#{row['target_arm_id']}` "
+            f"\\(`{_code(row['from_mode'])}` → `{_code(row['to_mode'])}`\\)"
+        )
+        lines.append(
+            f"  owner `{_code(row['owner'])}` \\| evidence "
+            f"`#{row['evidence_metric_snapshot_id']}` \\| budget "
+            f"`{_fmt(row['previous_risk_budget'])}` → `{_fmt(row['new_risk_budget'])}`"
+        )
+        lines.append(f"  at `{_code(str(row['created_at'] or ''))}` — {escape_md(_clip(row['reason'], 160))}")
+    lines.append("")
+    lines.append("_Append\\-only\\. A correction is another event, never an edit\\._")
+    return "\n".join(lines)
+
+
+async def handle_promotion_callback(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Dispatch an `slpr:`/`slpx:` confirmation. Called from the callback router.
+
+    The router already checked authorisation; this checks again, because a tier
+    change is the one owner-only control that can put an arm on live capital. The
+    real controls are the ones inside `PendingPromotions.take` — owner binding,
+    expiry, single use, signature — and the refusal recomputation inside
+    `strategy_lab.promotion.confirm`.
+    """
+    from bot.auth import is_authorized
+
+    if not is_authorized(query.message.chat_id):
+        log.warning("unauthorized_promotion_callback", chat_id=query.message.chat_id)
+        return
+    settings = _settings(context)
+    if settings is None:
+        await query.message.reply_text("System initializing...", parse_mode=None)
+        return
+
+    store = _pending(context)
+    owner_id = str(query.message.chat_id)
+    try:
+        action, token, presented = store.parse(query.data or "")
+    except Exception as exc:
+        await query.message.reply_text(f"Could not read that: {str(exc)[:200]}", parse_mode=None)
+        return
+
+    if action == "cancel":
+        store.cancel(token)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            "Cancelled. No promotion_event was written and no arm was activated.",
+            parse_mode=None,
+        )
+        return
+
+    def work():
+        from orchestrator import strategy_lab_promotion as wiring
+
+        request = store.take(token, presented=presented, owner_id=owner_id)
+        return wiring.confirm(settings, request, adapters=_adapters(context))
+
+    try:
+        result = await run_blocking(
+            operation="promotion_confirm", fn=work, timeout_s=PROMOTE_TIMEOUT_S
+        )
+    except BlockingCallTimeout:
+        await query.message.reply_text(
+            "The confirmation is still running. Check /promotions before "
+            "re-running — the confirmation is single-use.",
+            parse_mode=None,
+        )
+        return
+    except Exception as exc:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(f"Not promoted: {str(exc)[:500]}", parse_mode=None)
+        return
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text(
+        f"{result['kind']} #{result['promotion_id']} recorded: arm "
+        f"#{result['source_arm_id']} ({result['from_mode']}) → arm "
+        f"#{result['target_arm_id']} ({result['to_mode']}), risk budget "
+        f"{result['new_risk_budget']}.\n"
+        "This is not approval of any entry: every proposed execution still needs "
+        "its own signed, expiring, single-use approval callback.",
+        parse_mode=None,
+    )

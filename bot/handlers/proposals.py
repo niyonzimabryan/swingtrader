@@ -114,14 +114,40 @@ async def handle_proposal_callback(query, context: ContextTypes.DEFAULT_TYPE) ->
 
     owner_id = str(query.message.chat_id)
     if action == "reject":
-        await _reject(query, proposal_id, owner_id)
+        await _reject(query, context, proposal_id, owner_id)
         return
     await _approve(query, context, proposal_id, signature, owner_id)
 
 
-async def _reject(query, proposal_id: int, owner_id: str) -> None:
+def _lab_execution_id(proposal_id: int) -> str:
+    """The ``strategy_trades.execution_id`` this proposal belongs to, or ``""``.
+
+    The routing key for both halves below, and it is deliberately read from the
+    **row** rather than from the callback: callback data is whatever a chat client
+    sent, while ``proposals.execution_id`` was written by
+    ``StrategyExecutionService.propose`` inside its own transaction. So a crafted
+    callback cannot make a lab execution look like a plain proposal, or the
+    reverse.
+    """
+    from database.models import Proposal
+
+    with get_session() as session:
+        proposal = session.get(Proposal, proposal_id)
+        return (getattr(proposal, "execution_id", "") or "") if proposal else ""
+
+
+async def _reject(query, context, proposal_id: int, owner_id: str) -> None:
     from database.models import Proposal
     from utils.timeutils import utcnow_naive
+
+    execution_id = _lab_execution_id(proposal_id)
+    if execution_id:
+        # A Strategy Lab execution has a second row — the `strategy_trades` one —
+        # and leaving it `proposed` would hold its decision's single
+        # open-execution slot forever. `cancel` moves both terminally, which
+        # releases nothing because a `proposed` row reserved nothing.
+        await _reject_lab(query, context, proposal_id, execution_id)
+        return
 
     with get_session() as session:
         proposal = session.get(Proposal, proposal_id)
@@ -140,12 +166,75 @@ async def _reject(query, proposal_id: int, owner_id: str) -> None:
     )
 
 
-async def _approve(query, context, proposal_id: int, signature: str, owner_id: str) -> None:
-    service = context.bot_data.get("execution_service")
+async def _reject_lab(query, context, proposal_id: int, execution_id: str) -> None:
+    from bot.handlers._blocking_utils import BlockingCallTimeout, run_blocking
+
+    service = _lab_service(context)
     if service is None:
         await query.message.reply_text(
-            "Execution service is not wired in this deployment; cannot place. "
-            "The proposal is unchanged.",
+            "The Strategy Lab execution service is not wired in this deployment, "
+            "so this execution cannot be cancelled from here. Nothing was placed.",
+            parse_mode=None,
+        )
+        return
+
+    def work():
+        return service.cancel(
+            execution_id=execution_id, by="owner", reason="owner_rejected"
+        )
+
+    try:
+        status = await run_blocking("lab_proposal_reject", work, APPROVE_TIMEOUT_S)
+    except BlockingCallTimeout:
+        await query.message.reply_text("Rejection is still running.", parse_mode=None)
+        return
+    except Exception as exc:
+        await query.message.reply_text(f"Could not reject: {str(exc)[:300]}", parse_mode=None)
+        return
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text(
+        f"Rejected proposal {proposal_id} (execution {execution_id[:12]}: "
+        f"{status}). Nothing was placed.",
+        parse_mode=None,
+    )
+
+
+def _lab_service(context):
+    """PR 5's explicit-mode service, as ``main.py`` wired it, or ``None``.
+
+    Separate from ``execution_service`` on purpose. Phase 6's service is bound to
+    one broker chosen from the global ``EXECUTION_MODE``; a Strategy Lab execution
+    must reach the venue its *arm's* mode allows, which is what
+    ``StrategyExecutionService`` binds. Approving a lab execution through the
+    global service would be the exact inference Spec Q §12 invariant 11 forbids,
+    so a deployment that wired only the global one cannot approve a lab execution
+    at all — it says so rather than placing through the wrong venue.
+    """
+    return context.bot_data.get("strategy_execution_service")
+
+
+async def _approve(query, context, proposal_id: int, signature: str, owner_id: str) -> None:
+    # Which service may place this one is a property of the row, not of the
+    # callback: a proposal carrying an `execution_id` belongs to a Strategy Lab
+    # arm, and the arm's immutable mode — not the global EXECUTION_MODE — decides
+    # the venue. So a lab execution is approved through PR 5's explicit-mode
+    # service and a plain proposal through Phase 6's (Spec Q §12 invariant 11).
+    execution_id = _lab_execution_id(proposal_id)
+    service = (
+        _lab_service(context) if execution_id else context.bot_data.get("execution_service")
+    )
+    if service is None:
+        await query.message.reply_text(
+            (
+                "The Strategy Lab execution service is not wired in this "
+                "deployment, so this arm's execution cannot be approved from "
+                "here. Nothing was placed and the proposal is unchanged."
+            )
+            if execution_id
+            else (
+                "Execution service is not wired in this deployment; cannot place. "
+                "The proposal is unchanged."
+            ),
             parse_mode=None,
         )
         return
@@ -155,14 +244,23 @@ async def _approve(query, context, proposal_id: int, signature: str, owner_id: s
     def work():
         # The service opens its own session, verifies the signed single-use
         # reference, re-runs every risk check from fresh state, checks the kill
-        # switch, then places and protects. The bot adds no risk logic.
+        # switch, then places and protects. The bot adds no risk logic. For a lab
+        # execution the same call additionally binds the arm's mode to its one
+        # allowed adapter and writes every §12 hop as it happens.
         from execution.lifecycle import ExecutionRefused
+        from execution.strategy_lifecycle import ArmExecutionRefused
 
         try:
+            if execution_id:
+                return ("ok", service.on_approval(
+                    execution_id=execution_id,
+                    presented_signature=signature,
+                    owner_id=owner_id,
+                ))
             return ("ok", service.on_approval(
                 proposal_id=proposal_id, presented_signature=signature, owner_id=owner_id
             ))
-        except ExecutionRefused as exc:
+        except (ExecutionRefused, ArmExecutionRefused) as exc:
             return ("refused", f"{exc.code}: {exc.message}")
         except approvals_mod.ApprovalRefused as exc:
             return ("refused", f"{exc.code}: {exc.message}")

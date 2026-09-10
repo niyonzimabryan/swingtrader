@@ -323,6 +323,16 @@ class Settings(BaseSettings):
     # `live` for paper -> live.
     strategy_lab_promotion_floor_shadow_matured: int = 100
     strategy_lab_promotion_floor_paper_closed: int = 30
+    # The risk budget a newly prepared live arm is given. Zero by default, and
+    # that is not a placeholder: a live arm with no budget is the single global
+    # champion and can still place nothing, because sizing multiplies by it. The
+    # owner sets a number here as a separate, deliberate authorization step, and
+    # the promotion card prints the budget it is binding either way (Spec Q §3:
+    # "the dollar budget is deployment configuration, not part of the strategy").
+    strategy_lab_live_risk_budget: float = 0.0
+    # How long a /promote_arm confirmation stays valid. Shorter than an execution
+    # approval because the card is read immediately or not at all.
+    strategy_lab_promotion_ttl_seconds: int = 300
 
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
