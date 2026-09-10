@@ -759,7 +759,7 @@ Rollback at every phase is a feature-flag change plus pausing experiment arms. E
 ## 21. Rulings log (post-build)
 
 Ratified 2026-09-10 from the Strategy Lab builds (PR 1 #54, PR 2 #58, PR 3 #60,
-PR 4 #64, PR 5 #65). Each is a decision a build session made where this spec
+PR 4 #64, PR 5 #65, PR 6 #74). Each is a decision a build session made where this spec
 was silent or where the code as merged differs from the text above; the spec
 text stands where the two agree, and this log is the record where they do not.
 
@@ -884,3 +884,62 @@ text stands where the two agree, and this log is the record where they do not.
 - **Deferred to PR 6**: scheduling `resume()` / `expire_stale()` / `reconcile()`,
   and the owner approve/reject card for a live `strategy_trade`; no per-tranche
   history for partial fills (needs a migration no invariant asks for).
+
+**PR 6 — paper tournament, audited promotion, release proof**
+
+- **The tiers layer, and the layering is enforced in code.** A `live` arm's
+  `propose` *and* `approve` both require `STRATEGY_LAB_PAPER_ENABLED` as well as
+  `STRATEGY_LAB_LIVE_ENABLED`, because the three jobs that resume, expire and
+  reconcile an execution are gated on the paper flag; `live on, paper off` would
+  be live positions nothing recovers after a restart.
+- **`STRATEGY_LAB_LIVE_RISK_BUDGET=0` is the safety property, not a placeholder.**
+  A live champion can exist and place nothing. Every §14 flag defaults false;
+  merging PR 6 changed no variable, added no migration and no behaviour.
+- **Two signed callbacks, one HMAC, one kill switch.** A tier change (`slpr:`)
+  and an entry approval (`p6ok:`) are separate decisions with separate prefixes,
+  both owner-bound, expiring and single-use, both signed by
+  `portfolio.approvals.sign`. `/live_kill` is untouched and remains the only
+  kill switch. The Phase 6 approval routes to the explicit-mode service on the
+  **row's** `execution_id`, never on the callback, so a crafted callback cannot
+  reclassify a proposal.
+- **`cancel` refuses anything past `proposed`.** The §12 edge
+  `submitted -> cancelled` exists so the resume pass can *record* a
+  broker-reported cancellation; it is not an owner action. An owner Reject
+  arriving while a placement was in flight could otherwise mark a live order
+  terminal and release its reservation — the duplicate-position failure §11's
+  reservation exists to prevent. Card buttons retire when the callback is
+  dispatched, not when the work returns.
+- **The ticker reservation is an invariant inside `propose`**, read fresh in the
+  transaction that opens the row, producing a terminal `ticker_reserved` row as
+  the audit trail — not a batch-local check in the dispatcher's loop.
+- **Same target, same evidence, refused.** `evidence_binding_refusal` treats a
+  re-promotion of the same target on the same evidence snapshot as a refusal,
+  not idempotency: a demotion is itself new evidence, and §8 gives one evidence
+  snapshot one tier change.
+- **The promotion rules cannot see a flag, a switch or a broker.**
+  `strategy_lab/promotion.py` holds bindings, evidence and the ladder;
+  `orchestrator/strategy_lab_promotion.py` contributes flags, kill switch and
+  broker state as accumulated `external_refusals`, so a blocked card shows every
+  reason rather than the first. A grep test proves no scheduled job, pipeline
+  hook or dispatcher reaches `confirm()`.
+- **A paper arm is sized against its own virtual book** (PR 3's `shadow.assess`,
+  the arm's immutable budget × the decision's `position_risk_pct`); Phase 6 then
+  applies caps that can only shrink the order. The decision pass runs every
+  *enabled* tier's active arms over one snapshot, because a decision is a
+  function of the snapshot and the version alone.
+- **The three PR 5 jobs are scheduled**: `resume` every 30 minutes in market
+  hours (re-places a stop, never an entry), `expire` hourly, `reconcile` at
+  16:45 ET over every enabled tier whose adapter is registered.
+- **§19's live-automation item takes its second branch, deliberately.** The
+  real `gtc stop_market` probe has not been run against a live account, so
+  `can_place_standalone_gtc_stop` is a declaration, and the capability gate
+  refuses every live entry before an order is formed. The acceptance test is a
+  *global* live mode (`EXECUTION_MODE=live`, `BROKER_PRIMARY=robinhood`,
+  `ALLOW_LIVE_TRADING=true`, lab live flag on) with a paper arm dispatched and
+  approved, asserting the live adapter's call dictionary is empty.
+- Deferred: a paper arm is still *bounded* by the production ledger's equity and
+  concentration (closing it means a venue-aware `portfolio/proposals.read_context`,
+  a Phase 6 change); the promotion confirmation lives in the bot process and
+  does not survive a restart (the safe direction); no evaluator job records
+  evidence *for* a promotion, because "evaluate then promote" is an automatic
+  promotion in all but name.
