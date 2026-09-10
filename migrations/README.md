@@ -11,12 +11,15 @@ migrations/
     0002_source_observations.py      Phase 3a: the bitemporal source ledger (spec O §2)
     0002_price_plane.py              Phase 3p: securities, bars, actions, membership (spec N §4.2)
     0003_merge_heads.py              the merge of the first two parallel phases
+    0003_phase4_planes.py            Phase 4: the filings, macro-vintage and news planes (spec O)
     0004_research_workspace.py       Phase 2: dossiers, theses, invalidators, journal (spec M §3)
     0004_portfolio_ledger.py         Phase 1: the portfolio ledger (spec L §3)
     0004_merge_price_plane.py        joins the price plane to that head
     0005_merge_portfolio_ledger.py   joins the portfolio ledger to it
     0006_merge_research_workspace.py joins the research workspace to it
+    0007_merge_evidence_planes.py    joins the Phase 4 planes to it
     0007_strategy_lab.py             Phase 5: the Strategy Lab experiment tables (spec Q §8)
+    0008_merge_strategy_lab.py       joins the Strategy Lab to the evidence-planes head
 ```
 
 `0007_strategy_lab` is the first revision to carry a **partial unique index**
