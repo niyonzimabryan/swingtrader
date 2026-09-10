@@ -699,3 +699,52 @@ Ratified 2026-09-09 from the Phase 3p build (PR #48):
   comes from ACTIONS where present, else `unknown`, which §4.4 treats as censored.
 - `consensus_eps_news` lives in `news/`, not `filings/` as §4.0 named it: it parses
   article bodies and belongs on the licence-bounded side. Same code, different file.
+
+Ratified 2026-09-10 from the evidenced-budget closure (Spec L §6.6, §8):
+
+- **The policy leg carries its own interval, at 0.90, and the headline stays at
+  0.95.** `PolicySummary.net_ci` is a lower 90% bound on the §5.3
+  policy-simulated net return, from the same stationary block bootstrap the
+  headline uses but over the **per-event** net returns rather than the
+  calendar-time series. Two confidence levels in one answer is a wart, and it is
+  the smaller of two: Spec L §6.6 sizes a live order from `clip(LB/PE, 0, 1)` on
+  this quantity and names the lower *90%* bound, so the alternative is handing
+  the sizing rule a 95% bound because that is what was to hand — a statistic
+  substituted for the one the rule names, which §9 forbids. The gate refuses an
+  interval at any other level rather than relabelling it.
+- **The block floor for a per-event series is in event units.** §6.1's floor is
+  the horizon because one index step of the calendar-time series is one session.
+  One index step of the per-event series is one *event*, so the same rule reads
+  "the most events whose `horizon`-session windows overlap"
+  (`inference.overlapping_events_block`). Using the horizon there would resample
+  a 40-event cohort in blocks of 20 and call the result an interval.
+- **A subject ticker is a property of the query, not of the setup.** §4.0 is
+  right that a `SetupSpec` is a pattern and names no security; Spec L §6.6 is
+  right that an evidenced proposal needs an answer "for the same ticker". Both
+  hold only if the ticker is recorded when the question is asked, so
+  `compare_setups` takes an optional `subject_ticker`, runs that one name
+  through the same `cohort.py` qualification pass the members went through, and
+  stores `subject_ticker` / `subject_qualifies` / `subject_reason` /
+  `subject_event_date` on the query and the answer. An answer whose subject did
+  not qualify is a valid answer that is not evidence for that name.
+- **Qualification is judged at the subject's most recent candidate on or before
+  `as_of`,** and the date of that candidate is stored rather than bounded. "The
+  pattern last fired for this name and it qualified" is what the check asserts;
+  how long ago it fired is printed for the reader. The 5-session citation-age
+  budget bounds the age of the *answer*, and an event-recency budget is a
+  separate decision nobody has made yet.
+- **The subject is part of the answer cache key.** The statistics do not depend
+  on it — two subjects give byte-identical `answer_json` — but the citation
+  does: `cohort:<row id>` is what a journal entry and a proposal carry, and one
+  row serving two subjects would silently re-point a citation already written
+  down. Two subjects are two rows and two ids.
+- **An event whose entry session is after `as_of` is censored, not excluded.**
+  It qualified on facts that were true, so it is a cohort member — making
+  membership depend on when the question was asked is precisely the difference
+  §10's lookahead harness exists to catch, and the harness rejected the
+  excluding version. `maturity` returns `entry_session_after_as_of`,
+  `distinct_event_dates` skips it, and `calendar_time_series` drops any event
+  whose window does not fit. Before this, one such member raised a `ValueError`
+  out of the middle of the response assembly and took the whole answer with it,
+  which made `depth='full'` on any day a universe member qualified an error
+  rather than an answer.

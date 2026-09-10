@@ -534,7 +534,13 @@ def _stability(
     def slice_estimate(label: str, subset: Sequence[EventRecord]) -> SliceEstimate:
         if not subset:
             return SliceEstimate(label, 0, 0.0, 0.0, 0.0)
-        series = calendar_time_series(subset, benchmark, calendar, horizon)
+        try:
+            series = calendar_time_series(subset, benchmark, calendar, horizon)
+        except ValueError:
+            # Every event in the slice is censored at this horizon, so there is
+            # no calendar-time portfolio to regress. That is a slice with no
+            # estimate, not a failed answer — the same shape an empty slice has.
+            return SliceEstimate(label, len(subset), 0.0, 0.0, 0.0)
         result = calendar_time_alpha(series, horizon)
         block = optimal_block_length_for(series.abnormal, horizon)
         ci = stationary_bootstrap_ci(series.abnormal, block.used, scale=horizon,

@@ -1362,26 +1362,6 @@ def _qualify(
                 ))
                 continue
 
-            if not _has_session_zero(calendar, candidate.cutoff):
-                # The conditions held, but session 0 — the open §5.0 says the
-                # simulator enters at — is *after* `as_of`. There is no outcome
-                # to measure at any horizon, so it is not a cohort member: every
-                # measurement downstream resolves session 0, and a member that
-                # cannot would abort the whole answer rather than be censored.
-                #
-                # It stays in the pool, where it already was, so no balance
-                # diagnostic or null draw moves. And the **subject** verdict
-                # above is deliberately taken before this: "the pattern fired
-                # for this name and the trade has not happened yet" is precisely
-                # the state somebody asking about a subject is in (Spec L §6.6).
-                excluded.append(ExcludedEvent(
-                    candidate.event_id, candidate.ticker, day, "no_session_zero",
-                    f"{candidate.ticker} met the conditions on {day}, but the "
-                    f"session it would have been entered at is after the query's "
-                    f"as_of, so it has no measurable outcome yet (Spec N §5.0)",
-                ))
-                continue
-
             if terminal_note:
                 warnings.append(f"{candidate.ticker}: {terminal_note}")
             events.append(record)
@@ -1410,23 +1390,6 @@ def _qualify(
 
     return (tuple(events), tuple(excluded), tuple(pool),
             tuple(sorted(sector_codes.items())), warnings, qualification)
-
-
-def _has_session_zero(calendar: TradingCalendar, cutoff: datetime) -> bool:
-    """Whether the calendar reaches the session this event would be entered at.
-
-    It does not, for an event that qualified on the query's own `as_of`: the
-    day-precision convention stamps the fact at that day's close and §5.0 puts
-    entry at the *next* open, which has not happened. Before this check that
-    case raised out of `distinct_event_dates` — a `ValueError` from the middle
-    of the response assembly — so `compare_setups` at `depth='full'` on any day
-    a universe member qualified was an error rather than an answer.
-    """
-    try:
-        calendar.session_zero(cutoff)
-    except ValueError:
-        return False
-    return True
 
 
 def _wants(spec: SetupSpec, fact: str) -> bool:

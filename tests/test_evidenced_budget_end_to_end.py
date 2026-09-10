@@ -75,10 +75,13 @@ class EvidencedBudgetEndToEnd(unittest.TestCase):
             session.commit()
 
         # The subject qualifies on the last injected gap date and on no later
-        # one, so that is the `as_of` a proposal in that name would cite. The
-        # cohort itself is built from the 25 earlier gap dates; the subject's
-        # own event is excluded, because the session it would be entered at is
-        # after `as_of` and it therefore has no outcome to measure yet.
+        # one, so that is the `as_of` a proposal in that name would cite. Its
+        # own event is a cohort *member* — membership is a property of the facts
+        # and the conditions, not of when the question was asked — and is
+        # censored at every horizon, because the session it would be entered at
+        # is after `as_of`. The statistics therefore come from the 25 earlier
+        # gap dates, which is the right answer to "how has this pattern done"
+        # asked by somebody about to trade the 26th.
         cls.as_of: date = cls.world.gap_sessions[-1]
         cls.now = datetime.combine(
             cls.as_of + timedelta(days=1), datetime.min.time()

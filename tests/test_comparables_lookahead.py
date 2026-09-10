@@ -71,6 +71,48 @@ class LookaheadHarnessTests(unittest.TestCase):
                 report.raise_for_findings()
                 self.assertTrue(report.clean)
 
+    def test_a_full_answer_is_identical_too_including_the_policy_interval(self):
+        """The roster sweep runs at `quick`; the sizing input only exists at `full`.
+
+        `check_roster` above compares `quick` answers, and a `quick` answer
+        carries no `PolicySummary` at all — so the field Spec L §6.6 sizes a
+        live order from, `policy.net_ci`, is not covered by it. This runs the
+        same harness at `depth='full'` so the policy leg and its lower 90% bound
+        go through the byte comparison with everything else: a bound that moved
+        when facts published after the last event were deleted would be a
+        lookahead leak straight into a position size.
+
+        Two horizons and 50 replications, for the reason the harness's own
+        docstring gives: it is asserting the inputs did not move, and a
+        full-depth sweep at production replications would be too slow to run in
+        CI, which is the same as not running it.
+        """
+        report = lookahead_mod.check_cohort(
+            self.session,
+            roster.get("gap_and_go_v1", {"horizons_sessions": [5, 10]}),
+            as_of=self.world.as_of,
+            context=self.world.context,
+            max_cutoffs=2,
+            depth="full",
+            reps=50,
+        )
+        self.assertGreater(report.n_events, 0, "nothing was checked")
+        self.assertTrue(report.answer_identical)
+        report.raise_for_findings()
+
+        # And the field this test exists for is actually in the bytes compared.
+        answer = cohort_mod.answer_for(
+            cohort_mod.build_cohort(
+                self.session,
+                roster.get("gap_and_go_v1", {"horizons_sessions": [5, 10]}),
+                as_of=self.world.as_of, context=self.world.context,
+            ),
+            depth="full", reps=50,
+        ).primary
+        from comparables import report as report_mod
+
+        self.assertIn('"net_ci"', report_mod.to_json(answer))
+
     def test_the_pending_roster_entry_is_skipped_not_reported_clean(self):
         reports = lookahead_mod.check_roster(
             self.session, as_of=self.world.as_of, context=self.world.context,

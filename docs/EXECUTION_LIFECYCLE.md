@@ -150,7 +150,8 @@ Agentic-account proposal in the same name (`test_risk_caps_span_all_accounts`).
   estimate (`PE`) on the **policy-simulated net return** (Spec N §5.3). Then
   `m = clip(LB/PE, 0, 1)` and it draws from `EVIDENCED_RISK_CAP`.
 * **Discretionary.** Everything else — uncited, unresolvable, `quick`,
-  `insufficient`, `inconclusive`, wrong ticker, stale, no policy interval, or
+  `insufficient`, `inconclusive`, wrong ticker, a subject that did not qualify,
+  stale, no policy interval, an interval at a level other than 90%, or
   `LB ≤ 0`. It draws from the separate, smaller `DISCRETIONARY_RISK_CAP` and its
   own `DISCRETIONARY_DAILY_NOTIONAL`, with the evidence printed on the card in
   full — **including a negative lower bound**.
@@ -162,18 +163,55 @@ makes `LB ≤ 0` size to zero and refuses an uncited proposal, with no code chan
 The card prints `risk_fraction`, `m`, `LB`, `PE`, the horizon used, and every cap
 that bound the size.
 
-### Needs owner / known gap
+### How to get an evidenced proposal, in full
 
-`comparables.report.PolicySummary` currently carries the policy net **point
-estimate** but **no interval**, and a `SetupSpec` carries no ticker. So a *real*
-Spec N answer today reaches the evidence gate with no lower bound and no ticker,
-and is correctly labelled **discretionary** with the reason
-`citation_no_policy_lower_bound`. Evidenced sizing is fully implemented and
-tested against answer objects of the right shape; it begins to fire on real
-answers the moment Phase 3c adds a lower-90% interval on the policy net (under
-any of `net_ci` / `net_interval` / `net_bootstrap_ci`) and a ticker on the
-answer — no change to this code. This is the one place the phase depends on a
-sibling phase's field, and it fails safe (toward the smaller budget) until then.
+The evidenced path is **reachable** as of the Spec L §6.6 / Spec N §8 closure.
+Three things had to be true at once and now are:
+
+1. **The interval exists.** `comparables.report.PolicySummary` carries `net_ci`,
+   a lower 90% bound on the policy-simulated net return, from the same
+   stationary block bootstrap the headline uses, run over the per-event policy
+   net returns. The level is `comparables.config.POLICY_CONFIDENCE_LEVEL = 0.90`
+   and not the engine-wide `CONFIDENCE_LEVEL` of 0.95, because §6.6 names the
+   90% bound and this code refuses an interval at any other level rather than
+   relabelling one.
+2. **The answer knows which name it is about.** A `SetupSpec` is a *pattern*
+   (Spec N §4.0), so `compare_setups` takes a `subject_ticker`, checks that the
+   name met the setup's conditions at its most recent opportunity on or before
+   `as_of`, and stores `subject_ticker` / `subject_qualifies` on both the query
+   and the answer. "Same ticker" therefore means both: the subject **is** this
+   proposal's ticker and it **qualified**.
+3. **The gate reads a stored answer.** A citation resolves through
+   `research_workspace.citations` to a `comparables.citations.ResolvedCitation`
+   — the stored row, with the answer as JSON. `portfolio/evidence.py` reads that
+   and an in-memory `CohortAnswer` through one adapter, including the
+   repr-string floats `report.to_json` writes for byte-determinism.
+
+So, end to end:
+
+```
+compare_setups(setup=..., as_of=..., depth="full", subject_ticker="AMD")
+  -> {"citation_id": "cohort:41", "subject": {"ticker": "AMD", "qualifies": true, ...}}
+journal_append(decision=..., tickers=["AMD"], cohort_answer_id="cohort:41",
+               budget="evidenced")          # the citer re-checks the label
+propose_order(ticker="AMD", entry=..., stop=..., risk_fraction=0.005,
+              cohort_answer_id="cohort:41")
+  -> budget=evidenced, m=clip(LB/PE,0,1), risk_fraction_effective=0.005 x m
+```
+
+`tests/test_evidenced_budget_end_to_end.py` runs exactly that against stored
+rows, through the real citation seam, and runs every way it can fail beside it.
+
+**A `quick` answer can carry a subject and still not be evidence.** The subject
+is recorded on any depth, because it is a fact about the question; citability is
+a separate axis and `quick` fails it structurally (Spec N §8).
+
+**Recency of the *event* is not the recency of the *answer*.** The 5-session
+`CITATION_MAX_AGE_SESSIONS` budget bounds how old the cohort answer may be. The
+subject's qualifying event carries its own `subject_event_date`, which is
+printed rather than bounded: "SY05 qualified" and "SY05 qualified nine months
+ago" are different statements, and the second is the reader's call, not the
+gate's. Tracked as a candidate follow-up.
 
 ---
 
