@@ -289,11 +289,17 @@ schema and the enums a strategy validates against cannot drift apart.
 
 ## 7. Flags and configuration
 
-**None yet.** PR 1 introduces no environment variable and no setting.
-`STRATEGY_LAB_ENABLED` and its four siblings (§14) are introduced by PR 4, which
-owns `config/settings.py` and `.env.example`, together with the pipeline hook
-that is the first thing they gate. A flag that nothing reads is a flag nobody
-can trust; there is nothing to enable until then.
+**Two gates, both off.** PR 4 introduces them, together with the pipeline hook
+that is the first thing they gate — see §21 for what each one turns on and
+`docs/ENV_SETUP.md` §10 for the runbook. PR 1, PR 2 and PR 3 introduced no
+environment variable at all: a flag that nothing reads is a flag nobody can
+trust.
+
+There is deliberately **no paper or live flag**. Spec Q §14 lists five, and the
+three above shadow gate services that PR 5 and PR 6 own; adding them now would
+mean shipping a switch whose "on" position does nothing, which is worse than an
+absent one. `/live_kill` remains Phase 6's persistent database row (Spec L §6.5)
+and is untouched.
 
 Adding these tables changes no existing behaviour. `0007_strategy_lab` creates
 eight empty tables and touches no existing one.
@@ -765,3 +771,131 @@ codes.
   Romano–Wolf step-M, both from `comparables/inference.py`; a CSCV
   implementation is its own PR against Spec N's inference layer rather than a
   second, differently-shaped copy inside `strategy_lab/`.
+
+---
+
+## 21. PR 4: the shadow hook, the flags, and the operator surface
+
+### The hook is one call, at the end
+
+`orchestrator/pipeline.py` gains a single call at the end of
+`_run_full_scan_inner`, *after* every memo has been generated and delivered and
+every notification sent. The whole integration lives in
+`orchestrator/strategy_lab_shadow.py`, and the hook is nine lines: a flag check,
+a deferred import, one call, and an `except Exception` that logs.
+
+Two guards, not one. The module catches its own exceptions and returns a summary
+carrying them; the hook catches whatever that missed, including the `ImportError`
+a half-deployed container produces. Spec Q §14 says Strategy Lab writes are
+best-effort and must not break memo generation, and the ordering is what makes
+that cheap to believe: by the time the hook runs there is nothing left to break.
+
+```
+scan → tier 1 → tier 2 → regime → discovery → per-ticker analysis
+     → memos delivered → paper auto-approve → notifications
+     → [flag] Strategy Lab shadow pass
+```
+
+### What one pass does
+
+One **ticker** snapshot per scored name, and — behind its own flag — one
+**universe** snapshot for the whole cutoff, shared by every cross-sectional arm.
+That second part is Spec Q §6's rule and PR 4's requirement 8: ranks assembled
+from snapshots built at different times are not a cross-section, so the universe
+snapshot is built once per cutoff and never per ticker.
+
+The arms come from `runner.run_snapshot`, unchanged. Re-running the same cutoff
+writes nothing: `registry.record_snapshot` returns the stored row for identical
+content and `record_decision` returns the stored decision, so a duplicate scan,
+a retry and a restart all converge.
+
+### Registration is idempotent, and the plan is a constant
+
+The pre-registration — hypothesis, primary metric, benchmarks, guardrails, end
+criteria, planned variant count — is a literal in
+`orchestrator/strategy_lab_shadow.py`, not a setting. An analysis plan a
+deployment variable can move is not a pre-registration. `ensure_experiment` runs
+at the start of every pass and is a no-op once the rows exist; it re-asserts the
+status the experiment is already in rather than the status a first registration
+would take, because `running -> registered` is not a legal transition and asking
+for it would make the second scan of the day fail on the experiment the first
+scan started.
+
+`PLANNED_VARIANTS` is the literal `4` rather than `len(ROSTER)`. It is the
+multiple-testing denominator (§18), and a denominator that grows silently when
+someone adds a strategy is how a tournament launders luck into evidence. Adding
+an arm is a visible edit that changes the experiment's content hash and forces a
+new `STRATEGY_LAB_EXPERIMENT` name — which is the freeze working, not a problem
+to route around.
+
+### Maturation: decisions today, executions later
+
+A shadow decision cannot be executed on the day it is made. A forward simulation
+needs the sessions that came *after* the snapshot, and at scan time there are
+none. So the scan records decisions and a nightly job (04:15 ET, registered only
+when both flags are on) opens and settles the executions once the bars exist,
+through `shadow.execute_arm` — the same §12 state machine PR 5's live path walks.
+
+A decision whose bars never arrive stays a decision with no execution. It is
+neither a win, a loss, nor a zero, and the scorecard counts it as pending.
+
+### Two integration defects this PR found and fixed
+
+Both were in `strategy_lab/snapshot_builder.py`'s compatibility adapter, both
+were invisible to PR 2's unit tests because those tests wrote fixture rows rather
+than rows the pipeline produces, and each on its own made the champion arm
+abstain or go flat on **every** real scan:
+
+* **Vocabulary.** The pipeline records a *view* — `bullish`, `bearish`,
+  `neutral` — and the Strategy Lab records a *side*. `swingtrader_composite_v1`
+  tests `direction == "long"`, a word the pipeline never writes. The builder now
+  translates, which is exactly the adapter's job.
+* **Ordering.** The pipeline generates the memo and *then* writes the ledger row,
+  so the builder's "memo at or after `scored_at`" filter never matched the memo
+  of the same scan, the frozen trade parameters were always absent, and the arm
+  abstained with `missing_dependency`. The two rows are now paired within a named
+  two-hour window — wider than any scan, far narrower than the five hours between
+  the three daily scans — with the resolved memo id on `model_provenance` so a
+  reader can check the pairing. When `memos` gains a run id, that join replaces
+  the window rather than widening it.
+
+### The operator surface
+
+`bot/handlers/strategy_lab.py`, owner-only through the same chat-id allowlist
+every other command uses. `/experiments`, `/strategies`, `/strategy <slug>`,
+`/pause_experiment [name]`, `/resume_experiment [name]`, plus a weekly-report
+section.
+
+Pausing an experiment stops the *work*, not only the reporting: a paused
+experiment is not in `registry.RUNNABLE_EXPERIMENT_STATUSES`, so every arm under
+it refuses at the runner and the shadow pass writes nothing.
+
+**No number on the card is produced here.** Counts are `len()` over stored rows.
+Every performance figure — samples, maturity, costs, drawdown, benchmark,
+uncertainty with its seed and `n_eff`, the family adjustment, correlation and
+overlap, and every warning code — is read out of the payload
+`scripts/strategy_lab_scoreboard.py` built over `metrics.py` and
+`comparables/inference.py`. `tests/test_strategy_lab_bot.py` holds that
+literally: it extracts every float in the rendered message and asserts each one
+appears in the payload, so a renderer that derived a ratio or a sum would fail.
+
+The clean and exploratory sections stay separate in the message because they are
+separate in the payload, a winner is named only when the payload names one, and
+the card says in as many words that a recommendation is not an authorisation.
+
+### What PR 4 does not do
+
+* **No promote and no live-tier command.** Spec Q §13 lists `/promote_arm` and
+  the per-trade approval callback; their safety services are PR 5 and PR 6. An
+  owner-only button that calls a promotion path which does not exist yet is worse
+  than no button. `tests/test_strategy_lab_bot.py` asserts the registered surface
+  is exactly the five commands above plus Phase 6's untouched `/live_kill`.
+* **No broker, under any path.** The tests run every failure path with a broker
+  double that raises on *any* attribute access — not just on an order method —
+  and the scan and the shadow pass both complete without touching it.
+* **No new table and no new migration.** PR 1's eight tables are still enough;
+  the head stays where it was.
+* **No existing scheduled job moves.** `tests/test_strategy_lab_scheduler.py`
+  pins every current job id and cron time, on both sides of the flag.
+* **No paper arm and no ensemble.** Every arm this creates is `shadow`, its mode
+  fixed at creation.

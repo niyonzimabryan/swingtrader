@@ -110,6 +110,22 @@ class PipelineScheduler:
                 name="Shadow calibration returns fill (3:30 AM ET)",
             )
 
+        # Strategy Lab shadow maturation (daily 4:15 AM ET, off market hours and
+        # clear of the two existing nightly jobs). Gated on the Strategy Lab
+        # flags rather than on enable_scans: it spends no model budget and calls
+        # no broker or vendor — it settles decisions that were already made
+        # against bars that are already stored (Spec Q §14, PR 4).
+        strategy_lab_shadow = bool(
+            getattr(self.settings, "strategy_lab_enabled", False)
+        ) and bool(getattr(self.settings, "strategy_lab_shadow_enabled", False))
+        if strategy_lab_shadow:
+            self.scheduler.add_job(
+                self._run_strategy_lab_maturation,
+                CronTrigger(hour=4, minute=15, timezone="America/New_York"),
+                id="strategy_lab_maturation",
+                name="Strategy Lab shadow maturation (4:15 AM ET)",
+            )
+
         # Pattern backfill queue drain (daily 3 AM ET, off market hours). Gated on
         # enable_scans like the other jobs — it spends Gemini quota, so a paused
         # scheduler must not keep draining. Only scheduled when the analog engine
@@ -141,6 +157,7 @@ class PipelineScheduler:
             + (1 if enable_scans and self.weekly_report else 0)
             + (1 if enable_scans else 0)  # shadow_returns
             + (1 if pattern_backfill else 0)
+            + (1 if strategy_lab_shadow else 0)
             + len(portfolio_jobs)
         )
         log.info(
@@ -154,6 +171,7 @@ class PipelineScheduler:
             weekly_report="Sun 18:00 ET" if (enable_scans and self.weekly_report) else "disabled",
             shadow_returns="03:30 ET" if enable_scans else "disabled",
             pattern_backfill="03:00 ET" if pattern_backfill else "disabled",
+            strategy_lab_maturation="04:15 ET" if strategy_lab_shadow else "disabled",
             portfolio_sync=portfolio_jobs or "disabled",
             daily_restart=self._restart_time_str() or "disabled",
         )
@@ -296,6 +314,30 @@ class PipelineScheduler:
             )
         except Exception as e:
             log.error("pattern_backfill_failed", error=str(e))
+
+    async def _run_strategy_lab_maturation(self):
+        """Settle shadow decisions whose forward bars have arrived (Spec Q §14).
+
+        No-op defensively as well as by registration, so a flag turned off
+        without a restart stops the work. It reaches no broker and no vendor:
+        the bars it reads are already in `price_bars`, and `strategy_lab/`
+        cannot import a broker at all.
+        """
+        if not (
+            getattr(self.settings, "strategy_lab_enabled", False)
+            and getattr(self.settings, "strategy_lab_shadow_enabled", False)
+        ):
+            return
+        try:
+            from orchestrator.strategy_lab_shadow import mature_shadow_decisions
+
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(
+                None, lambda: mature_shadow_decisions(self.settings)
+            )
+            log.info("strategy_lab_maturation_job", **summary.as_log_fields())
+        except Exception as e:
+            log.error("strategy_lab_maturation_job_failed", error=str(e)[:300])
 
     async def _notify_system(self, message: str):
         """Send an operator Telegram message; never let a notifier failure propagate."""
