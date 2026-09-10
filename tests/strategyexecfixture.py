@@ -110,7 +110,10 @@ def _promote(session, source, target):
         session, source.id, cutoff,
         n_decisions=400, n_matured=120, n_closed=110,
         warnings=("small_sample_in_one_regime",),
-        metrics={"net_return_after_costs": 0.04},
+        # Forward shadow evidence, not reconstructed: a promotion gate refuses
+        # `archival_reconstructed` outright (Spec Q §10), and a snapshot that
+        # does not say which it is counts as incomplete.
+        metrics={"net_return_after_costs": 0.04, "evidence_class": "forward_shadow"},
     )
     registry.acknowledge_metric_warnings(session, evidence.id, "bryan")
     registry.record_promotion(

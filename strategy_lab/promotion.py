@@ -22,11 +22,16 @@ second target outright, because "the evidence that justified paper now justifies
 live" is precisely the reasoning Spec Q §8 forbids: each tier needs its own
 evidence, collected in that tier.
 
-**Evidence has to be complete.** :func:`evidence_completeness` checks the
-snapshot for the fields Spec Q §10 requires beside any number — the cost model,
-the benchmark, the uncertainty interval, and the sample counts against the tier's
-operational floor — and whether the owner acknowledged the warnings. An
-incomplete snapshot is not weaker evidence; it is not evidence.
+**Evidence has to be complete, and clean.** :func:`evidence_completeness` checks
+the snapshot for the fields Spec Q §10 requires beside any number — the cost
+model, the benchmark, the uncertainty interval, the sample counts against the
+tier's operational floor — whether the owner acknowledged the warnings, and what
+kind of evidence it is. An `archival_reconstructed` snapshot is refused outright
+("exploratory only, and it can never rank a winner or satisfy a promotion gate"),
+and a snapshot that does not *say* which kind it is counts as incomplete: a
+promotion is the one place where "unknown provenance" and "reconstructed" have to
+mean the same thing. An incomplete snapshot is not weaker evidence; it is not
+evidence.
 
 **The system recommends; it never promotes.** :func:`recommendation` returns one
 of three labels derived arithmetically from the counts and floors, and nothing in
@@ -74,6 +79,17 @@ log = get_logger("strategy_lab_promotion")
 READY_FOR_OWNER_REVIEW = "ready_for_owner_review"
 INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 BLOCKED = "blocked"
+
+#: Spec Q §10 and PR 3's ruling: ``archival_reconstructed`` results are
+#: exploratory only and "can never rank a winner or satisfy a promotion gate".
+#: The evidence class is recorded by ``strategy_lab/metrics.py`` in the arm
+#: result's own payload, so the gate reads the stored value rather than
+#: re-deriving it — and a snapshot that does not carry one is *incomplete*, not
+#: assumed clean. A promotion is the one place where "unknown provenance" and
+#: "reconstructed" have to mean the same thing.
+EVIDENCE_CLASS_KEY = "evidence_class"
+CLEAN_EVIDENCE_CLASSES = frozenset({"clean_replay", "forward_shadow", "clean"})
+EXPLORATORY_EVIDENCE_CLASS = "archival_reconstructed"
 
 #: Budgets compare as floats, so they compare with a tolerance. A tenth of a
 #: basis point is far below any budget anyone would set and far above the error
@@ -140,6 +156,7 @@ class EvidenceCompleteness:
     floor_value: int
     floor_met: bool
     cutoff_utc: datetime | None = None
+    evidence_class: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -158,6 +175,7 @@ class EvidenceCompleteness:
                 "met": self.floor_met,
             },
             "cutoff_utc": self.cutoff_utc.isoformat() if self.cutoff_utc else None,
+            "evidence_class": self.evidence_class,
         }
 
 
@@ -272,7 +290,21 @@ def evidence_completeness(
         )
 
     warnings = tuple(_loads(row.warnings_json, []) or ())
+    metrics = _loads(row.metrics_json, {}) or {}
+    evidence_class = str(
+        (metrics.get(EVIDENCE_CLASS_KEY) if isinstance(metrics, dict) else "") or ""
+    )
     missing: list[str] = []
+    if evidence_class not in CLEAN_EVIDENCE_CLASSES:
+        # Named separately from a plain missing field, because the two failures
+        # read differently to an owner: "this evidence is reconstructed" and
+        # "this evidence does not say what it is" are both disqualifying, and
+        # neither is "the numbers are weak".
+        missing.append(
+            f"{EVIDENCE_CLASS_KEY}={evidence_class or 'unrecorded'}"
+            if evidence_class
+            else f"{EVIDENCE_CLASS_KEY} (unrecorded)"
+        )
     if not _loads(row.cost_assumptions_json, {}):
         missing.append("cost_assumptions")
     if not (row.benchmark or "").strip():
@@ -302,6 +334,7 @@ def evidence_completeness(
         floor_value=floor_value,
         floor_met=count >= floor_value,
         cutoff_utc=row.evaluation_cutoff_utc,
+        evidence_class=evidence_class,
     )
 
 
@@ -448,6 +481,13 @@ def plan(
     )
     if reuse:
         refusals.append(reuse)
+    if evidence.evidence_class == EXPLORATORY_EVIDENCE_CLASS:
+        refusals.append(
+            "this evidence is archival_reconstructed: exploratory only, and it "
+            "can never satisfy a promotion gate (Spec Q §10). Reconstructed "
+            "results are displayed separately and never combined with clean "
+            "replay or forward-shadow evidence"
+        )
     if not evidence.complete:
         refusals.append(
             "the evidence snapshot is incomplete: "

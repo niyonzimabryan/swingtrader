@@ -329,11 +329,15 @@ checklist. Do not turn the paper flag on from this page; turn it on from there.
    after the next scan (§10). Turn on `STRATEGY_LAB_UNIVERSE_ENABLED` only once
    the price plane and `universe_membership` are backfilled. No broker, no
    capital and no order is involved at this tier.
-9. Strategy Lab paper: only after the shadow observation window
-   (60 days / 100 matured decisions, Spec Q §10). Promote **one** arm with
-   `/promote_arm`, then `STRATEGY_LAB_PAPER_ENABLED=true`, and approve the first
-   card by hand. Follow `docs/STRATEGY_LAB_RUNBOOK.md` §5 rather than this list.
-10. Strategy Lab live: not reachable until the real `gtc stop_market` probe passes
-    against the live Robinhood account (`docs/EXECUTION_LIFECYCLE.md` §6) and the
-    micro-live canary is separately authorized. `STRATEGY_LAB_LIVE_ENABLED` and
-    `STRATEGY_LAB_LIVE_RISK_BUDGET` both stay at their defaults until then.
+9. Strategy Lab paper: only after the shadow observation window (60 days / 100
+   matured decisions, Spec Q §10). Paper dispatches through the Phase 6 lifecycle
+   to Alpaca paper and nothing else. Promote **one** arm with `/promote_arm`, then
+   `STRATEGY_LAB_PAPER_ENABLED=true`, and approve the first card by hand. Follow
+   `docs/STRATEGY_LAB_RUNBOOK.md` §5 rather than this list.
+10. Strategy Lab live: owner-promoted, one global champion, and gated by
+    everything in §9 plus the promotion audit, the paper flag, and a non-zero
+    `STRATEGY_LAB_LIVE_RISK_BUDGET`. Not reachable until the real `gtc
+    stop_market` probe passes against the live Robinhood account
+    (`docs/EXECUTION_LIFECYCLE.md` §6) and the micro-live canary is separately
+    authorized. `STRATEGY_LAB_LIVE_ENABLED` and `STRATEGY_LAB_LIVE_RISK_BUDGET`
+    both stay at their defaults until then.

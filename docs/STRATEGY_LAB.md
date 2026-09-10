@@ -1272,6 +1272,9 @@ identically, and the card shows both lists.
               |   - evidence not already used for THIS target
               |   - evidence complete: costs, benchmark, uncertainty, metrics,
               |     n_decisions, content_hash
+              |   - evidence CLEAN: `archival_reconstructed` is refused outright,
+              |     and a snapshot that does not say which class it is counts as
+              |     incomplete (Spec Q §10; PR 3's ruling)
               |   - the tier's operational floor (Spec Q §10)
               |
               \  from orchestrator/strategy_lab_promotion.py:

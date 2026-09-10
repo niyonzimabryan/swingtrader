@@ -755,3 +755,132 @@ Rollback at every phase is a feature-flag change plus pausing experiment arms. E
 - Bernard and Thomas, post-earnings-announcement drift: https://doi.org/10.2307/2491062
 - Robinhood Agentic Trading risks and account model: https://robinhood.com/us/en/support/articles/agentic-trading-overview/
 - SEC auto-trading caution: https://www.sec.gov/about/reports-publications/investorpubsautotradinghtm
+
+## 21. Rulings log (post-build)
+
+Ratified 2026-09-10 from the Strategy Lab builds (PR 1 #54, PR 2 #58, PR 3 #60,
+PR 4 #64, PR 5 #65). Each is a decision a build session made where this spec
+was silent or where the code as merged differs from the text above; the spec
+text stands where the two agree, and this log is the record where they do not.
+
+**PR 2 — snapshots and the SDK**
+
+- **A future fact fails closed.** An input whose `known_at_utc` is after the
+  cutoff raises `NonPointInTimeInput`; nothing is filtered quietly. Membership is
+  filtered on both times: the `member_from <= day < member_to` interval *and*
+  `known_at_utc <= cutoff`.
+- **`REPLAY_ELIGIBLE_PRICE_SOURCES` is empty.** Every snapshot built from stored
+  bars is `archival_reconstructed`, `replay_eligible=False`, exploratory only.
+  No promotion-eligible replay exists until a licensed archival source carries
+  availability/revision provenance; the way to change that is the source, not
+  the flag.
+- **One execution-policy contract.** `ResolvedExecutionPlan.policy_spec_fields()`
+  produces exactly the constructor keywords of `comparables/outcomes.py::PolicySpec`,
+  so Spec N's simulator is the one simulator; the fraction tuple crosses the
+  package boundary instead of an import.
+- **`short_term_reversal_v1` is universe-scoped and structurally shadow-only.**
+  Its cap is a cross-sectional rule and cannot be evaluated per ticker without
+  mixing cutoffs.
+- **Abstain is not flat.** `abstain` means the strategy could not evaluate the
+  name; `flat` means it evaluated and did not select. Indicators return `None`
+  rather than padding a short window.
+- Project assumptions labelled as such in each version's immutable config: the
+  earnings evaluation cadence (first evaluation at which the record was
+  knowable), signal-strength normalisation, top decile = `ceil(eligible/10)`,
+  equal weight ⇒ `position_risk_pct = 1/selected`, and `cohort == "memo"` as the
+  composite's actionability gate.
+
+**PR 3 — runner, replay, measurement**
+
+- **Reconstructed evidence is scored in its own section and can never rank a
+  winner** or satisfy a promotion gate; the scorecard prints the evidence class
+  in its section header.
+- **An unmatured position is open, not flat at zero.** `ReplayOutcome.matured`
+  is false when bars run out before the horizon with no exit; metrics count it,
+  name it, and exclude it from every statistic.
+- **Uncertainty and multiplicity are called, not reimplemented**: the bootstrap,
+  effective sample size, Šidák and Romano–Wolf step-M come from
+  `comparables/inference.py`. A run without the backends prints
+  `uncertainty_unavailable` and refuses to name a winner.
+- **The ranking gate is a project decision, printed on every card**: a leader is
+  named only if the evidence is clean, no arm is blocked, every arm clears its
+  floors, the multiplicity-adjusted lower bound is above zero, above the
+  benchmark and above the runner-up's point estimate, and step-M rejects.
+  Otherwise `insufficient_evidence`. Worth revisiting once a real shadow sample
+  exists.
+- **The variant denominator is the larger of pre-registered and tried**, retired
+  and paused arms included.
+- **Fills replay on the split-adjusted series**, matching Spec N's `policy_bars`;
+  every outcome records `price_basis`. §7's "unadjusted OHLC for fills" is not
+  implemented because a hold spanning a split cannot mix conventions without
+  inventing a return.
+- **A shadow fill walks the §12 state machine** with the lab standing in for
+  owner, risk desk and broker, every row `mode='shadow'`, every hop checked
+  against `EXECUTION_TRANSITIONS`.
+- Deferred: CSCV / probability of backtest overfitting belongs in Spec N's
+  inference layer as its own PR.
+- A knife-edge fixture in the ranking-gate test flipped between Python 3.11's
+  naive float `sum` and 3.12's compensated one; CI runs 3.12 and fixtures now
+  keep real margins.
+
+**PR 4 — shadow integration and operator surface**
+
+- **Two real gates, not five.** `STRATEGY_LAB_ENABLED` (the read surface) and
+  `STRATEGY_LAB_SHADOW_ENABLED` (the one path that writes). §14's paper, live
+  and live-kill flags were withheld because their services did not exist; a
+  switch whose "on" does nothing is worse than an absent one. PR 6 adds the
+  paper and live flags with the services; Phase 6's persistent kill switch
+  (`/live_kill`) is the one kill switch.
+- **One ticker snapshot per scored name plus at most one universe snapshot per
+  cutoff**, shared by every arm; never one per (ticker, arm), never a
+  cross-section assembled per ticker.
+- **A Strategy Lab failure never blocks memo delivery**: the hook runs last in
+  the scan, isolated, logged, and continues.
+- **Two PR 2 adapter defects fixed out of scope** because either made the
+  compatibility arm produce nothing on every real scan: the pipeline writes a
+  *view* (`bullish`/`bearish`/`neutral`) where the adapter tested a *side*
+  (`long`); and the pipeline writes the memo before the ledger row, so the
+  adapter's ordering filter never matched. Rows are now paired within a named
+  two-hour window; a run id on `memos` should replace the window.
+- **Settlement lags a full horizon plus grace** (30 days for the champion), so
+  the scorecard reads empty for about a month after the flags flip; settling
+  earlier would record `bars_exhausted` exits as matured outcomes.
+- **Cross-sectional arms stay behind `STRATEGY_LAB_UNIVERSE_ENABLED`** until the
+  price plane and `universe_membership` are backfilled.
+
+**PR 5 — the execution machine**
+
+- **Built on Phase 6's `ExecutionService`, not beside it.** Approval, fresh risk
+  re-evaluation, the kill switch, placement, fill polling, the `gtc`
+  `stop_market` with read-back, `unprotected` paging and daily stop replacement
+  are Phase 6's and are not reimplemented. PR 5 adds the persistent §12 machine
+  those steps land on, via an advisory observer seam.
+- **The §12 rules are pure.** `strategy_lab/execution.py` (mode→venue binding,
+  reserving/blocking state sets, redaction allowlist) is in `PURE_SDK_MODULES`
+  and cannot import `config`, `database`, `execution` or `portfolio` — the
+  enforcement point for invariant 11.
+- **`registry.py` stays the one writer of `strategy_trades`**; PR 5's
+  `open_execution` (reuse-on-race inside a SAVEPOINT), `advance_execution`,
+  `reserved_notional`, `blocking_executions`, `resumable_executions` compose on
+  PR 3's writer.
+- **The reservation is a predicate on `status`, not a counter**, so "released
+  exactly once" is structural: terminal states have no outgoing edge.
+- **An attempt is `(decision, portfolio_context_hash)`** (inherited from PR 3):
+  re-proposing a decision the owner just cancelled against an unmoved book
+  resolves to the cancelled row and places nothing; a moved book is a new
+  attempt.
+- **Capability inspection is review-only.** `inspect_order_capabilities` reads
+  the Robinhood server's own `tools/list` schema and reports disagreements with
+  `ROBINHOOD_CAPABILITIES`; a `bracket`/`stop_loss` parameter appearing is a
+  finding for a human, never an automatic capability. `AlpacaBroker` declares
+  `can_place_attached_stop=False` on purpose so a gate that passes in paper
+  cannot fail in live.
+- **Five Phase 6 defects closed**: an ambiguous placement whose order existed was
+  marked `failed` (now `reconciliation_required` either way); a partial fill's
+  remainder left the stop undersized (resume cancels first, re-places at true
+  size under a quantity-keyed `ref_id`); shadow rows leaked into `resume()` and
+  `blocking_executions` (both exclude `shadow`); two resume hops jumped edges the
+  spec does not draw; `AlpacaBroker` declared no capabilities.
+- **Deferred to PR 6**: scheduling `resume()` / `expire_stale()` / `reconcile()`,
+  and the owner approve/reject card for a live `strategy_trade`; no per-tranche
+  history for partial fills (needs a migration no invariant asks for).

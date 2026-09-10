@@ -61,7 +61,11 @@ def complete_metrics(**overrides) -> dict:
         n_matured=150,
         n_closed=45,
         warnings=("small_sample_in_one_regime",),
-        metrics={"net_return_after_costs": 0.04, "mean_r": 0.31},
+        metrics={
+            "net_return_after_costs": 0.04,
+            "mean_r": 0.31,
+            "evidence_class": "forward_shadow",
+        },
         cost_assumptions={"slippage_bps": 10.0, "half_spread_bps": 5.0},
         uncertainty={"level": 0.9, "lower": 0.004, "upper": 0.08},
         benchmark="spy_total_return",
@@ -287,6 +291,37 @@ class EvidenceTests(PromotionFixture):
             )
         self.assertEqual(to_paper.floor_name, "shadow_matured_decisions")
         self.assertEqual(to_live.floor_name, "paper_closed_executions")
+
+    def test_reconstructed_evidence_can_never_satisfy_a_promotion_gate(self):
+        """Spec Q §10, and PR 3's ruling restated at the gate that consumes it."""
+        with get_session() as session:
+            reconstructed = self._evidence(
+                session, self.shadow_id, CUTOFF + timedelta(days=5),
+                metrics={
+                    "net_return_after_costs": 0.04,
+                    "evidence_class": pm.EXPLORATORY_EVIDENCE_CLASS,
+                },
+                warnings=("archival_reconstructed_exploratory_only",),
+            )
+            session.commit()
+        plan = self.plan(self.request(evidence=reconstructed))
+        self.assertFalse(plan.confirmable)
+        self.assertEqual(plan.evidence.evidence_class, pm.EXPLORATORY_EVIDENCE_CLASS)
+        self.assertTrue(
+            any("archival_reconstructed" in item for item in plan.refusals),
+            plan.refusals,
+        )
+
+    def test_evidence_that_does_not_say_what_it_is_counts_as_incomplete(self):
+        with get_session() as session:
+            silent = self._evidence(
+                session, self.shadow_id, CUTOFF + timedelta(days=6),
+                metrics={"net_return_after_costs": 0.04},
+            )
+            session.commit()
+        plan = self.plan(self.request(evidence=silent))
+        self.assertFalse(plan.confirmable)
+        self.assertIn("evidence_class (unrecorded)", plan.evidence.missing)
 
     def test_an_insufficient_sample_is_labelled_rather_than_ranked(self):
         evidence = pm.EvidenceCompleteness(

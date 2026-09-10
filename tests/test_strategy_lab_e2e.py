@@ -178,7 +178,7 @@ class LabE2EFixture(ScanFixture):
             n_matured=12,
             n_closed=4,
             warnings=("small_sample",),
-            metrics={"net_return_after_costs": 0.03},
+            metrics={"net_return_after_costs": 0.03, "evidence_class": "forward_shadow"},
             cost_assumptions=lab.cost_assumptions(self.settings).as_dict()
             if hasattr(lab.cost_assumptions(self.settings), "as_dict")
             else {"slippage_bps": 10.0},
