@@ -68,6 +68,7 @@ from strategy_lab.domain import (
     naive_utc,
     require_transition,
 )
+from strategy_lab.validation import verify_manifest
 from utils.logger import get_logger
 from utils.timeutils import utcnow_naive
 
@@ -855,3 +856,37 @@ def promotions_for(session, arm_id: int):
         .order_by(models.PromotionEvent.created_at, models.PromotionEvent.id)
         .all()
     )
+
+
+# --------------------------------------------------------------------------- #
+# Implementation-manifest drift (Spec Q §6, Phase 2)
+# --------------------------------------------------------------------------- #
+
+
+def verify_registered_manifest(session, version: StrategyVersion) -> None:
+    """Refuse to proceed when the code on disk is not what was registered.
+
+    Spec Q §6: "On activation and before every run, the registry recomputes the
+    manifest hash and compares it with
+    ``strategy_versions.implementation_manifest_hash``." ``version`` is the
+    freshly rebuilt domain object — ``strategy_lab.strategies.build_versions()``
+    produces one per slug from the source as it is right now — and this is the
+    comparison. A mismatch raises ``validation.ManifestDrift``.
+
+    Registration itself already refuses a *content* change under an existing
+    identity; this is the other half, and it is the half that runs on every
+    evaluation rather than only when someone tries to re-register.
+    """
+    row = require_strategy_version(session, version.slug, version.version)
+    verify_manifest(version, row.implementation_manifest_hash)
+
+
+def activate_strategy_version(session, version: StrategyVersion, status):
+    """Recompute the manifest, then move the version's status.
+
+    The order matters: an activation that skipped the check would let a shadow
+    arm start running on edited code under an identity whose evidence was
+    collected from different code.
+    """
+    verify_registered_manifest(session, version)
+    return set_strategy_version_status(session, version.slug, version.version, status)

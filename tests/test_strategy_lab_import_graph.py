@@ -34,8 +34,25 @@ PACKAGE = REPO_ROOT / "strategy_lab"
 #: First-party packages the whole Strategy Lab package may reach.
 ALLOWED_FIRST_PARTY = {"strategy_lab", "utils"}
 
-#: `registry.py` is the service boundary and the only module allowed a session.
-SESSION_ALLOWED = {"registry.py"}
+#: The two modules allowed a database session. `registry.py` is the service
+#: boundary for every experiment-table write; `snapshot_builder.py` is Phase 2's
+#: deliberate pure/impure split — `snapshots.py` states the point-in-time rules
+#: and holds no session, the builder holds the session and hands it normalized
+#: value objects (Spec Q §6, PR 2 requirement 1).
+SESSION_ALLOWED = {"registry.py", "snapshot_builder.py"}
+
+#: Phase 2's SDK. Every one of these is pure: a strategy receives an immutable
+#: snapshot and returns decisions, and a helper it reaches must be equally
+#: unable to open a session. Named explicitly, on top of the whole-package
+#: sweeps below, so that deleting one from the package is a visible test
+#: failure rather than a silently narrower guarantee.
+PURE_SDK_MODULES = {
+    "execution_policy.py",
+    "indicators.py",
+    "snapshots.py",
+    "universe.py",
+    "validation.py",
+}
 
 #: Pure stdlib, and staying that way: this is what a strategy imports.
 NO_FIRST_PARTY_AT_ALL = {"domain.py"}
@@ -61,6 +78,12 @@ FORBIDDEN_THIRD_PARTY = {
 
 def _module_files() -> list[Path]:
     return sorted(p for p in PACKAGE.rglob("*.py") if "__pycache__" not in p.parts)
+
+
+def _strategy_files() -> list[Path]:
+    return sorted(
+        p for p in (PACKAGE / "strategies").rglob("*.py") if "__pycache__" not in p.parts
+    )
 
 
 def _imported_roots(path: Path) -> set[str]:
@@ -134,6 +157,45 @@ class StrategyLabImportGraphTests(unittest.TestCase):
             [],
             "registry.py is the service boundary; no other Strategy Lab module "
             "may hold a database session (Spec Q §5, §6).",
+        )
+
+    def test_the_pure_sdk_and_every_strategy_hold_no_session(self):
+        """Spec Q §5, named module by module rather than only by sweep."""
+        present = {p.name for p in _module_files()}
+        missing = sorted(PURE_SDK_MODULES - present)
+        self.assertEqual(
+            missing, [], "a pure SDK module named here has disappeared from the package"
+        )
+        strategies = _strategy_files()
+        self.assertGreaterEqual(
+            len(strategies), 5, "the V1 roster is four strategies plus its __init__"
+        )
+        offenders = []
+        for path in sorted(
+            [p for p in _module_files() if p.name in PURE_SDK_MODULES] + strategies
+        ):
+            reached = _imported_roots(path)
+            for root in sorted(reached & ({"database", "sqlalchemy"} | FORBIDDEN_FIRST_PARTY | FORBIDDEN_THIRD_PARTY)):
+                offenders.append(f"{path.name} imports {root}")
+        self.assertEqual(
+            offenders,
+            [],
+            "the Phase 2 SDK and every strategy stay pure: no session, no "
+            "broker, no Telegram, no model client, no config (Spec Q §5, §6).",
+        )
+
+    def test_every_strategy_reaches_only_the_strategy_lab(self):
+        first_party = _first_party_roots()
+        offenders = {}
+        for path in _strategy_files():
+            unexpected = sorted((_imported_roots(path) & first_party) - {"strategy_lab"})
+            if unexpected:
+                offenders[path.name] = unexpected
+        self.assertEqual(
+            offenders,
+            {},
+            "a strategy module imports its snapshot, its indicators and its "
+            "execution policy from strategy_lab and nothing else.",
         )
 
     def test_domain_imports_nothing_first_party(self):

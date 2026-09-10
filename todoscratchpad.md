@@ -725,8 +725,7 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
 - [ ] **Phase 4 — evidence planes: filings (13F/13D/G/Form 4), vintage-correct macro,
       timestamped news** (`O`)
 - [ ] **Phase 5 — Strategy Lab** (`Q`) — ships on its own six-PR plan and prompts.
-      - [ ] **PR 1 — domain + experiment persistence** — in review on
-            `claude/strategy-lab-1-domain`: the eight remaining Spec Q §8 tables in
+      - [x] **PR 1 — domain + experiment persistence — MERGED** ([PR #54](https://github.com/niyonzimabryan/swingtrader/pull/54), `3da5acb`): the eight remaining Spec Q §8 tables in
             `0007_strategy_lab` (`source_observations` reused from Phase 3a, not
             duplicated), `strategy_lab/domain.py` (frozen content-hashed
             `StrategyVersion` / `ExperimentSpec` / `MarketSnapshot` /
@@ -739,6 +738,34 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
             from the package. Docs: `docs/STRATEGY_LAB.md`.
             `STRATEGY_LAB_ENABLED` arrives with PR 4, which owns the flags and the
             hook they gate.
+      - [ ] **PR 2 — snapshot builder + strategy SDK** — in review on
+            `claude/strategy-lab-2-sdk`: `strategy_lab/snapshots.py` (pure
+            point-in-time rules) and `snapshot_builder.py` (the session-holding
+            half, reading `price_bars`, `universe_membership`,
+            `source_observations`, `scored_candidates`/`memos`);
+            `execution_policy.py` producing the same `PolicySpec` fields
+            `comparables/outcomes.py` feeds `backtest/simulator.py`, so Spec N
+            and Spec Q share one execution-policy contract and there is still
+            one simulator; `indicators.py`, `universe.py` (the shared
+            `liquid_us_equity_v1` screen), `validation.py` (decision-set
+            validity, implementation-manifest drift, the replay guard, the
+            structural shadow-only guard); and the four-strategy roster.
+            Nothing is wired into the pipeline, no flag, no new table.
+            - [ ] **No promotion-eligible replay is possible yet.**
+                  `snapshot_builder.REPLAY_ELIGIBLE_PRICE_SOURCES` is empty
+                  because no price source we hold carries availability or
+                  revision provenance, so every snapshot built from stored bars
+                  is `archival_reconstructed` and exploratory (Spec Q §6). Lands
+                  with a licensed archival source or forward-collected
+                  observations — the same blocker as the Sharadar checkout item
+                  under Phase 3b.
+            - [ ] **The pipeline persists no portfolio context**, so the
+                  compatibility arm's `portfolio_context_hash` covers only the
+                  sizing context the scorer recorded (regime multiplier,
+                  conviction multiplier, volatility adjustment, position
+                  percentage). Spec Q §6 asks for the full context hash; closing
+                  the gap is a change to the scoring pipeline, which PR 2 does
+                  not own.
 - [ ] **Phase 6 — order proposal→approval→execution** — gated on Phases 0–3 **and** on
       documenting whether Robinhood can place a protective exit that survives our
       process. Human-in-the-loop, not an autonomous goal run.
@@ -801,4 +828,4 @@ after the flip. The pattern-engine went live when its flag was enabled without
 the spec-mandated backfill + bakeoff gate, which is how a green test suite
 coexisted with a structurally broken production feature.
 
-*Last updated: 2026-07-08*
+*Last updated: 2026-09-09*
