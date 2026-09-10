@@ -1864,6 +1864,20 @@ _LIVE_CHAMPION_WHERE = text("mode = 'live' AND status = 'active'")
 _ACTIVE_ARM_WHERE = text("status = 'active'")
 _OPEN_EXECUTION_WHERE = text(f"status NOT IN ({_TERMINAL_TRADE_SQL})")
 
+#: Spec Q §12 invariant 3, and invariant 6's unknown case: a new live entry is
+#: refused while any existing execution is in one of these states. They are the
+#: `strategy_trades` half of `PROPOSAL_BLOCKING_STATUSES` below, and
+#: `portfolio.killswitch.entry_block` reads both — one block list, two tables,
+#: rather than a second switch (Spec Q §12 invariant 6, Phase 5 requirement 5).
+#:
+#: `placement_unknown` is here because it is *not* terminal and keeps its
+#: reservation: until reconciliation proves no order exists, an order might.
+STRATEGY_TRADE_BLOCKING_STATUSES: tuple[str, ...] = (
+    ExecutionState.PROTECTION_FAILED.value,
+    ExecutionState.PLACEMENT_UNKNOWN.value,
+    ExecutionState.RECONCILIATION_REQUIRED.value,
+)
+
 
 class StrategyVersion(Base):
     """One immutable strategy identity: rules, config, and the code that runs it.
