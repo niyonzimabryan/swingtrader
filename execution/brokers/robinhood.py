@@ -9,7 +9,12 @@ from datetime import timedelta
 from typing import Any
 
 from database.token_store import build_oauth_provider, is_configured as token_store_is_configured
-from execution.brokers.base import BrokerOrderRequest, BrokerOrderResult, BrokerOrderReview
+from execution.brokers.base import (
+    BrokerOrderRequest,
+    BrokerOrderResult,
+    BrokerOrderReview,
+    OpenOrder,
+)
 from execution.brokers.capabilities import BrokerCapabilities
 from portfolio.records import (
     AccountRecord,
@@ -261,6 +266,99 @@ class RobinhoodMCPBroker:
             filled_notional=filled_notional,
             raw=raw,
         )
+
+    # ------------------------------------------------------------------
+    # The protective exit (Spec L §5.1). Two halves: place, then read back.
+    # ------------------------------------------------------------------
+
+    def place_stop(
+        self,
+        *,
+        symbol: str,
+        quantity: int,
+        stop_price: float,
+        ref_id: str,
+        side: str = "sell",
+    ) -> BrokerOrderResult:
+        """The standalone ``gtc`` ``stop_market`` that protects a filled entry.
+
+        Every parameter below is forced by the schema dumped from the server's
+        own ``tools/list`` on 2026-09-08, not chosen: there is no bracket, OCO,
+        OTO or attach-stop parameter anywhere in it, ``stop_market`` is
+        regular-hours only, and ``stop_market`` is whole-share only. So a whole
+        integer quantity is asserted here rather than rounded — a stop for 1.5
+        shares of a 2-share position is not a protective exit, and rounding one
+        into existence would hide the bug that produced it.
+
+        ``ref_id`` is required, not defaulted: the fill-to-stop race is retried
+        by the execution service, and a retry without the idempotency key is how
+        one position acquires two stops.
+        """
+        if int(quantity) != float(quantity) or int(quantity) <= 0:
+            raise RobinhoodMCPError(
+                f"a protective stop is whole-share only; refusing quantity="
+                f"{quantity!r} (Spec L §5.1)."
+            )
+        if not ref_id:
+            raise RobinhoodMCPError(
+                "a protective stop carries a ref_id: without the idempotency "
+                "key a retried placement can create a second stop."
+            )
+        if float(stop_price) <= 0:
+            raise RobinhoodMCPError(f"stop_price={stop_price!r} must be positive.")
+
+        order = BrokerOrderRequest(
+            symbol=symbol.upper(),
+            side=side,
+            order_type="stop_market",
+            quantity=int(quantity),
+            stop_price=float(stop_price),
+            time_in_force="gtc",
+            market_hours="regular_hours",
+            client_context={"ref_id": ref_id, "purpose": "protective_exit"},
+        )
+        review = self.review_order(order)
+        if not review.approved:
+            return BrokerOrderResult(
+                broker=self.name,
+                success=False,
+                error=" | ".join(review.errors) or "the broker did not approve the protective stop.",
+                raw=review.raw,
+            )
+        return self.place_order(review)
+
+    def read_open_orders(self, *, symbol: str | None = None) -> list[OpenOrder]:
+        """Orders as the broker currently reports them, normalized.
+
+        No status filter is passed upstream. The filter is applied here on
+        :attr:`OpenOrder.is_open`, which treats an unrecognised state as *open*:
+        a status string this adapter has never seen must not silently remove a
+        stop from the protection check.
+        """
+        rows = self.get_orders()
+        wanted = (symbol or "").strip().upper()
+        out: list[OpenOrder] = []
+        for raw in rows:
+            row_symbol = (_first_string(raw, ("symbol", "ticker")) or "").upper()
+            if wanted and row_symbol != wanted:
+                continue
+            out.append(
+                OpenOrder(
+                    broker=self.name,
+                    order_id=_first_string(raw, ("order_id", "id")),
+                    symbol=row_symbol,
+                    side=_first_string(raw, ("side", "direction")),
+                    order_type=_first_string(raw, ("type", "order_type")),
+                    status=_first_string(raw, ("state", "status")),
+                    quantity=_first_number(raw, ("quantity", "qty", "shares")),
+                    stop_price=_first_number(raw, ("stop_price", "stop")),
+                    limit_price=_first_number(raw, ("limit_price", "price")),
+                    time_in_force=_first_string(raw, ("time_in_force", "tif")),
+                    ref_id=_order_ref_id(raw),
+                    raw=raw if isinstance(raw, dict) else {},
+                )
+            )
+        return out
 
     def find_order_by_ref_id(self, ref_id: str) -> dict | None:
         """Best-effort reconciliation for ambiguous placement failures."""

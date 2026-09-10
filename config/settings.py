@@ -186,6 +186,49 @@ class Settings(BaseSettings):
     # fraction of an account's known holdings writes nothing and pages.
     portfolio_mass_deletion_threshold: float = 0.5
 
+    # --- Proposal -> approval -> execution lifecycle (Spec L §6, Phase 6) ---
+    # Off by default, like every new capability. With the flag false the
+    # `propose_order` tool is not registered at all (an advertised tool that
+    # answers "disabled" is worse than an absent one) and the execution
+    # service refuses every approval callback.
+    phase6_execution_enabled: bool = False
+    # Spec L §6.6. `risk_fraction` is a *fraction* of equity. A value at or
+    # above this is a percentage typed as a fraction (0.5 meaning 0.5%) and is
+    # refused rather than converted.
+    risk_fraction_percentage_floor: float = 0.05
+    # The hard cap. Above it a proposal is refused, never silently clamped.
+    risk_fraction_hard_cap: float = 0.01
+    # The evidenced budget: per-trade cap and daily notional.
+    evidenced_risk_cap: float = 0.01
+    evidenced_daily_notional: float = 0.0
+    # The discretionary budget: separate per-trade cap and daily notional, so
+    # judgment trades and evidenced trades are separate rows and a separate
+    # query (Spec L §6.6).
+    discretionary_risk_cap: float = 0.0025
+    discretionary_daily_notional: float = 0.0
+    # `advisory` (default): a non-positive lower bound re-labels the proposal
+    # `discretionary` and prints the bound. `strict`: it sizes to zero and an
+    # uncited proposal is refused. Owner decision 2026-09-08 — advisory.
+    evidence_gate_mode: str = "advisory"
+    # A cited cohort answer must be no older than this many trading sessions.
+    citation_max_age_sessions: int = 5
+    # Spec L §5.1: entry fills -> stop placed -> stop read back from the broker.
+    # A position not read back as protected inside this window is marked
+    # `unprotected`, pages, and blocks further entries.
+    protection_window_seconds: int = 120
+    protection_poll_interval_seconds: float = 2.0
+    # How long an approval card stays valid. Single-use and owner-bound too.
+    approval_ttl_seconds: int = 1800
+    # HMAC key for the signed approval reference. No default: an unset secret
+    # means no card can be minted, which is the correct failure.
+    execution_approval_secret: str = ""
+    # Concentration and sector caps for a Phase 6 proposal, over the COMBINED
+    # book across every account (Spec L §5.1). Separate from the scan bot's
+    # `max_position_pct` / `max_sector_exposure` so Phase 6 cannot move
+    # production capital limits.
+    proposal_max_position_pct: float = 0.10
+    proposal_max_sector_pct: float = 0.30
+
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
     scoring_model: str = "claude-opus-4-6"

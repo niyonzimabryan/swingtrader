@@ -2275,3 +2275,226 @@ class PromotionEvent(Base):
     previous_risk_budget = Column(Float, nullable=False, default=0.0)
     new_risk_budget = Column(Float, nullable=False, default=0.0)
     created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+# --------------------------------------------------------------------------- #
+# Proposal -> approval -> execution lifecycle (Spec L §6, Phase 6)
+# --------------------------------------------------------------------------- #
+
+#: The states a proposal moves through. Stable strings: they are printed on the
+#: approval card, filtered on by the daily job, and counted in the journal.
+#:
+#: ``proposed``      created and shown; awaiting an owner approval out of band.
+#: ``risk_rejected`` refused by a guard, and **still returned with the reason**
+#:                   so the agent can explain why rather than silently omitting
+#:                   the idea (Spec L §6.4).
+#: ``approved``      the owner's single-use approval was verified and consumed.
+#: ``submitted``     an entry order exists at the broker.
+#: ``filled``        the entry filled; the protective stop is not yet verified.
+#: ``protected``     the ``gtc`` ``stop_market`` was **read back** from the
+#:                   broker. This is the only state in which a live position is
+#:                   considered safe.
+#: ``unprotected``   the stop could not be read back inside the window. Pages,
+#:                   and blocks every further entry until it is resolved.
+#: ``rejected``      the owner declined.
+#: ``expired``       the approval reference expired unused.
+#: ``cancelled``     withdrawn before approval.
+#: ``failed``        broker review or placement refused; no position exists.
+#: ``reconciliation_required``
+#:                   the broker's answer was unknown. Not terminal, and it
+#:                   blocks new entries until a human resolves it.
+PROPOSAL_STATUSES: tuple[str, ...] = (
+    "proposed",
+    "risk_rejected",
+    "approved",
+    "submitted",
+    "filled",
+    "protected",
+    "unprotected",
+    "rejected",
+    "expired",
+    "cancelled",
+    "failed",
+    "reconciliation_required",
+)
+
+#: A live position exists (or may exist) in these states, so they are the ones
+#: a concentration or exposure calculation over pending orders must count.
+PROPOSAL_OPEN_STATUSES: tuple[str, ...] = (
+    "approved",
+    "submitted",
+    "filled",
+    "protected",
+    "unprotected",
+    "reconciliation_required",
+)
+
+#: States that block every further entry until a human resolves them
+#: (Spec L §5.1; Spec Q §12 invariant 3).
+PROPOSAL_BLOCKING_STATUSES: tuple[str, ...] = ("unprotected", "reconciliation_required")
+
+#: Spec L §6.6's two budgets. Separate rows on purpose: "how do my judgment
+#: trades do versus my evidenced trades" has to be a query.
+PROPOSAL_BUDGETS: tuple[str, ...] = ("evidenced", "discretionary")
+
+
+class Proposal(Base):
+    """One ``propose_order`` call, and everything that happened to it.
+
+    The row is the audit trail for the one path in this repository that can
+    reach live capital. It records what was asked for, what every guard said,
+    the size the *code* computed (never the agent — Spec L §6.6), each cap that
+    bound that size, the portfolio state it was computed against, the owner
+    approval that released it, and the broker orders that resulted.
+
+    Three deliberate non-foreign-keys. ``cohort_answer_id`` points at a Spec N
+    answer store, ``execution_id`` at ``strategy_trades`` (Spec Q), and
+    ``account_id`` at ``brokerage_accounts`` (Phase 1) — all recorded as plain
+    values, because a cross-phase FK makes the integration merge non-trivial
+    (``migrations/README.md``) and none of the three is owned by this phase.
+
+    ``quantity`` is **whole shares**. Robinhood's ``stop_market`` is whole-share
+    and regular-hours only (Spec L §5.1), so a protected entry can never be
+    fractional and can never be a ``dollar_amount``; a size that rounds down to
+    zero is ``risk_rejected`` rather than rounded up.
+    """
+
+    __tablename__ = "proposals"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN ({_sql_values(PROPOSAL_STATUSES)})", name="ck_proposals_status"
+        ),
+        CheckConstraint(
+            f"budget IN ({_sql_values(PROPOSAL_BUDGETS)})", name="ck_proposals_budget"
+        ),
+        # Long only, by construction rather than by convention: a short entry
+        # has no protective stop shape in this design and Spec L §6 never
+        # describes one.
+        CheckConstraint("side = 'long'", name="ck_proposals_side_long_only"),
+        # The agent never chooses a quantity, and the code never rounds one up.
+        CheckConstraint("quantity >= 0", name="ck_proposals_quantity_nonnegative"),
+        UniqueConstraint("proposal_uid", name="uq_proposals_uid"),
+        Index("ix_proposals_status_created", "status", "created_at"),
+        Index("ix_proposals_ticker", "ticker"),
+        Index("ix_proposals_budget_created", "budget", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    #: The public identity, used in the signed approval reference. A uuid4 so a
+    #: card cannot be guessed from a neighbouring one.
+    proposal_uid = Column(String(36), nullable=False)
+
+    ticker = Column(String(32), nullable=False)
+    side = Column(String(10), nullable=False, default="long")
+    entry = Column(Float, nullable=False)
+    stop = Column(Float, nullable=False)
+    expected_hold_sessions = Column(Integer, nullable=True)
+
+    #: What the agent asked for, as a fraction of equity, and what the caps
+    #: left of it after the §6.6 multiplier and every budget cap.
+    risk_fraction = Column(Float, nullable=False)
+    risk_fraction_effective = Column(Float, nullable=False, default=0.0)
+
+    #: Spec N answer id, as a plain value. Null for an uncited proposal.
+    cohort_answer_id = Column(String(120), nullable=True)
+    budget = Column(String(20), nullable=False, default="discretionary")
+    #: The §6.6 scaling inputs, printed on the card whichever budget applies —
+    #: including a negative lower bound when there is one.
+    evidence_lower_bound = Column(Float, nullable=True)
+    evidence_point_estimate = Column(Float, nullable=True)
+    evidence_horizon_sessions = Column(Integer, nullable=True)
+    evidence_multiplier = Column(Float, nullable=True)
+    evidence_gate_mode = Column(String(20), nullable=False, default="advisory")
+    #: Why the citation was accepted, or why it was not. Always populated.
+    evidence_reason = Column(Text, nullable=False, default="")
+
+    #: Computed by code from entry, stop and the effective risk fraction, then
+    #: rounded **down** to whole shares.
+    quantity = Column(Integer, nullable=False, default=0)
+    notional = Column(Float, nullable=False, default=0.0)
+    risk_dollars = Column(Float, nullable=False, default=0.0)
+    equity_at_proposal = Column(Float, nullable=False, default=0.0)
+    #: Every cap that bound the size, with the value it bound to.
+    caps_json = Column(Text, nullable=False, default="{}")
+
+    #: Which account the order would be placed in, as a plain value plus the
+    #: label, so the row is still readable after an account row is retired.
+    account_id = Column(Integer, nullable=True)
+    account_label = Column(String(100), nullable=False, default="")
+    #: `paper` or `live`, recorded at proposal time. Spec Q §12 invariant 11:
+    #: execution mode is an explicit immutable input, never inferred later.
+    execution_mode = Column(String(20), nullable=False, default="paper")
+
+    #: The hash of the portfolio state this proposal was computed against
+    #: (Spec L §6.2). Risk is re-evaluated from fresh state at approval; this
+    #: is what makes "the book changed underneath it" visible after the fact.
+    portfolio_context_hash = Column(String(64), nullable=False, default="")
+    ledger_as_of_utc = Column(UtcDateTime, nullable=True)
+
+    requester_token_label = Column(String(100), nullable=False, default="")
+
+    status = Column(String(30), nullable=False, default="proposed")
+    rejection_code = Column(String(60), nullable=False, default="")
+    rejection_reason = Column(Text, nullable=False, default="")
+    #: The card as it was sent, so the tool's answer and the owner's message
+    #: are provably the same text.
+    card_md = Column(Text, nullable=False, default="")
+
+    #: The signed, expiring, single-use approval reference (Spec L §6.3).
+    #: The signature is stored, not the secret; `approval_consumed_at` is what
+    #: makes a replayed callback a no-op.
+    approval_nonce = Column(String(32), nullable=True)
+    approval_signature = Column(String(64), nullable=True)
+    approval_expires_at = Column(UtcDateTime, nullable=True)
+    approval_owner_id = Column(String(64), nullable=False, default="")
+    approval_consumed_at = Column(UtcDateTime, nullable=True)
+    approved_at = Column(UtcDateTime, nullable=True)
+
+    #: Broker side. `ref_id` is the client idempotency key the upstream
+    #: deduplicates on, generated once per logical order so the fill-to-stop
+    #: race can retry safely (Spec L §5.1).
+    entry_ref_id = Column(String(80), nullable=True)
+    entry_broker_order_id = Column(String(80), nullable=True)
+    stop_ref_id = Column(String(80), nullable=True)
+    stop_broker_order_id = Column(String(80), nullable=True)
+    #: `strategy_trades.execution_id` when this proposal was driven by an arm.
+    execution_id = Column(String(64), nullable=True)
+
+    submitted_at = Column(UtcDateTime, nullable=True)
+    filled_at = Column(UtcDateTime, nullable=True)
+    filled_quantity = Column(Float, nullable=True)
+    average_fill_price = Column(Float, nullable=True)
+    protection_deadline_at = Column(UtcDateTime, nullable=True)
+    protection_verified_at = Column(UtcDateTime, nullable=True)
+    stop_replaced_count = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+    @property
+    def caps(self) -> dict:
+        try:
+            loaded = json.loads(self.caps_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+
+class ExecutionKillSwitch(Base):
+    """The persistent kill switch (Spec L §6.5, Spec Q §12 invariant 9).
+
+    One row, id 1. A switch held in a process variable is not a kill switch: the
+    thing it has to survive is the restart that follows the incident. Engaging
+    it blocks approval-to-placement; it does not cancel orders already at the
+    broker, which is a human decision made in the broker's own app.
+    """
+
+    __tablename__ = "execution_kill_switch"
+
+    id = Column(Integer, primary_key=True, autoincrement=False, default=1)
+    engaged = Column(Boolean, nullable=False, default=False)
+    reason = Column(Text, nullable=False, default="")
+    changed_by = Column(String(64), nullable=False, default="")
+    engaged_at = Column(UtcDateTime, nullable=True)
+    released_at = Column(UtcDateTime, nullable=True)
+    updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)

@@ -15,6 +15,7 @@ from bot.handlers.commands import (
 )
 from bot.handlers.test_idea import eval_command, score_command
 from bot.handlers.callbacks import handle_callback
+from bot.handlers.proposals import live_kill_command
 from bot.handlers.trade_mgmt import close_command, adjust_command
 from bot.handlers.performance import performance_command, history_command, memo_command, attr_command
 from bot.handlers.ask import ask_command
@@ -65,6 +66,7 @@ class SwingTraderBot:
         self.app.add_handler(CommandHandler("broker", broker_command))
         self.app.add_handler(CommandHandler("mode", mode_command))
         self.app.add_handler(CommandHandler("orders", orders_command))
+        self.app.add_handler(CommandHandler("live_kill", live_kill_command))
 
         # Inline keyboard callbacks
         self.app.add_handler(CallbackQueryHandler(handle_callback))

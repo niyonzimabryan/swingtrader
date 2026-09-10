@@ -21,6 +21,12 @@ DELEGATED_BROKER_ATTRS = {
     "submit_limit_cover",
     "submit_limit_sell",
     "submit_stop_loss",
+    # Phase 6 protective-exit contract (Spec L §5.1). The router delegates these
+    # so a paper-mode ExecutionService reaches the Alpaca paper adapter and a
+    # live-mode one reaches Robinhood, from the same call site.
+    "place_stop",
+    "read_open_orders",
+    "find_order_by_ref_id",
 }
 
 

@@ -17,7 +17,16 @@ migrations/
     0005_merge_portfolio_ledger.py   joins the portfolio ledger to it
     0006_merge_research_workspace.py joins the research workspace to it
     0007_strategy_lab.py             Phase 5: the Strategy Lab experiment tables (spec Q §8)
+    0008_merge_strategy_lab.py       joins the Strategy Lab branch to the integrated head
+    0009_execution_lifecycle.py      Phase 6: proposals + the persistent kill switch (spec L §6)
 ```
+
+`0009_execution_lifecycle` branches from the single head `0008_merge_strategy_lab`
+and adds two tables, `proposals` and `execution_kill_switch`. It carries no
+foreign keys of its own: `cohort_answer_id` (Spec N), `execution_id`
+(`strategy_trades`, Spec Q) and `account_id` (`brokerage_accounts`, Phase 1) are
+recorded as plain values, so the revision joins the integrated head as a clean
+add with nothing cross-phase to reconcile.
 
 `0007_strategy_lab` is the first revision to carry a **partial unique index**
 (`WHERE` on a unique index). Both engines support it, and it is how two Spec Q
