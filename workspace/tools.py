@@ -582,6 +582,14 @@ def _register_comparables(mcp: FastMCP, settings) -> None:
             "explicit `setup_spec`. `depth='quick'` is fast and NOT citable; "
             "`depth='full'` is mandatory for anything journal_append, "
             "research_write or a strategy promotion will reference. "
+            "Pass `subject_ticker` to say which name the question is ABOUT: a "
+            "setup is a pattern and carries no ticker, so an answer that is to "
+            "size a proposal in one name has to record that name when it is "
+            "asked (Spec L §6.6). The engine checks that the name met the "
+            "setup's conditions at its most recent opportunity on or before "
+            "`as_of` and stores the verdict; an answer whose subject did not "
+            "qualify is still a real answer and is simply not evidence for that "
+            "name. "
             "Read-only: it stores the query it was asked, and nothing else."
         ),
     )
@@ -592,9 +600,11 @@ def _register_comparables(mcp: FastMCP, settings) -> None:
         setup_spec: dict | None = None,
         as_of: str | None = None,
         depth: str = "quick",
+        subject_ticker: str | None = None,
     ) -> dict:
         identity = authorize_call(ctx, "compare_setups", {
             "setup": setup, "as_of": as_of, "depth": depth,
+            "subject_ticker": subject_ticker,
         })
         day = _parse_as_of(as_of)
         try:
@@ -608,6 +618,7 @@ def _register_comparables(mcp: FastMCP, settings) -> None:
                     parameters=parameters,
                     setup_spec=setup_spec,
                     requester_label=identity.label,
+                    subject_ticker=(subject_ticker or "").strip().upper(),
                     reps=(
                         settings.comparable_quick_bootstrap_reps
                         if depth == "quick"

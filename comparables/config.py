@@ -129,6 +129,15 @@ BOOTSTRAP_REPS = 10_000
 CONFIDENCE_LEVEL = 0.95
 DEFAULT_SEED = 20260908
 
+#: The level of the interval on the **policy-simulated net return** (§5.3).
+#: Deliberately not `CONFIDENCE_LEVEL`: Spec L §6.6 sizes an evidenced proposal
+#: from the *lower 90%* bound of that one quantity, and `portfolio/evidence.py`
+#: refuses an interval published at any other level rather than relabelling it.
+#: Two levels in one answer is a wart, and the alternative — quietly handing the
+#: sizing rule a 95% bound because that is what was to hand — is a model
+#: characterising a statistic with extra steps (Spec N §9).
+POLICY_CONFIDENCE_LEVEL = 0.90
+
 
 # --------------------------------------------------------------------------- #
 # Balance thresholds (Spec N §4.5)

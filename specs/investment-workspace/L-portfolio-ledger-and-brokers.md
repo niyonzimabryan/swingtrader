@@ -359,6 +359,8 @@ where it already sits.
 | `test_agent_cannot_set_quantity` | `propose_order` rejects a `quantity` argument; size is derived from `risk_fraction`, entry and stop |
 | `test_risk_fraction_capped` | A `risk_fraction` above the hard cap is refused, not clamped silently |
 | `test_citation_must_be_full_ok_recent` | A `quick`, `insufficient`, `inconclusive`, stale, or other-ticker citation lands the proposal in `risk_rejected` |
+| `test_a_qualifying_subject_produces_an_evidenced_proposal` | End to end on stored rows: a `full`/`ok` answer whose recorded subject is this ticker **and** qualified sizes from `m = clip(LB/PE, 0, 1)` on the policy net's lower 90% bound, and the card prints `risk_fraction`, `m`, `LB`, `PE` and the horizon |
+| `test_a_subject_that_did_not_qualify_is_discretionary` | An answer recorded against this ticker with `subject_qualifies=false` is `discretionary` with the condition that failed named — a valid answer about a pattern this name is not an instance of |
 | `test_nonpositive_lower_bound_goes_discretionary` | In `advisory` mode `LB ≤ 0` re-labels the proposal `discretionary`, prints the bound on the card, and draws from the discretionary budget; in `strict` mode it sizes to zero |
 | `test_discretionary_budget_is_separate` | An uncited proposal cannot exceed `DISCRETIONARY_RISK_CAP` or push discretionary daily notional past its cap, and never consumes the evidenced budget |
 | `test_unsettled_cash_rejected` | On the cash Agentic account a proposal needing T+1 proceeds is `risk_rejected` with the settlement date |
@@ -423,9 +425,45 @@ Ratified 2026-09-10 from the Phase 6 build (PR #57):
 - **Evidenced-budget gap at merge.** A real Spec N answer carries the policy net
   point estimate but no lower-90% interval and no ticker, so every real
   citation is labelled `discretionary` with `citation_no_policy_lower_bound`.
-  This fails toward the smaller budget. The closure is on
-  `claude/evidenced-budget-closure` (Spec N §12, last entry).
+  This fails toward the smaller budget. Closed by the
+  block below and by Spec N §12's last entry.
 - **Migration graph.** `0009_execution_lifecycle` branched from
   `0008_merge_strategy_lab`; `0010_merge_execution_lifecycle` joins it to the
   comparables head and is the current single head.
 
+Ratified 2026-09-10 from the evidenced-budget closure (§6.6, Spec N §8):
+
+- **"For the same ticker" means the answer's *subject* qualified.** §6.6 asks a
+  cited answer to be "for the same ticker"; Spec N §4.0 says a `SetupSpec` is a
+  pattern and names no security. Both hold, and the ticker is recorded on the
+  **query**: `compare_setups` takes an optional `subject_ticker` and stores
+  whether that name met the setup's conditions at its most recent opportunity on
+  or before `as_of`. Same-ticker is therefore two conditions, not one — the
+  subject **is** this proposal's ticker and it **qualified** — and an answer
+  whose subject did not qualify is `discretionary` with
+  `citation_subject_did_not_qualify`, not a refusal. It is a real answer about a
+  pattern this name is not an instance of.
+- **`LB` is the lower 90% bound on the policy net and nothing else may stand in
+  for it.** The engine now publishes it as `PolicySummary.net_ci` at
+  `POLICY_CONFIDENCE_LEVEL = 0.90`, deliberately not the engine-wide 0.95, and
+  the gate refuses an interval at any other level rather than relabelling one. A
+  market-adjusted CAR interval is a different quantity under a different exit
+  rule; sizing from it would be a model characterising a statistic (Spec N §9)
+  with extra steps.
+- **The gate reads whichever shape the citation arrives in, through one
+  adapter.** Since Phase 3c the resolver returns a stored row
+  (`comparables.citations.ResolvedCitation`, answer as JSON) rather than an
+  in-memory `CohortAnswer`. `portfolio/evidence.py` reads both through one field
+  lookup — including the `repr`-string floats `report.to_json` writes for
+  byte-determinism — rather than branching. A second branch is where the two
+  shapes would quietly stop agreeing about what is evidence.
+- **Nothing above changed the age rule.** `CITATION_MAX_AGE_SESSIONS` still
+  bounds the age of the **answer**, at five sessions, measured from the stored
+  `as_of_date`. The subject's qualifying **event** carries its own date and is
+  printed rather than bounded; an event-recency budget is a separate decision
+  and has not been made.
+- **Advisory mode is unchanged and now has something to be advisory about.**
+  Every failure above is a live `proposed` row on the discretionary budget with
+  the reason and the evidence printed, including a negative lower bound.
+  `strict` still refuses an uncited or non-citation proposal and still sizes
+  `LB <= 0` to zero.
