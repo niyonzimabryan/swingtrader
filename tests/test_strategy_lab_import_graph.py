@@ -34,12 +34,24 @@ PACKAGE = REPO_ROOT / "strategy_lab"
 #: First-party packages the whole Strategy Lab package may reach.
 ALLOWED_FIRST_PARTY = {"strategy_lab", "utils"}
 
-#: The two modules allowed a database session. `registry.py` is the service
+#: The modules allowed a database session. `registry.py` is the service
 #: boundary for every experiment-table write; `snapshot_builder.py` is Phase 2's
 #: deliberate pure/impure split — `snapshots.py` states the point-in-time rules
 #: and holds no session, the builder holds the session and hands it normalized
-#: value objects (Spec Q §6, PR 2 requirement 1).
-SESSION_ALLOWED = {"registry.py", "snapshot_builder.py"}
+#: value objects (Spec Q §6, PR 2 requirement 1); `execution.py` is Phase 5's
+#: Spec Q §12 state machine over `strategy_trades`, which is persistence by
+#: definition — the invariant it enforces ("at most one non-terminal execution
+#: per decision") is a database constraint, and a module that cannot reach the
+#: database cannot hold it.
+#:
+#: Widening this set is a deliberate act and does not widen anything else:
+#: `execution.py` is still swept by every test below, so it still may not import
+#: `execution/`, `portfolio/`, `config`, a broker, or a model client. That is
+#: the whole reason the §12 *rules* live in `strategy_lab/` and the §12 *wiring*
+#: lives in `execution/strategy_lifecycle.py` — a module that decides which
+#: venue a mode may reach must not be able to read a setting and infer one
+#: (Spec Q §12 invariant 11).
+SESSION_ALLOWED = {"registry.py", "snapshot_builder.py", "execution.py"}
 
 #: Phase 2's SDK. Every one of these is pure: a strategy receives an immutable
 #: snapshot and returns decisions, and a helper it reaches must be equally
