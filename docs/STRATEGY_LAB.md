@@ -816,7 +816,13 @@ winner's row inside a SAVEPOINT rather than an `IntegrityError`, which is what
 makes a retried approval reuse one placement instead of creating a second.
 
 The index is partial on `status NOT IN (terminal)`, so a cancelled or rejected
-execution frees its decision for a fresh attempt while a live one never does.
+execution frees its decision at the *database* level while a live one never does.
+A second rule sits on top of it, from PR 3 and inherited deliberately: an attempt
+is identified by `(decision, portfolio_context_hash)`, so re-proposing a decision
+the owner just cancelled — against a book that has not moved — resolves to the
+cancelled row and places nothing, rather than minting a second card. A genuinely
+different portfolio context is a new attempt, which is how "the same decision was
+blocked on Tuesday" stays answerable (§17 makes the same split for shadow).
 
 ### The reservation is a predicate, not a counter
 
