@@ -46,6 +46,7 @@ from sqlalchemy.exc import IntegrityError
 from database import models
 from strategy_lab.domain import (
     ARM_TRANSITIONS,
+    EXECUTION_TRANSITIONS,
     EXPERIMENT_TRANSITIONS,
     STRATEGY_VERSION_TRANSITIONS,
     ArmFacts,
@@ -60,6 +61,8 @@ from strategy_lab.domain import (
     PromotionRefused,
     SnapshotScope,
     StrategyDecision,
+    ExecutionState,
+    TERMINAL_EXECUTION_STATES,
     StrategyLabError,
     StrategyVersion,
     StrategyVersionStatus,
@@ -890,3 +893,219 @@ def activate_strategy_version(session, version: StrategyVersion, status):
     """
     verify_registered_manifest(session, version)
     return set_strategy_version_status(session, version.slug, version.version, status)
+
+
+# --------------------------------------------------------------------------- #
+# Executions (`strategy_trades`) — Spec Q §8, §12
+# --------------------------------------------------------------------------- #
+
+
+def arms_for_experiment(session, experiment_name: str, *, statuses=None):
+    """Every arm of an experiment, oldest first. ``statuses`` filters if given."""
+    experiment = require_experiment(session, experiment_name)
+    query = session.query(models.ExperimentArm).filter(
+        models.ExperimentArm.experiment_id == experiment.id
+    )
+    if statuses is not None:
+        query = query.filter(
+            models.ExperimentArm.status.in_([ArmStatus(s).value for s in statuses])
+        )
+    return query.order_by(models.ExperimentArm.id).all()
+
+
+def open_execution_for(session, decision_id: int):
+    """The one non-terminal execution for a decision, or ``None``.
+
+    The database holds this with a partial unique index; the query exists so a
+    retry can *find* the row it must reuse rather than discovering the
+    constraint by violating it (Spec Q §12 invariant 6).
+    """
+    terminal = [state.value for state in TERMINAL_EXECUTION_STATES]
+    return (
+        session.query(models.StrategyTrade)
+        .filter(
+            models.StrategyTrade.decision_id == decision_id,
+            ~models.StrategyTrade.status.in_(terminal),
+        )
+        .order_by(models.StrategyTrade.id)
+        .first()
+    )
+
+
+def record_execution(
+    session,
+    arm_id: int,
+    decision_id: int,
+    *,
+    status=ExecutionState.PROPOSED,
+    portfolio_context_hash: str = "",
+    blocked_reason: str = "",
+    execution_id: str | None = None,
+    **columns,
+):
+    """Create the execution row for a decision, idempotently.
+
+    Two idempotency rules, and they are different on purpose:
+
+    * a **non-terminal** execution is unique per decision, so a retry returns
+      the stored row and its ``execution_id`` rather than creating a second
+      one. That is the database constraint's application-level twin, and it is
+      why the row is written before any reservation or broker call would be;
+    * a **terminal** one — a risk refusal, say — is deduplicated on
+      ``(decision, status, portfolio_context_hash, blocked_reason)``. Re-running
+      an evaluation against the same portfolio context must not append a second
+      identical refusal, but a refusal against a *different* context is a
+      genuinely new attempt and gets its own row.
+
+    The mode is copied from the arm and never passed in: Spec Q §11 makes an
+    arm's mode the execution's mode, and an argument here would be somewhere for
+    a global setting to leak in.
+    """
+    arm = require_arm(session, arm_id)
+    decision = session.get(models.StrategyDecision, decision_id)
+    if decision is None:
+        raise NotFound(f"strategy decision {decision_id} does not exist")
+    if decision.arm_id != arm_id:
+        raise StrategyLabError(
+            f"decision {decision_id} belongs to arm {decision.arm_id}, not to "
+            f"arm {arm_id}; an execution is an attempt at its own arm's decision"
+        )
+    state = ExecutionState(status)
+
+    if state in TERMINAL_EXECUTION_STATES:
+        existing = (
+            session.query(models.StrategyTrade)
+            .filter(
+                models.StrategyTrade.decision_id == decision_id,
+                models.StrategyTrade.status == state.value,
+                models.StrategyTrade.portfolio_context_hash == portfolio_context_hash,
+                models.StrategyTrade.blocked_reason == blocked_reason,
+            )
+            .order_by(models.StrategyTrade.id)
+            .first()
+        )
+        if existing is not None:
+            return existing
+    else:
+        existing = open_execution_for(session, decision_id)
+        if existing is not None:
+            return existing
+
+    now = utcnow_naive()
+    row = models.StrategyTrade(
+        execution_id=execution_id or new_execution_id(),
+        arm_id=arm_id,
+        decision_id=decision_id,
+        mode=arm.mode,
+        status=state.value,
+        portfolio_context_hash=portfolio_context_hash,
+        blocked_reason=blocked_reason,
+        proposed_at=now,
+        created_at=now,
+        updated_at=now,
+        **columns,
+    )
+    session.add(row)
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        raise StrategyLabError(
+            f"decision {decision_id} already has a non-terminal execution; a "
+            f"second broker placement for one decision is what the partial "
+            f"unique index exists to prevent ({exc.orig})"
+        ) from exc
+    log.info(
+        "strategy_trade_intended",
+        execution_id=row.execution_id,
+        arm_id=arm_id,
+        decision_id=decision_id,
+        mode=row.mode,
+        status=row.status,
+    )
+    return row
+
+
+def execution_row(session, execution_id: str):
+    """One ``strategy_trades`` row by its idempotency key, or a refusal."""
+    row = (
+        session.query(models.StrategyTrade)
+        .filter(models.StrategyTrade.execution_id == execution_id)
+        .first()
+    )
+    if row is None:
+        raise NotFound(f"execution {execution_id} does not exist")
+    return row
+
+
+def set_execution_state(session, execution_id: str, status, **columns):
+    """Move one execution along the Spec Q §12 machine, or refuse the move."""
+    row = execution_row(session, execution_id)
+    target = require_transition(
+        EXECUTION_TRANSITIONS, row.status, status, label=f"execution {execution_id}"
+    )
+    for key, value in columns.items():
+        setattr(row, key, value)
+    row.status = target.value
+    row.updated_at = utcnow_naive()
+    session.flush()
+    log.info(
+        "live_order_state_changed",
+        execution_id=execution_id, status=target.value, mode=row.mode,
+    )
+    return row
+
+
+def executions_for_arm(session, arm_id: int):
+    """Every execution an arm has produced, oldest first."""
+    return (
+        session.query(models.StrategyTrade)
+        .filter(models.StrategyTrade.arm_id == arm_id)
+        .order_by(models.StrategyTrade.id)
+        .all()
+    )
+
+
+def decisions_for_arm(session, arm_id: int, *, actions=None):
+    """Every decision an arm has recorded, ordered by snapshot then ticker."""
+    query = session.query(models.StrategyDecision).filter(
+        models.StrategyDecision.arm_id == arm_id
+    )
+    if actions is not None:
+        query = query.filter(models.StrategyDecision.action.in_(list(actions)))
+    return query.order_by(
+        models.StrategyDecision.snapshot_id, models.StrategyDecision.ticker
+    ).all()
+
+
+def strategy_version_for_arm(session, arm_id: int):
+    """The ``strategy_versions`` row an arm runs. Rows stay behind this module."""
+    arm = require_arm(session, arm_id)
+    row = session.get(models.StrategyVersion, arm.strategy_version_id)
+    if row is None:  # pragma: no cover - a foreign key makes this unreachable
+        raise NotFound(f"arm {arm_id} references a strategy version that is gone")
+    return row
+
+
+def experiment_for_arm(session, arm_id: int):
+    """The ``experiments`` row an arm belongs to."""
+    arm = require_arm(session, arm_id)
+    row = session.get(models.Experiment, arm.experiment_id)
+    if row is None:  # pragma: no cover - a foreign key makes this unreachable
+        raise NotFound(f"arm {arm_id} references an experiment that is gone")
+    return row
+
+
+def decision_row(session, decision_id: int):
+    """One ``strategy_decisions`` row, or a refusal naming it."""
+    row = session.get(models.StrategyDecision, decision_id)
+    if row is None:
+        raise NotFound(f"strategy decision {decision_id} does not exist")
+    return row
+
+
+def snapshot_row(session, snapshot_id: int):
+    """One ``market_snapshots`` row, or a refusal naming it."""
+    row = session.get(models.MarketSnapshot, snapshot_id)
+    if row is None:
+        raise NotFound(f"market snapshot {snapshot_id} does not exist")
+    return row
