@@ -69,7 +69,7 @@ class QueryOutcome:
     citation_id: str | None
     cached: bool
     build: cohort_mod.CohortBuild | None
-    #: `{ticker, qualifies, reason, event_id, event_date}` when the question
+    #: `{ticker, qualifies, reason, event_date}` when the question
     #: named a subject (Spec L §6.6), `None` when it asked about the pattern
     #: alone. A dict rather than the record, because a cache hit reconstructs it
     #: from stored columns and a fresh build reads it off the cohort — and a

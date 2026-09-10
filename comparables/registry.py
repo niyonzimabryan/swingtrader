@@ -34,13 +34,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from sqlalchemy import func, select
 
 from database.models import CohortAnswerRow, CohortPredictionRow, ComparableQuery
 
 from comparables.setup_spec import SetupSpec
+
+if TYPE_CHECKING:  # a shape this module stores, not a dependency it takes on
+    from comparables.cohort import SubjectQualification
 
 #: `cohort_answers.price_snapshot_id` when a cohort ran without a snapshot row.
 #: A NULL would make every un-snapshotted answer distinct from every other
@@ -151,7 +154,7 @@ def record_query(
     n_matured: int = 0,
     n_distinct_dates: int = 0,
     trials: int | None = None,
-    subject: "Any | None" = None,
+    subject: "SubjectQualification | None" = None,
 ) -> QueryRecord:
     """Log one query. Refusals are logged exactly like answers.
 
@@ -267,7 +270,7 @@ def store_answer(
     archival_block_json: str | None = None,
     family_moments: Sequence[dict] = (),
     query_id: int | None = None,
-    subject: "Any | None" = None,
+    subject: "SubjectQualification | None" = None,
 ) -> CohortAnswerRow:
     """Insert or refresh the cached answer for this key.
 

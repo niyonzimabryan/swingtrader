@@ -260,9 +260,11 @@ The probe is an owner action. Do not run it from a build session. Runbook:
    `EXECUTION_MODE=live`, `EXECUTION_APPROVAL_SECRET=<a strong secret>`; confirm
    `/live_kill off`.
 3. From an attached agent session, `propose_order` a **one-share** limit entry of
-   minimal size in a liquid name, at a limit near the touch. Read the card: it
-   should show `budget=discretionary` (no evidenced citation exists yet), one
-   whole share, and the caps.
+   minimal size in a liquid name, at a limit near the touch, and **uncited**.
+   Read the card: it should show `budget=discretionary` (the reason being
+   `no_citation`), one whole share, and the caps. The probe is about the broker,
+   not the sizing rule — cite nothing, so nothing about the evidence gate can
+   change what is placed.
 4. Approve on Telegram. Watch the logs: entry submitted → filled → stop placed →
    **stop read back** → `protected`.
 5. In the Robinhood app (or `get_equity_orders`), confirm the `stop_market`,

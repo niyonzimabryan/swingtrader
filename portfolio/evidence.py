@@ -271,7 +271,8 @@ def answer_as_of(answer) -> date | None:
     was built at — which is the date the 5-session citation-age budget runs
     from.
     """
-    for holder in (*_split(answer), _field(_split(answer)[1], "setup")):
+    citation, body = _split(answer)
+    for holder in (citation, body, _field(body, "setup")):
         if holder is None:
             continue
         for field in ("as_of", "as_of_date", "computed_on", "as_of_utc"):
@@ -443,12 +444,11 @@ def assess(
         )
 
     try:
-        citable_answer(answer)
+        full = citable_answer(answer)
     except CitationRefused as exc:
         return _unevidenced(mode, exc.code, exc.message, answer_id)
 
-    # From here `answer` is read through the adapter, whichever shape it is.
-    full = answer
+    # From here `full` is read through the adapter, whichever shape it is.
     citation, body = _split(full)
     status = _field(citation, "status") or _field(body, "status") or ""
     if status != "ok":
