@@ -139,10 +139,45 @@ Details per plane: `docs/FILINGS_PLANE.md`, `docs/MACRO_PLANE.md`,
 Alpaca's terms bar redistributing the data or any derived products, so nothing
 news-derived may leave Postgres.
 
-## 9. Execution (Phase 6, pending)
+## 9. Execution lifecycle (Phase 6)
 
-Nothing until the Robinhood `gtc` `stop_market` probe passes; the Agentic
-account budget is loaded by hand (`ROBINHOOD_ACCOUNT_BUDGET` caps it in code).
+The proposal → approval → execution path (Spec L §6). Full state machine, guard
+table, and the owner's live-probe runbook are in `docs/EXECUTION_LIFECYCLE.md`;
+this is the checklist.
+
+Everything defaults **off**. With `PHASE6_EXECUTION_ENABLED=false` the
+`propose_order` tool is not registered on the workspace and every approval
+callback is refused.
+
+To reach a **paper** testing state (no live capital, Alpaca paper venue, same
+lifecycle):
+
+- `PHASE6_EXECUTION_ENABLED=true` on both the workspace and the bot services.
+- `EXECUTION_APPROVAL_SECRET=<a strong secret>` — without it no approval card can
+  be minted or verified, so nothing can be approved. This is the intended
+  failure, not a bug.
+- `EXECUTION_MODE=paper` (the default). Approvals route to the Alpaca paper
+  adapter.
+- Issue a workspace token carrying the `propose` scope (`scripts/`), then call
+  `propose_order` from an attached client.
+
+To reach a **live** state — only after the §6 live probe has passed:
+
+- Additionally `ALLOW_LIVE_TRADING=true` and `EXECUTION_MODE=live`. Both are
+  required on top of the flag; absence or invalidity of either never means live.
+- Fund the Agentic account by hand; `ROBINHOOD_ACCOUNT_BUDGET` caps it in code.
+- Confirm the kill switch is off: `/live_kill off` (it is a persistent database
+  row and survives restart; `/live_kill on` blocks approval-to-placement).
+
+Optional tuning (defaults in `.env.example` / `docs/EXECUTION_LIFECYCLE.md` §5):
+`RISK_FRACTION_HARD_CAP`, `RISK_FRACTION_PERCENTAGE_FLOOR`, `EVIDENCED_RISK_CAP`,
+`DISCRETIONARY_RISK_CAP`, `DISCRETIONARY_DAILY_NOTIONAL`, `EVIDENCE_GATE_MODE`
+(`advisory` default), `CITATION_MAX_AGE_SESSIONS`, `PROTECTION_WINDOW_SECONDS`,
+`APPROVAL_TTL_SECONDS`, `PROPOSAL_MAX_POSITION_PCT`, `PROPOSAL_MAX_SECTOR_PCT`.
+
+The Robinhood `gtc` `stop_market` live probe (`docs/EXECUTION_LIFECYCLE.md` §6)
+is an **owner action** and is not run from a build session. Until it passes,
+keep `EXECUTION_MODE=live` off.
 
 ## Order of operations to a testing state
 

@@ -30,6 +30,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()  # Acknowledge callback
     data = query.data
 
+    # Phase 6 proposal approvals carry a signed reference and are handled by the
+    # execution lifecycle, not by the memo path below (Spec L §6).
+    if data.startswith(("p6ok:", "p6no:")):
+        from bot.handlers.proposals import handle_proposal_callback
+
+        await handle_proposal_callback(query, context)
+        return
+
     if data.startswith("approve_"):
         await handle_approve(query, context, int(data.split("_")[1]))
     elif data.startswith("reject_"):

@@ -178,10 +178,20 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
         # starting at once is safe (database/schema.py).
         if db_module.SessionLocal is None:
             init_db(settings.database_url)
+        # Phase 6: with the flag on, wire the approval card to Telegram over
+        # HTTPS. This posts through the same bot the owner already uses; the
+        # callback still lands in the bot process, which is unreachable from
+        # here. With the flag off, or the bot unconfigured, the log-only
+        # default stays and nothing can be approved (workspace/proposal_card.py).
+        from workspace.proposal_card import register_if_configured
+
+        card_channel = register_if_configured(settings)
         log.info(
             "workspace_starting",
             enabled=bool(settings.workspace_api_enabled),
             oauth_enabled=bool(settings.workspace_oauth_enabled),
+            phase6_enabled=bool(getattr(settings, "phase6_execution_enabled", False)),
+            approval_card_channel=("telegram" if card_channel else "log_only"),
             tools=list(tool_module.registered_tools(settings)),
         )
         async with mcp.session_manager.run():

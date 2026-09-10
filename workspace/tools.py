@@ -42,6 +42,14 @@ Phase 3c (Spec N §8, §11) adds ``compare_setups`` and ``cohort_detail`` behind
 the tools are not registered at all, and an agent's ``tools/list`` describes
 what the server can actually do.
 
+Phase 6 (Spec L §6) adds ``propose_order`` when ``PHASE6_EXECUTION_ENABLED`` is
+on, at scope ``propose``. It is the only tool on this surface that writes
+anything outside the research workspace, and it still places nothing: it creates
+a ``proposals`` row and hands an approval card to an **injected** out-of-band
+channel, because this package may not import ``bot`` any more than it may import
+``execution``. Everything above about the import closure holds unchanged with it
+registered, which is the property the two import-graph tests assert.
+
 Every tool body starts with :func:`authorize_call`, which is where the scope
 check, the rate limit, and the Spec K §4.1 call log live. Nothing enforces that
 by construction, so ``tests/test_workspace_mcp.py`` enforces it by test: every
@@ -88,6 +96,7 @@ def registered_tools(settings=None) -> tuple[str, ...]:
     :data:`REGISTERED_TOOLS`, because the surface is now flag-dependent and a
     health check that reports a fixed list would be reporting a guess.
     """
+    from workspace.proposal_tools import PROPOSAL_TOOLS
     from workspace.research_tools import RESEARCH_TOOLS
 
     names = REGISTERED_TOOLS
@@ -95,6 +104,8 @@ def registered_tools(settings=None) -> tuple[str, ...]:
         names = names + RESEARCH_TOOLS
     if settings is not None and getattr(settings, "comparable_setups_enabled", False):
         names = names + COMPARABLE_TOOLS
+    if settings is not None and getattr(settings, "phase6_execution_enabled", False):
+        names = names + PROPOSAL_TOOLS
     return names
 
 
@@ -296,6 +307,16 @@ def register(mcp: FastMCP, settings=None) -> tuple[str, ...]:
     if settings is not None and getattr(settings, "comparable_setups_enabled", False):
         _register_comparables(mcp, settings)
         names = names + COMPARABLE_TOOLS
+    if settings is not None and getattr(settings, "phase6_execution_enabled", False):
+        # Same deferred import, same reason. `propose_order` is the one tool
+        # here that writes, and it is registered only behind its flag: a tool
+        # advertised in `tools/list` that answers "disabled" tells a client
+        # this workspace can propose orders when it cannot.
+        from workspace import proposal_tools
+
+        names = names + proposal_tools.register(
+            mcp, settings, authorize_call=authorize_call, ToolRefused=ToolRefused
+        )
 
     missing = [t for t in names if t not in scope_module.TOOL_SCOPES]
     if missing:  # pragma: no cover - guarded by test_workspace_mcp too

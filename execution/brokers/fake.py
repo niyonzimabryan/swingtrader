@@ -27,6 +27,7 @@ from execution.brokers.base import (
     BrokerOrderRequest,
     BrokerOrderResult,
     BrokerOrderReview,
+    OpenOrder,
 )
 from execution.brokers.capabilities import BrokerCapabilities
 from portfolio.records import (
@@ -219,3 +220,279 @@ class FakeBroker:
 
     def close_position(self, ticker: str) -> dict:
         return {"success": False, "error": "fake broker: closing is a placement path."}
+
+    # --- the protective-exit contract (Spec L §5.1) ------------------------
+    # `read_open_orders` is a read and answers from the canned orders like the
+    # other read paths. `place_stop` is a placement and refuses by
+    # construction, exactly as `place_order` does: this broker exists for
+    # read-path tests, and a fake that "protected" a position would make an
+    # execution test pass for the wrong reason. The execution lifecycle drives
+    # `FakeExecutionBroker` below instead.
+
+    def place_stop(self, *, symbol, quantity, stop_price, ref_id, side="sell") -> BrokerOrderResult:
+        return BrokerOrderResult(
+            broker=self.name,
+            success=False,
+            error="fake broker: placement is refused by construction.",
+        )
+
+    def read_open_orders(self, *, symbol: str | None = None) -> list[OpenOrder]:
+        wanted = (symbol or "").strip().upper()
+        out: list[OpenOrder] = []
+        for account in self.accounts:
+            for order in account.orders:
+                row_symbol = (order.symbol or "").upper()
+                if wanted and row_symbol != wanted:
+                    continue
+                out.append(
+                    OpenOrder(
+                        broker=self.name,
+                        order_id=order.broker_order_id,
+                        symbol=row_symbol,
+                        side=order.side,
+                        order_type=order.order_type,
+                        status=order.status,
+                        quantity=order.quantity,
+                        stop_price=getattr(order, "stop_price", None),
+                        limit_price=getattr(order, "limit_price", None),
+                        time_in_force=getattr(order, "time_in_force", ""),
+                        ref_id=order.ref_id or "",
+                    )
+                )
+        return out
+
+
+@dataclass
+class _StoredOrder:
+    order_id: str
+    symbol: str
+    side: str
+    order_type: str
+    status: str
+    quantity: float
+    ref_id: str = ""
+    stop_price: float | None = None
+    limit_price: float | None = None
+    time_in_force: str = ""
+    filled_quantity: float = 0.0
+    average_fill_price: float | None = None
+
+
+@dataclass
+class FakeExecutionBroker:
+    """A deterministic broker that actually *runs* the Phase 6 lifecycle.
+
+    The read-only :class:`FakeBroker` above refuses every placement by
+    construction, which is correct for the sync and exposure tests: a fake that
+    cheerfully "filled" an order would make an execution test pass for the wrong
+    reason. But the lifecycle **is** the thing Phase 6 has to test — fill
+    detection, the protective stop, reading it back, the unprotected page — so
+    that test needs a broker whose placements resolve, under the test's control
+    and never over a network.
+
+    This is that broker, and every failure mode the lifecycle must survive is a
+    flag on it rather than a mock's side effect:
+
+    ``fill_entry``           whether the entry fills (else it stays working).
+    ``stop_readable``        whether the placed stop comes back from
+                             :meth:`read_open_orders` — ``False`` is the
+                             unprotected-fill case that must page and block.
+    ``stop_place_succeeds``  whether :meth:`place_stop` succeeds at all.
+    ``review_approves``      whether ``review_order`` approves the entry.
+    ``drop_stops``           symbols whose stops silently vanish, for the daily
+                             missing-stop replacement job.
+
+    It declares the same capabilities as Robinhood, so a capability gate that
+    passes here passes there, and it enforces the same whole-share rule on
+    stops so a fractional stop is a failure here too.
+    """
+
+    name: str = "fake_exec"
+    live_trading: bool = True
+    supports_order_review: bool = True
+    declared_capabilities: BrokerCapabilities = field(
+        default_factory=lambda: BrokerCapabilities(
+            can_read_positions=True,
+            can_read_orders=True,
+            can_read_cash=True,
+            can_place_equity_market=True,
+            can_place_equity_limit=True,
+            can_place_attached_stop=False,
+            can_place_standalone_gtc_stop=True,
+            supports_fractional=True,
+            supports_specified_lot_sale=True,
+        )
+    )
+    fill_entry: bool = True
+    fill_price: float | None = None
+    stop_readable: bool = True
+    stop_place_succeeds: bool = True
+    review_approves: bool = True
+    drop_stops: tuple = ()
+
+    def __post_init__(self):
+        self._orders: dict[str, _StoredOrder] = {}
+        self._seq = 0
+        self.placed_entries: list[BrokerOrderRequest] = []
+        self.placed_stops: list[dict] = []
+
+    @property
+    def supports_fractional(self) -> bool:
+        return self.declared_capabilities.supports_fractional
+
+    def capabilities(self) -> BrokerCapabilities:
+        return self.declared_capabilities
+
+    def _next_id(self, prefix: str) -> str:
+        self._seq += 1
+        return f"{prefix}-{self._seq:04d}"
+
+    def review_order(self, order: BrokerOrderRequest) -> BrokerOrderReview:
+        if not self.review_approves:
+            return BrokerOrderReview(
+                broker=self.name,
+                request=order,
+                approved=False,
+                errors=["fake_exec: review configured to reject."],
+            )
+        notional = None
+        if order.quantity and (order.limit_price or self.fill_price):
+            notional = float(order.quantity) * float(order.limit_price or self.fill_price)
+        return BrokerOrderReview(
+            broker=self.name, request=order, approved=True, estimated_notional=notional
+        )
+
+    def place_order(self, reviewed_order: BrokerOrderReview) -> BrokerOrderResult:
+        order = reviewed_order.request
+        if not reviewed_order.approved:
+            return BrokerOrderResult(broker=self.name, success=False, error="not approved")
+        ref_id = order.client_context.get("ref_id", "")
+        order_id = self._next_id("entry")
+        price = self.fill_price or order.limit_price or 0.0
+        if self.fill_entry:
+            status, filled_qty, avg = "filled", float(order.quantity or 0), float(price)
+        else:
+            status, filled_qty, avg = "accepted", 0.0, None
+        self._orders[order_id] = _StoredOrder(
+            order_id=order_id,
+            symbol=order.symbol.upper(),
+            side=order.side,
+            order_type=order.order_type,
+            status=status,
+            quantity=float(order.quantity or 0),
+            ref_id=ref_id,
+            limit_price=order.limit_price,
+            time_in_force=order.time_in_force,
+            filled_quantity=filled_qty,
+            average_fill_price=avg,
+        )
+        self.placed_entries.append(order)
+        return BrokerOrderResult(
+            broker=self.name,
+            success=True,
+            order_id=order_id,
+            status=status,
+            filled_qty=filled_qty or None,
+            filled_avg_price=avg,
+            raw={"ref_id": ref_id},
+        )
+
+    def place_stop(self, *, symbol, quantity, stop_price, ref_id, side="sell") -> BrokerOrderResult:
+        if int(quantity) != float(quantity) or int(quantity) <= 0:
+            return BrokerOrderResult(
+                broker=self.name,
+                success=False,
+                error=f"fake_exec: protective stop is whole-share only; refusing {quantity!r}.",
+            )
+        if not ref_id:
+            return BrokerOrderResult(broker=self.name, success=False, error="fake_exec: stop needs a ref_id.")
+        self.placed_stops.append(
+            {"symbol": symbol.upper(), "quantity": int(quantity), "stop_price": float(stop_price), "ref_id": ref_id}
+        )
+        if not self.stop_place_succeeds:
+            return BrokerOrderResult(broker=self.name, success=False, error="fake_exec: stop placement configured to fail.")
+        order_id = self._next_id("stop")
+        # A stop that is not readable is one the broker "accepted" but never
+        # surfaces — the exact unprotected-fill shape the window has to catch.
+        if self.stop_readable and symbol.upper() not in {s.upper() for s in self.drop_stops}:
+            self._orders[order_id] = _StoredOrder(
+                order_id=order_id,
+                symbol=symbol.upper(),
+                side=side,
+                order_type="stop_market",
+                status="accepted",
+                quantity=int(quantity),
+                ref_id=ref_id,
+                stop_price=float(stop_price),
+                time_in_force="gtc",
+            )
+        return BrokerOrderResult(
+            broker=self.name,
+            success=True,
+            order_id=order_id,
+            stop_order_id=order_id,
+            status="accepted",
+            order_strategy="standalone_gtc_stop",
+            raw={"ref_id": ref_id},
+        )
+
+    def read_open_orders(self, *, symbol: str | None = None):
+        from execution.brokers.base import OpenOrder
+
+        wanted = (symbol or "").strip().upper()
+        out = []
+        for order in self._orders.values():
+            if wanted and order.symbol != wanted:
+                continue
+            out.append(
+                OpenOrder(
+                    broker=self.name,
+                    order_id=order.order_id,
+                    symbol=order.symbol,
+                    side=order.side,
+                    order_type=order.order_type,
+                    status=order.status,
+                    quantity=order.quantity,
+                    stop_price=order.stop_price,
+                    limit_price=order.limit_price,
+                    time_in_force=order.time_in_force,
+                    ref_id=order.ref_id,
+                    raw={},
+                )
+            )
+        return out
+
+    def get_order_status(self, order_id: str) -> dict:
+        order = self._orders.get(order_id)
+        if order is None:
+            return {}
+        return {
+            "id": order.order_id,
+            "status": order.status,
+            "filled_qty": order.filled_quantity,
+            "filled_avg_price": order.average_fill_price or 0.0,
+            "symbol": order.symbol,
+        }
+
+    def drop_stop(self, symbol: str) -> int:
+        """Remove every open stop for ``symbol``; returns how many. Test seam.
+
+        Models Robinhood's unstated GTC horizon expiring a stop between
+        sessions, which is exactly what the daily re-placement job exists for.
+        """
+        symbol = symbol.upper()
+        removed = [
+            oid
+            for oid, order in self._orders.items()
+            if order.symbol == symbol and order.order_type == "stop_market"
+        ]
+        for oid in removed:
+            del self._orders[oid]
+        return len(removed)
+
+    def cancel_order(self, order_id: str):
+        order = self._orders.get(order_id)
+        if order is None:
+            return {"success": False, "error": "unknown order"}
+        order.status = "cancelled"
+        return {"success": True}
