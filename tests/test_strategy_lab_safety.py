@@ -668,3 +668,66 @@ class ShadowRowsAreInertTests(SafetyTestCase):
                 killswitch.entry_block(session)[0], killswitch.UNRESOLVED_EXECUTION
             )
         self.assertNoOrders()
+
+
+class NoRawPayloadIsPersistedTests(SafetyTestCase):
+    """Spec Q §17: never persist a raw brokerage payload, an account number, or a token.
+
+    Redacting the *logs* is the visible half; the half that outlives the process
+    is what a row keeps. `BrokerOrderResult.raw` is never written to a column —
+    only the adapter's own error text and our own ids are — and this asserts it
+    against a broker that stuffs an account number and a token into every
+    payload it returns.
+    """
+
+    ACCOUNT = "9876543210"
+    TOKEN = "rh-oauth-DO-NOT-PERSIST"
+
+    def setUp(self):
+        super().setUp()
+        self.broker = FakeExecutionBroker(fill_price=100.0, placement_unknown=True)
+        original = self.broker.place_order
+
+        def leaky(review):
+            result = original(review)
+            result.raw = dict(result.raw or {}, account_number=self.ACCOUNT, token=self.TOKEN)
+            result.error = f"{result.error} (unknown)"
+            return result
+
+        self.broker.place_order = leaky
+
+    def _persisted_text(self) -> str:
+        chunks = []
+        with get_session() as session:
+            for row in session.query(Proposal).all():
+                chunks.extend(
+                    str(getattr(row, column.name, "")) for column in Proposal.__table__.columns
+                )
+            for row in session.query(StrategyTrade).all():
+                chunks.extend(
+                    str(getattr(row, column.name, ""))
+                    for column in StrategyTrade.__table__.columns
+                )
+        return "\n".join(chunks)
+
+    def test_an_ambiguous_placement_persists_no_payload(self):
+        service = self.service()
+        card = service.propose(self.request, now=self.now)
+        service.on_approval(
+            execution_id=card.execution_id,
+            presented_signature=card.approval_signature,
+            owner_id="99887766",
+            now=self.now,
+        )
+        # The control: the unknown path really did run.
+        self.assertEqual(
+            self.broker.calls.get("place_order", 0), 1, "the leaky payload was never produced"
+        )
+
+        persisted = self._persisted_text()
+        self.assertNotIn(self.ACCOUNT, persisted)
+        self.assertNotIn(self.TOKEN, persisted)
+
+        paged = str(self.pager.pages)
+        self.assertNotIn(self.ACCOUNT, paged)
+        self.assertNotIn(self.TOKEN, paged)
