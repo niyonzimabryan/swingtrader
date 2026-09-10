@@ -5,8 +5,19 @@ Starts the Telegram bot + scheduled pipeline.
 """
 
 import asyncio
+import os
 import signal
 import sys
+
+# The workspace service is built from this same repository and image, and
+# Railway applies the repo's `railway.toml` start command (`python main.py`) to
+# every service it builds from it. The workspace service sets
+# SERVICE_ROLE=workspace; it must never start the bot — Telegram allows one
+# polling connection — so hand off here, before a single bot module is imported.
+if os.environ.get("SERVICE_ROLE", "").strip().lower() == "workspace":
+    from workspace.server import main as _workspace_main
+
+    sys.exit(_workspace_main())
 
 from config.settings import Settings
 from database.db import init_db
