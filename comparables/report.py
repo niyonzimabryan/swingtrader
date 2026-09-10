@@ -44,6 +44,7 @@ from comparables.inference import (
     effective_sample_size,
     null_from_draws,
     optimal_block_length_for,
+    overlapping_events_block,
     sidak_adjusted,
     shrinkage_for_family,
     stationary_bootstrap_ci,
@@ -119,10 +120,28 @@ class SourceRef:
 
 @dataclass(frozen=True)
 class PolicySummary:
-    """The §5.3 numbers, as fractions of entry notional. Net is the headline."""
+    """The §5.3 numbers, as fractions of entry notional. Net is the headline.
+
+    `net_ci` is the interval on `net`, at :data:`comparables.config.POLICY_CONFIDENCE_LEVEL`
+    (0.90), from the same stationary block bootstrap the headline uses, run over
+    the **per-event policy net returns**. It exists because Spec L §6.6 sizes an
+    evidenced proposal from `clip(LB / PE, 0, 1)` on this quantity and no other:
+    the market-adjusted CAR interval is a different number measured under a
+    different exit rule, and sizing from it would be a statistic quietly
+    substituted for the one the rule names.
+
+    The field is **required**, not defaulted. It is `None` only where no
+    interval was computed at all; every `full` answer this engine builds carries
+    a real one, because `policy_aggregate` refuses an empty cohort and
+    `stationary_bootstrap_ci` returns a (degenerate) interval for a single
+    observation. A `quick` answer never reaches here — `QuickHorizonResult`
+    carries no policy summary at all, which is how §8 keeps a `quick` answer
+    structurally uncitable.
+    """
 
     policy_slug: str
     net: float
+    net_ci: ConfidenceInterval | None
     gross: float
     net_by_slippage_bps: tuple[tuple[float, float], ...]
     stopped_out: ProportionInterval
@@ -515,7 +534,13 @@ def _stability(
     def slice_estimate(label: str, subset: Sequence[EventRecord]) -> SliceEstimate:
         if not subset:
             return SliceEstimate(label, 0, 0.0, 0.0, 0.0)
-        series = calendar_time_series(subset, benchmark, calendar, horizon)
+        try:
+            series = calendar_time_series(subset, benchmark, calendar, horizon)
+        except ValueError:
+            # Every event in the slice is censored at this horizon, so there is
+            # no calendar-time portfolio to regress. That is a slice with no
+            # estimate, not a failed answer — the same shape an empty slice has.
+            return SliceEstimate(label, len(subset), 0.0, 0.0, 0.0)
         result = calendar_time_alpha(series, horizon)
         block = optimal_block_length_for(series.abnormal, horizon)
         ci = stationary_bootstrap_ci(series.abnormal, block.used, scale=horizon,
@@ -535,6 +560,25 @@ def _stability(
     decayed, reason = decayed_flag(early, late)
     return StabilityResult(early, late, tuple(per_year), decayed, reason,
                            method="calendar_time_alpha_times_h")
+
+
+def _session_positions(
+    calendar: TradingCalendar, days: Sequence[date]
+) -> list[int]:
+    """Each day's index in the calendar, for the event-units block floor.
+
+    A replayed entry is always a session — the simulator enters at the T+1 open
+    — so the lookup hits. The bisect fallback is there so that a synthesised
+    terminal bar dated off-calendar degrades the *block length* rather than
+    raising in the middle of an answer.
+    """
+    import bisect
+
+    index = {day: i for i, day in enumerate(calendar.sessions)}
+    return [
+        index[day] if day in index else bisect.bisect_left(calendar.sessions, day)
+        for day in days
+    ]
 
 
 def _horizon_result(
@@ -573,9 +617,30 @@ def _horizon_result(
     hit_rate = wilson_interval(hits, max(len(outcomes.car), 1))
 
     agg = policy_aggregate(matured, calendar, policy, costs)
+    # The interval on the policy leg (Spec L §6.6). Same estimator as the
+    # headline, different series: the headline resamples a *calendar-time*
+    # series indexed by session, this one resamples the **per-event** policy net
+    # returns, ordered by entry session so that neighbouring entries — the ones
+    # whose holding windows overlap — land in the same block. The block floor is
+    # therefore in event units, not sessions (`overlapping_events_block`), and
+    # `scale=1.0` because each element is already a whole-hold return rather
+    # than a daily one.
+    replayed = sorted(agg.outcomes, key=lambda o: (o.entry_date, o.event_id))
+    nets = [o.net_pct / 100.0 for o in replayed]
+    net_block = optimal_block_length_for(
+        nets,
+        overlapping_events_block(
+            _session_positions(calendar, [o.entry_date for o in replayed]), horizon
+        ),
+    )
+    net_ci = stationary_bootstrap_ci(
+        nets, net_block.used, reps=reps, seed=seed,
+        level=config.POLICY_CONFIDENCE_LEVEL,
+    )
     policy_summary = PolicySummary(
         policy_slug=agg.policy_slug,
         net=agg.mean_net_pct / 100.0,
+        net_ci=net_ci,
         gross=agg.mean_gross_pct / 100.0,
         net_by_slippage_bps=tuple((bps, v / 100.0) for bps, v in agg.mean_net_by_slippage_bps),
         stopped_out=wilson_interval(agg.stopped_out_count, agg.n),

@@ -12,9 +12,12 @@ condition, never from the slug, so renaming a setup does not reset the count
 (`test_trial_count_keyed_by_family`, `test_trial_count_increments`).
 
 ``cohort_answers`` — **the cache Spec N §4.0 describes.** Keyed by
-`(setup_hash, as_of_date, price_snapshot_id, depth)`. Same question, same data
-vintage, same answer, byte for byte — which is also what makes the lookahead
-harness's byte-comparison meaningful.
+`(setup_hash, as_of_date, price_snapshot_id, depth, subject_ticker)`. Same
+question, same data vintage, same answer, byte for byte — which is also what
+makes the lookahead harness's byte-comparison meaningful. The subject is in the
+key even though the statistics do not depend on it (Spec L §6.6): a citation is
+`cohort:<row id>`, and a row serving two subjects would silently re-point a
+citation already written into the journal.
 
 ``cohort_predictions`` — **the engine's own track record (§6.5).** Every cited
 `full` answer is written here and scored later by *sign* and by *cohort
@@ -31,13 +34,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from sqlalchemy import func, select
 
 from database.models import CohortAnswerRow, CohortPredictionRow, ComparableQuery
 
 from comparables.setup_spec import SetupSpec
+
+if TYPE_CHECKING:  # a shape this module stores, not a dependency it takes on
+    from comparables.cohort import SubjectQualification
 
 #: `cohort_answers.price_snapshot_id` when a cohort ran without a snapshot row.
 #: A NULL would make every un-snapshotted answer distinct from every other
@@ -126,6 +132,9 @@ class QueryRecord:
     depth: str
     as_of: date
     price_snapshot_id: int | None
+    subject_ticker: str = ""
+    subject_qualifies: bool | None = None
+    subject_reason: str = ""
 
 
 def record_query(
@@ -145,6 +154,7 @@ def record_query(
     n_matured: int = 0,
     n_distinct_dates: int = 0,
     trials: int | None = None,
+    subject: "SubjectQualification | None" = None,
 ) -> QueryRecord:
     """Log one query. Refusals are logged exactly like answers.
 
@@ -170,6 +180,10 @@ def record_query(
         n_matured=int(n_matured),
         n_distinct_dates=int(n_distinct_dates),
         trials_against_this_pattern=0,
+        subject_ticker=subject.ticker if subject is not None else "",
+        subject_qualifies=subject.qualifies if subject is not None else None,
+        subject_reason=subject.reason if subject is not None else "",
+        subject_event_date=subject.event_date if subject is not None else None,
         result_json=json.dumps(result, sort_keys=True, separators=(",", ":"), default=str),
     )
     session.add(row)
@@ -189,6 +203,9 @@ def record_query(
         depth=row.depth,
         as_of=row.as_of_date,
         price_snapshot_id=row.price_snapshot_id,
+        subject_ticker=row.subject_ticker or "",
+        subject_qualifies=row.subject_qualifies,
+        subject_reason=row.subject_reason or "",
     )
 
 
@@ -216,8 +233,16 @@ def cached_answer(
     as_of: date,
     price_snapshot_id: int | None,
     depth: str,
+    subject_ticker: str = "",
 ) -> CohortAnswerRow | None:
-    """The stored answer for this exact question and data vintage, or `None`."""
+    """The stored answer for this exact question and data vintage, or `None`.
+
+    `subject_ticker` is part of the key, not a filter over it: the cohort's
+    statistics do not depend on which name the question was *about*, but the
+    citation does, and one row serving two subjects would re-point a citation
+    somebody already wrote down (Spec L §6.6). `''` — no subject named — is a
+    key value like any other, which is why it is the empty string and not NULL.
+    """
     return session.execute(
         select(CohortAnswerRow).where(
             CohortAnswerRow.setup_hash == setup_hash,
@@ -226,6 +251,7 @@ def cached_answer(
                 NO_SNAPSHOT if price_snapshot_id is None else price_snapshot_id
             ),
             CohortAnswerRow.depth == depth,
+            CohortAnswerRow.subject_ticker == (subject_ticker or ""),
         )
     ).scalars().first()
 
@@ -244,6 +270,7 @@ def store_answer(
     archival_block_json: str | None = None,
     family_moments: Sequence[dict] = (),
     query_id: int | None = None,
+    subject: "SubjectQualification | None" = None,
 ) -> CohortAnswerRow:
     """Insert or refresh the cached answer for this key.
 
@@ -252,9 +279,10 @@ def store_answer(
     normal case and the honest repair in the case where it is not.
     """
     snapshot_id = NO_SNAPSHOT if price_snapshot_id is None else price_snapshot_id
+    subject_ticker = subject.ticker if subject is not None else ""
     row = cached_answer(
         session, setup_hash=spec.content_hash, as_of=as_of,
-        price_snapshot_id=snapshot_id, depth=depth,
+        price_snapshot_id=snapshot_id, depth=depth, subject_ticker=subject_ticker,
     )
     if row is None:
         row = CohortAnswerRow(
@@ -262,8 +290,16 @@ def store_answer(
             as_of_date=as_of,
             price_snapshot_id=snapshot_id,
             depth=depth,
+            subject_ticker=subject_ticker,
         )
         session.add(row)
+    # The subject verdict is refreshed with the row it belongs to. It is a pure
+    # function of the same stored facts the answer is, so a refresh that changed
+    # it would mean the *facts* moved — which is the case the lookahead harness
+    # exists to catch, not one to paper over here.
+    row.subject_qualifies = subject.qualifies if subject is not None else None
+    row.subject_reason = subject.reason if subject is not None else ""
+    row.subject_event_date = subject.event_date if subject is not None else None
     row.family_slug = spec.family_slug
     row.status = status
     row.evidence_tier = evidence_tier or ""

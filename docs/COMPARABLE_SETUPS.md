@@ -192,11 +192,46 @@ interval, tier, balance and the trial count — enough to iterate in seconds, an
 `journal_append`, `research_write` or a strategy promotion will reference. The
 refusal is structural: a `quick` answer has no fields to cite.
 
+**`subject_ticker`.** Optional, and the only way an answer can ever size a
+position. A setup is a *pattern* over a universe and names no security, so
+"evidence for AMD" is not something that can be recovered from an answer after
+the fact — Spec L §6.6 needs it, and it has to be recorded when the question is
+asked:
+
+```json
+{"setup": "gap_and_go_v1", "as_of": "2026-09-01", "depth": "full",
+ "subject_ticker": "AMD"}
+```
+
+The engine runs that one name through the **same** `comparables/cohort.py`
+qualification the cohort members went through, at its most recent candidate on
+or before `as_of`, and stores the verdict:
+
+```json
+"subject": {"ticker": "AMD", "qualifies": true, "reason": "qualified",
+            "event_date": "2026-09-01"}
+```
+
+`reason` is `qualified`, or the condition that failed
+(`condition_failed:gap_pct>3.0`), or why the name never got that far
+(`not_a_universe_member`, `no_candidate`). An answer whose subject did not
+qualify is a perfectly good answer about a pattern that name is not an instance
+of — it is **not** evidence for a trade in it, and `propose_order` labels a
+proposal citing it `discretionary` with that reason
+(`citation_subject_did_not_qualify`).
+
+The subject is part of the answer cache key. Two subjects on the same question
+are two stored rows with byte-identical statistics and **two citation ids**,
+because a citation is `cohort:<row id>` and an id that resolved to whichever
+subject was asked about last would silently re-point a citation already written
+into the journal.
+
 **What comes back.** The §8 discriminated answer (three shapes on `status`),
 plus a `provenance` block naming the price snapshot and its audit result, the
-universe and its sources, the evidence cap, and the **query id**. Every answer
-is stored in `cohort_answers` and every query in `comparable_queries`, and the
-`citation_id` (`cohort:41`) is what a journal entry carries.
+universe and its sources, the evidence cap, the **query id**, and the `subject`
+block above when one was named. Every answer is stored in `cohort_answers` and
+every query in `comparable_queries`, and the `citation_id` (`cohort:41`) is what
+a journal entry carries.
 
 `cohort_detail` takes that `query_id` or `citation_id` and returns the
 constituent events: each one's ticker, the instant it became knowable, its
@@ -220,6 +255,33 @@ A free-form `setup_spec` is the same code path, and it counts as a trial
 against the nearest family — the family slug is derived from the universe and
 the primary condition, so an ad-hoc spec lands in the right family whatever it
 calls itself.
+
+### The policy leg carries its own interval
+
+Each `full` horizon's `policy` block carries `net` — the policy-simulated net
+return of §5.3, replayed under the named `execution_policy` and net of the cost
+model — and `net_ci`, a **lower 90% bound** on it.
+
+It is its own interval, computed from its own series, and it is deliberately at
+a different level from everything else in the answer:
+
+* the **headline** interval is on the calendar-time abnormal return, at
+  `CONFIDENCE_LEVEL` (0.95), resampled over a series indexed by *session*;
+* `net_ci` is on the policy net, at `POLICY_CONFIDENCE_LEVEL` (0.90), resampled
+  over the **per-event** net returns ordered by entry session — so the block
+  floor is in event units (`inference.overlapping_events_block`: the most events
+  whose holding windows overlap), not in sessions, which would mean nothing on
+  that index.
+
+The two levels are not an oversight. Spec L §6.6 sizes a live order from
+`m = clip(LB / PE, 0, 1)` on **this** quantity and no other, and names the lower
+90% bound; `portfolio/evidence.py` refuses an interval published at any other
+level rather than relabelling one. A market-adjusted CAR interval is a different
+number measured under a different exit rule, and sizing from it would be a
+statistic quietly substituted for the one the rule names.
+
+A `quick` answer carries no policy block at all, which is one of the ways §8
+keeps it structurally uncitable.
 
 ### Two conventions worth knowing before quoting a number
 
