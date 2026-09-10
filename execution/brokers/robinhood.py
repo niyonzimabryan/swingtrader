@@ -89,6 +89,11 @@ class RobinhoodMCPBroker:
     supports_fractional = True
     supports_order_review = True
     live_trading = True
+    #: The Strategy Lab venue this adapter *is*. Declared here so that a
+    #: Strategy Lab paper arm cannot reach it even if someone registers it under
+    #: the paper venue key — `strategy_lab.execution.bind_adapter` refuses on the
+    #: declaration, not on the registration (Spec Q §11, §12 invariant 11).
+    venue = "robinhood_live"
 
     def __init__(self, settings):
         self.settings = settings

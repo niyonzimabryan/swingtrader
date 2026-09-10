@@ -263,6 +263,22 @@ def bind_adapter(*, arm_mode, requested_mode, venue: str, adapter) -> AdapterBin
             "no_adapter",
             f"no adapter was supplied for the {expected!r} venue.",
         )
+
+    # The adapter's own declaration, when it makes one. This is what catches the
+    # wiring error the venue label alone cannot: registering the live Robinhood
+    # adapter under the paper venue key would otherwise route a paper arm to
+    # live capital, and nothing above would notice. An adapter that declares
+    # nothing (a test fake, a future venue) is accepted; a *contradicting*
+    # declaration never is.
+    declared = str(getattr(adapter, "venue", "") or "").strip().lower()
+    if declared and declared != expected:
+        raise ExecutionRefusedLocally(
+            "adapter_venue_mismatch",
+            f"the adapter registered at {expected!r} declares itself "
+            f"{declared!r}. A {requested_mode.value!r} arm may reach only "
+            f"{expected!r}, and an adapter that says it is something else is a "
+            "wiring error, not a preference (Spec Q §11, §12 invariant 11).",
+        )
     return AdapterBinding(mode=requested_mode, venue=expected, adapter=adapter)
 
 

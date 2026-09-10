@@ -483,6 +483,17 @@ class StrategyExecutionService:
                 return
             fields = self._observer_fields(event, proposal, detail)
             for state in states:
+                if (
+                    state is ExecutionState.PROTECTION_PENDING
+                    and trade.status == ExecutionState.PROTECTION_FAILED.value
+                ):
+                    # Re-protecting a failed position announces "pending" on the
+                    # way, but §12 draws no edge back from `protection_failed` to
+                    # `protection_pending` — only forward to `protected`. The
+                    # announcement is skipped rather than logged as a defect;
+                    # the `protected` notification that follows is the one that
+                    # carries the outcome.
+                    continue
                 try:
                     slx.transition(session, trade, state, reason=self._reason(event, detail), **fields)
                 except InvalidTransition as exc:
@@ -680,12 +691,33 @@ class StrategyExecutionService:
                 actions.append(action)
         return actions
 
+    def _load_proposal(self, proposal_id: int | None) -> Proposal | None:
+        """A detached snapshot of a proposal, safe to read outside its session.
+
+        The resume pass hops between short transactions on purpose — each write
+        it makes has to be durable before the next broker call — so it reads
+        rows out and lets the session close. Expunging before the close is what
+        keeps the loaded attributes readable rather than raising
+        ``DetachedInstanceError`` on the first access, which would be caught by
+        the broad handler in :meth:`resume` and reported as "the broker could
+        not be read". A bookkeeping mistake must not disguise itself as an
+        unresolvable broker state.
+        """
+        if not proposal_id:
+            return None
+        with self.session_factory() as session:
+            row = session.get(Proposal, int(proposal_id))
+            if row is None:
+                return None
+            session.expunge(row)
+            return row
+
     def _resume_one(self, execution_id: str, status: str, arm_id: int, now) -> ResumeAction | None:
         with self.session_factory() as session:
             arm = registry.require_arm(session, arm_id)
             binding = self._bind(arm, arm.mode)
             proposal_id = self._proposal_id_for(session, execution_id)
-            proposal = session.get(Proposal, proposal_id) if proposal_id else None
+        proposal = self._load_proposal(proposal_id)
 
         state = ExecutionState(status)
         if state is ExecutionState.PROPOSED:
@@ -712,10 +744,15 @@ class StrategyExecutionService:
             return self._resume_protection(service, execution_id, status, proposal, now)
 
         if state in (ExecutionState.PROTECTED, ExecutionState.PROTECTION_FAILED):
-            if service._stop_is_readable(proposal):
+            grew = self._refresh_fill(service, proposal, now)
+            if not grew and service._stop_is_readable(proposal):
                 self._set(execution_id, ExecutionState.PROTECTED, now=now)
-                return ResumeAction(execution_id, status, ExecutionState.PROTECTED.value, "protection_verified")
-            return self._resume_protection(service, execution_id, status, proposal, now)
+                return ResumeAction(
+                    execution_id, status, ExecutionState.PROTECTED.value, "protection_verified"
+                )
+            return self._resume_protection(
+                service, execution_id, status, self._load_proposal(proposal.id), now
+            )
 
         if state is ExecutionState.PLACEMENT_UNKNOWN:
             return self._resolve_unknown(service, execution_id, status, proposal, now)
@@ -747,9 +784,13 @@ class StrategyExecutionService:
         order_id = str(found.get("id") or found.get("order_id") or "")
         self._mark_proposal(proposal.id, "submitted", "", entry_broker_order_id=order_id or None)
         self._set(execution_id, ExecutionState.SUBMITTED, now=now)
-        with self.session_factory() as session:
-            proposal = session.get(Proposal, proposal.id)
-            return self._resume_working_entry(service, execution_id, ExecutionState.SUBMITTED.value, proposal, now)
+        return self._resume_working_entry(
+            service,
+            execution_id,
+            ExecutionState.SUBMITTED.value,
+            self._load_proposal(proposal.id),
+            now,
+        )
 
     def _resume_working_entry(self, service, execution_id, status, proposal, now) -> ResumeAction:
         info = service.broker.get_order_status(proposal.entry_broker_order_id or "") or {}
@@ -790,9 +831,40 @@ class StrategyExecutionService:
             quantity=filled,
             filled_entry_price=info.get("filled_avg_price") or proposal.average_fill_price,
         )
-        with self.session_factory() as session:
-            fresh = session.get(Proposal, proposal.id)
-            return self._resume_protection(service, execution_id, status, fresh, now)
+        return self._resume_protection(
+            service, execution_id, status, self._load_proposal(proposal.id), now
+        )
+
+    def _refresh_fill(self, service, proposal, now) -> bool:
+        """Re-read the entry and record a fill that has grown since last time.
+
+        Returns whether the filled quantity increased. This is the case a
+        protected position can silently rot in: a partial fill was protected,
+        the remainder arrived later, and the stop now covers less than the
+        position. Nothing detects that without asking the broker again.
+        """
+        order_id = proposal.entry_broker_order_id or ""
+        if not order_id:
+            return False
+        info = service.broker.get_order_status(order_id) or {}
+        filled = float(info.get("filled_qty") or 0.0)
+        known = float(proposal.filled_quantity or 0.0)
+        if filled <= known:
+            return False
+        self._mark_proposal(
+            proposal.id,
+            proposal.status,
+            "",
+            filled_quantity=filled,
+            average_fill_price=info.get("filled_avg_price") or proposal.average_fill_price,
+        )
+        log.info(
+            "strategy_fill_grew",
+            proposal_id=proposal.id,
+            was=known,
+            now=filled,
+        )
+        return True
 
     def _resume_protection(self, service, execution_id, status, proposal, now) -> ResumeAction:
         """Place or re-place the protective stop for whatever actually filled.
@@ -801,23 +873,64 @@ class StrategyExecutionService:
         protected, so re-running with the same fill reuses one stop while a
         *larger* fill deliberately asks for a new one; and ``_protect`` itself
         reads the stop back before calling the position protected.
+
+        A resize cancels the old, undersized stop **first**. Leaving it would
+        put two sell orders against one position, and a stop that can sell
+        shares twice is not protection, it is a short.
+
+        The route back through the machine is deliberate. §12 draws no edge from
+        ``protected`` to ``protection_pending``, and it should not: a protected
+        position whose stop no longer covers it is precisely the case the spec
+        describes as "broker and local state disagree", so it goes through
+        ``reconciliation_required`` — blocking new entries while it is
+        undersized — and re-enters the lifecycle at ``filled``.
         """
         with self.session_factory() as session:
             row = session.get(Proposal, proposal.id)
+            trade = slx.get_execution(session, execution_id)
+            current = ExecutionState(trade.status) if trade else ExecutionState(status)
             qty = int(float(row.filled_quantity or row.quantity or 0))
             if qty <= 0:
                 return self._to_reconciliation(execution_id, status, "nothing_filled_to_protect", now)
-            row.stop_ref_id = self._stop_ref_id(row, qty)
+
+            target_ref = self._stop_ref_id(row, qty)
+            resizing = bool(row.stop_ref_id) and row.stop_ref_id != target_ref
+            if resizing and row.stop_broker_order_id:
+                canceller = getattr(service.broker, "cancel_order", None)
+                if callable(canceller):
+                    canceller(row.stop_broker_order_id)
+            if resizing:
+                row.stop_broker_order_id = None
+            row.stop_ref_id = target_ref
             session.commit()
-            self._set(execution_id, ExecutionState.PROTECTION_PENDING, now=now)
+
+        if current is ExecutionState.PROTECTED and resizing:
+            self._set(
+                execution_id, ExecutionState.RECONCILIATION_REQUIRED, now=now,
+                reason="protection_undersized",
+            )
+            self._set(execution_id, ExecutionState.FILLED, now=now, quantity=float(qty))
+        if current in (
+            ExecutionState.FILLED,
+            ExecutionState.PARTIALLY_FILLED,
+            ExecutionState.PROTECTION_PENDING,
+        ) or (current is ExecutionState.PROTECTED and resizing):
+            self._set(execution_id, ExecutionState.PROTECTION_PENDING, now=now, quantity=float(qty))
+
+        with self.session_factory() as session:
+            row = session.get(Proposal, proposal.id)
             result = service._protect(session, row, now)
             session.commit()
+
         final = (
             ExecutionState.PROTECTED
             if result.status == "protected"
             else ExecutionState.PROTECTION_FAILED
         )
-        self._set(execution_id, final, now=now, reason="" if final is ExecutionState.PROTECTED else "protection_failed")
+        self._set(
+            execution_id, final, now=now,
+            reason="" if final is ExecutionState.PROTECTED else "protection_failed",
+        )
         return ResumeAction(
             execution_id, status, final.value, "protection_placed", {"quantity": qty}
         )

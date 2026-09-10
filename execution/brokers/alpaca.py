@@ -16,6 +16,13 @@ class AlpacaBroker:
     supports_order_review = False
     live_trading = False
 
+    #: The Strategy Lab venue this adapter *is* (Spec Q §11, §12 invariant 11).
+    #: Declared on the adapter so that `strategy_lab.execution.bind_adapter`
+    #: catches a mis-registration rather than trusting the key it was filed
+    #: under. A paper arm may reach only this one, whatever the
+    #: application-wide broker setting says.
+    venue = "alpaca_paper"
+
     def __init__(self, alpaca_client):
         self.client = alpaca_client
 

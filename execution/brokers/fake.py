@@ -355,6 +355,10 @@ class FakeExecutionBroker:
     stop_place_succeeds: bool = True
     review_approves: bool = True
     drop_stops: tuple = ()
+    #: Left empty by default: an undeclared adapter is accepted at any venue,
+    #: which is what a fake standing in for either side needs. Set it to
+    #: exercise the mis-registration refusal.
+    venue: str = ""
     fill_ratio: float = 1.0
     place_rejects: bool = False
     placement_unknown: bool = False

@@ -724,10 +724,23 @@ class ExecutionService:
         found = None
         if hasattr(self.broker, "find_order_by_ref_id"):
             found = self.broker.find_order_by_ref_id(proposal.entry_ref_id)
+
+        # Either way this is `reconciliation_required`, never `failed`. An
+        # unknown outcome whose order *was* found is the one case where falling
+        # through to the caller's failure path would be actively dangerous: it
+        # would mark a proposal `failed` — releasing its reservation and telling
+        # the owner nothing was placed — while a real order sits at the broker.
+        # So a found order is adopted here (its id recorded) and the row is left
+        # blocking until a human or the resume pass resolves it (Spec Q §12
+        # invariants 8 and 12).
         if found:
-            return None  # the caller's normal path will pick it up on retry
+            order_id = str(found.get("id") or found.get("order_id") or "")
+            if order_id:
+                proposal.entry_broker_order_id = order_id
         proposal.status = "reconciliation_required"
-        proposal.rejection_code = "placement_unknown"
+        proposal.rejection_code = (
+            "placement_unknown_order_found" if found else "placement_unknown"
+        )
         proposal.rejection_reason = result.error or "the broker's placement response was unknown."
         proposal.updated_at = utcnow_naive()
         self.pager(
@@ -736,11 +749,22 @@ class ExecutionService:
                 "proposal_id": proposal.id,
                 "ticker": proposal.ticker,
                 "entry_ref_id": proposal.entry_ref_id,
+                "order_id": proposal.entry_broker_order_id or "",
                 "recovery": (
-                    "A placement response was unknown and no order with this "
-                    "ref_id could be found. Entries are blocked until this is "
-                    "reconciled. Check the Robinhood app for an order carrying "
-                    f"ref_id {proposal.entry_ref_id!r}."
+                    (
+                        "A placement response was unknown and an order carrying "
+                        "this ref_id WAS found at the broker; its id is recorded "
+                        "above. Nothing was released and entries are blocked. "
+                        "Confirm the order in the Robinhood app and let the "
+                        "resume pass adopt it — do not place a replacement."
+                    )
+                    if found
+                    else (
+                        "A placement response was unknown and no order with this "
+                        "ref_id could be found. Entries are blocked until this is "
+                        "reconciled. Check the Robinhood app for an order carrying "
+                        f"ref_id {proposal.entry_ref_id!r}."
+                    )
                 ),
             },
         )
@@ -748,6 +772,8 @@ class ExecutionService:
             ON_PLACEMENT_UNKNOWN,
             proposal,
             entry_ref_id=proposal.entry_ref_id or "",
+            order_id=proposal.entry_broker_order_id or "",
+            reason_code=proposal.rejection_code,
             reason=proposal.rejection_reason,
         )
         return ExecutionResult(
