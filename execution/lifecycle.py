@@ -102,6 +102,32 @@ ON_STOP_REPLACED = "stop_replaced"
 ON_RISK_REJECTED = "risk_rejected"
 
 
+def live_gate_refusal(settings) -> tuple[str, str] | None:
+    """``(code, reason)`` when the *live* flags are not all on, else ``None``.
+
+    Spec Q §12 invariant 1: absence or invalidity of a flag must never mean
+    live. So this is an explicit conjunction of positive checks, and it is a
+    module-level function rather than a method because Phase 5 has to run the
+    same conjunction one step earlier — before a live Strategy Lab card is even
+    minted — and two copies of "what makes live legal" is exactly the kind of
+    drift this repository cannot afford.
+    """
+    if not bool(getattr(settings, "allow_live_trading", False)):
+        return (
+            "live_trading_disabled",
+            "ALLOW_LIVE_TRADING is not true, so a live placement is refused. "
+            "This is required on top of PHASE6_EXECUTION_ENABLED for anything "
+            "that reaches the live broker.",
+        )
+    if str(getattr(settings, "execution_mode", "paper")).lower() != "live":
+        return (
+            "execution_mode_not_live",
+            "EXECUTION_MODE is not 'live'. A proposal recorded as live may "
+            "only be placed when the service is in live mode too.",
+        )
+    return None
+
+
 class ExecutionRefused(Exception):
     """A refusal the approval channel can relay to the owner verbatim."""
 
@@ -206,19 +232,9 @@ class ExecutionService:
         """
         if proposal.execution_mode != "live":
             return
-        if not bool(getattr(self.settings, "allow_live_trading", False)):
-            raise ExecutionRefused(
-                "live_trading_disabled",
-                "ALLOW_LIVE_TRADING is not true, so a live placement is "
-                "refused. This is required on top of PHASE6_EXECUTION_ENABLED "
-                "for anything that reaches the live broker.",
-            )
-        if str(getattr(self.settings, "execution_mode", "paper")).lower() != "live":
-            raise ExecutionRefused(
-                "execution_mode_not_live",
-                "EXECUTION_MODE is not 'live'. A proposal recorded as live may "
-                "only be placed when the service is in live mode too.",
-            )
+        refusal = live_gate_refusal(self.settings)
+        if refusal is not None:
+            raise ExecutionRefused(*refusal)
 
     # -- the entry point ----------------------------------------------------
 
