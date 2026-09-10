@@ -71,6 +71,32 @@ def optimal_block_length_for(series: Sequence[float], horizon: int) -> BlockLeng
                        used=used, method=method)
 
 
+def overlapping_events_block(session_positions: Sequence[int], horizon: int) -> int:
+    """The block floor for a series indexed by **event**, not by session.
+
+    `optimal_block_length_for` floors the block at the horizon because
+    overlapping event windows have to be resampled together, and in the
+    calendar-time series one index step is one session, so `horizon` steps *is*
+    one window. A per-event series does not work that way: one index step is one
+    event, and the same rule in those units is "the most events whose
+    `horizon`-session windows overlap". A cohort with two events a year apart
+    has independent observations at any horizon and a floor of 1; a cohort whose
+    events cluster on three dates does not, and this says so.
+
+    `session_positions` are the events' entry sessions as indices into the
+    calendar, in any order. Returns at least 1.
+    """
+    positions = sorted(int(p) for p in session_positions)
+    span = max(int(horizon), 1)
+    widest = 1
+    start = 0
+    for end in range(len(positions)):
+        while positions[end] - positions[start] >= span:
+            start += 1
+        widest = max(widest, end - start + 1)
+    return widest
+
+
 @dataclass(frozen=True)
 class ConfidenceInterval:
     """A point estimate can never be constructed without one (§6.1)."""

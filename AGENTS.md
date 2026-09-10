@@ -99,7 +99,7 @@ and a test asserts this table agrees with it.
 | `research_write` | `research:write` | Upserts a dossier section or thesis, with provenance |
 | `thesis_review` | `research:write` | Records a review verdict: hold / weakened / invalidated |
 | `journal_append` | `research:write` | Appends a dated note to the decision journal |
-| `compare_setups` | `read` | The cohort answer for a `SetupSpec` |
+| `compare_setups` | `read` | The cohort answer for a `SetupSpec`; pass `subject_ticker` to say which name you are asking *about* |
 | `cohort_detail` | `read` | The constituent events behind a cohort answer |
 | `filings_recent` | `read` | 13D/G and Form 4 activity for a ticker or tracked investor |
 | `macro_state` | `read` | Current regime label plus the vintage-correct series behind it |
@@ -114,6 +114,11 @@ NumPy, cached by `(setup_hash, as_of_date)`, and costs nothing per call.
 Not every tool exists yet in every deployment. Phases land them in order; a tool
 that is absent is absent, and the answer is to say so rather than to substitute
 recall for it.
+
+**Vendor references.** `docs/vendors/` holds vendor-supplied API references
+(currently `sharadar.md`). Read the relevant one before touching an adapter under
+`data/` or `filings/`; an adapter written from memory against the wrong endpoint
+is the failure mode those files exist to prevent.
 
 ## 4. Attaching
 
@@ -165,7 +170,13 @@ size from those under the caps. Two budgets:
   `depth="full"`, `status="ok"` answer for the same ticker, computed within the
   last 5 sessions. With point estimate `PE > 0` and lower 90% bound `LB > 0`, the
   multiplier is `m = clip(LB / PE, 0, 1)` and the effective risk fraction is
-  `risk_fraction × m`, drawn from the evidenced budget.
+  `risk_fraction × m`, drawn from the evidenced budget. **"Same ticker" is a
+  property of the query, not of the setup:** a `SetupSpec` is a pattern and
+  names no security, so an answer can only be evidence for a name if
+  `compare_setups` was given that name as `subject_ticker` and the engine
+  recorded that it qualified. Ask the question about the name you intend to
+  trade, or the answer is not evidence for it — and an answer whose subject did
+  not qualify is a real answer that is simply not about this name.
 - **Discretionary.** Everything else — an uncited proposal, a citation whose
   status is `insufficient`, or one with `LB ≤ 0` — is re-labelled
   `discretionary` and draws from a separate budget with its own per-trade cap

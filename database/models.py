@@ -2332,6 +2332,23 @@ class ComparableQuery(Base):
     n_matured = Column(Integer, nullable=False, default=0)
     n_distinct_dates = Column(Integer, nullable=False, default=0)
     trials_against_this_pattern = Column(Integer, nullable=False, default=0)
+    #: The one security this question was *about* (Spec L §6.6). A `SetupSpec`
+    #: is a pattern, not a name, so "the same ticker" is a property of the query
+    #: and cannot be recovered from the answer afterwards. `''` means the
+    #: question named no subject, which is the ordinary case and is stored as
+    #: the empty string rather than NULL so it can join a unique key on both
+    #: engines.
+    subject_ticker = Column(String(20), nullable=False, default="")
+    #: Whether that subject met the setup's conditions at its most recent
+    #: candidate on or before `as_of_date`, run through the same
+    #: `comparables/cohort.py` qualification the cohort members went through.
+    #: NULL when no subject was named — which is *not* the same as `false`.
+    subject_qualifies = Column(Boolean, nullable=True)
+    #: Why: `qualified`, `condition_failed:<fact><op><value>`,
+    #: `not_a_universe_member`, `no_candidate`, and so on. A refusal a reader
+    #: cannot act on is a refusal that gets worked around.
+    subject_reason = Column(String(200), nullable=False, default="")
+    subject_event_date = Column(Date, nullable=True)
     result_json = Column(Text, nullable=False, default="{}")
     created_at = Column(UtcDateTime, default=utcnow_naive)
 
@@ -2359,6 +2376,7 @@ class CohortAnswerRow(Base):
     __table_args__ = (
         UniqueConstraint(
             "setup_hash", "as_of_date", "price_snapshot_id", "depth",
+            "subject_ticker",
             name="uq_cohort_answers_key",
         ),
         Index("ix_cohort_answers_family", "family_slug", "as_of_date"),
@@ -2373,6 +2391,17 @@ class CohortAnswerRow(Base):
     #: both engines, which is the opposite of a cache.
     price_snapshot_id = Column(Integer, nullable=False, default=-1)
     depth = Column(String(8), nullable=False)
+    #: In the unique key, and it has to be (Spec L §6.6). The *statistics* of an
+    #: answer do not depend on the subject — the cohort is the same either way —
+    #: but the citation does: `cohort:<id>` is what a journal entry and a
+    #: proposal carry, and an id that resolved to whichever subject was asked
+    #: about last would silently re-point a citation somebody already made. So
+    #: two subjects on the same question are two rows with identical
+    #: `answer_json` and two citation ids, and `''` (no subject) is a third.
+    subject_ticker = Column(String(20), nullable=False, default="")
+    subject_qualifies = Column(Boolean, nullable=True)
+    subject_reason = Column(String(200), nullable=False, default="")
+    subject_event_date = Column(Date, nullable=True)
     status = Column(String(16), nullable=False)
     evidence_tier = Column(String(32), nullable=False, default="")
     query_id = Column(Integer, nullable=True)

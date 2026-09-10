@@ -65,6 +65,10 @@ from data.prices.derived import with_derived_series
 
 SOURCE = "sharadar"
 
+# PORT PENDING (docs/vendors/sharadar.md): a sharadar.com key does not work here.
+# The direct API is https://api.sharadar.com/v1.0/data/{table} with `x-api-key`
+# and `ticker`/`from`/`to`/`fields` — see the handoff. This constant stays until
+# the port lands so the fixture path and tests are unchanged.
 BASE_URL = "https://data.nasdaq.com/api/v3/datatables"
 
 #: Environment variable carrying the key. Never hardcoded, never logged.

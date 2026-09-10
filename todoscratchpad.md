@@ -778,6 +778,7 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
             counts.** v1 is liquidity-only, versioned so the cap leg is a new slug.
 - [ ] **Phase 4 — evidence planes: filings (13F/13D/G/Form 4), vintage-correct macro,
       timestamped news** (`O`)
+- [ ] **Build handoff** — `docs/investment-workspace/handoff/HANDOFF.md` is the live state of the Investment Workspace build (what is merged, what is in flight, the integration recipe, the briefs for unbuilt PRs). Updated in every integration commit.
 - [ ] **Phase 5 — Strategy Lab** (`Q`) — ships on its own six-PR plan and prompts.
       - [x] **PR 1 — domain + experiment persistence — MERGED** ([PR #54](https://github.com/niyonzimabryan/swingtrader/pull/54), `3da5acb`): the eight remaining Spec Q §8 tables in
             `0007_strategy_lab` (`source_observations` reused from Phase 3a, not
@@ -820,6 +821,81 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
                   percentage). Spec Q §6 asks for the full context hash; closing
                   the gap is a change to the scoring pipeline, which PR 2 does
                   not own.
+      - [ ] **PR 3 — experiment runner, replay, and honest measurement** — in
+            review on `claude/strategy-lab-3-runner`: `strategy_lab/runner.py`
+            (registration freezes the plan and the variant count before any arm
+            runs; N arms over one shared snapshot, idempotently, keeping `long`,
+            `flat` and `abstain`, with a refusal recorded per arm rather than
+            aborting the run); `replay.py` (the only importer of
+            `backtest/simulator.py` — it expands
+            `ResolvedExecutionPlan.policy_spec_fields()` exactly as
+            `comparables/outcomes.py::_replay` does, and a test builds a real
+            `PolicySpec` from the same dict and asserts the identical trade);
+            `shadow.py` (a portfolio context rebuilt and hashed per attempt, so
+            the same decision can be blocked after the portfolio changes without
+            mutating or duplicating it); `metrics.py` (pure; costs missing
+            blocks a result rather than zeroing it, open positions are excluded
+            rather than scored as zero, and a small-sample leader is never a
+            winner); and `scripts/strategy_lab_scoreboard.py` (byte-identical
+            JSON and Markdown, with the bootstrap, `n_eff` and Romano–Wolf
+            step-M taken from `comparables/inference.py` through two injected
+            protocols rather than reimplemented). No flag, no pipeline hook, no
+            broker, no new table.
+            - [ ] **Probability-of-backtest-overfitting (CSCV) is deferred.**
+                  The multiple-testing control that shipped is Šidák-adjusted
+                  intervals plus Romano–Wolf step-M, both from
+                  `comparables/inference.py`. A CSCV implementation belongs in
+                  Spec N's inference layer, as its own PR, rather than as a
+                  second differently-shaped copy inside `strategy_lab/`.
+            - [ ] **The scorecard's ranking gate is a project decision, not a
+                  citation.** Spec Q §10 only says "never select a winner from
+                  raw return alone". The specific conservatism — adjusted lower
+                  bound above zero, above the benchmark, and above the
+                  runner-up's point estimate, plus a step-M rejection — is ours,
+                  is printed on every card, and gates a *recommendation*.
+                  Worth revisiting once a real shadow sample exists.
+      - [ ] **PR 4 — default-off shadow integration and owner-only controls** — in
+            review on `claude/strategy-lab-4-integration`: the
+            `STRATEGY_LAB_*` flag family (two gates, both off — the master switch
+            for the read surface, the shadow switch for the one path that
+            writes); `orchestrator/strategy_lab_shadow.py` (the whole
+            integration: the pre-registered plan as a repository constant,
+            idempotent registration, one ticker snapshot per scored name and one
+            universe snapshot per cutoff, the nightly maturation job, and the
+            scorecard read); a nine-line hook at the very end of
+            `_run_full_scan_inner`, after every memo has shipped; a 04:15 ET
+            maturation job registered only when both flags are on;
+            `bot/handlers/strategy_lab.py` (`/experiments`, `/strategies`,
+            `/strategy <slug>`, `/pause_experiment`, `/resume_experiment`) and a
+            weekly-report section that renders the scoreboard payload without
+            recomputing a number. No promote or live-tier command (PR 5/PR 6
+            own their safety services), no broker, no new table, no migration,
+            and no existing scheduled job moved. Docs: `docs/STRATEGY_LAB.md`
+            §21, `docs/ENV_SETUP.md` §10.
+            - [x] **Two integration defects fixed in the compatibility adapter.**
+                  `strategy_lab/snapshot_builder.py` now translates the
+                  pipeline's `bullish`/`bearish` into the lab's `long`/`short`,
+                  and pairs a `memos` row with its `scored_candidates` row inside
+                  a named two-hour window rather than requiring the memo to come
+                  *after* the ledger row — the pipeline writes them the other way
+                  round. Either defect alone made `swingtrader_composite_v1`
+                  abstain or go flat on every real scan; PR 2's unit tests missed
+                  both because they wrote fixture rows rather than rows the
+                  pipeline produces.
+            - [ ] **Cross-sectional arms stay off until the price plane lands.**
+                  `STRATEGY_LAB_UNIVERSE_ENABLED` is its own flag: `momentum_v1`
+                  and `short_term_reversal_v1` need `universe_membership` rows
+                  and populated `price_bars`, and a 500-name read against an
+                  empty plane buys nothing. Same blocker as the Sharadar
+                  checkout item under Phase 3b.
+            - [ ] **`memos` has no run id**, so the compatibility adapter pairs
+                  the memo to its ledger row by time. Replace the window with the
+                  join when a run id exists rather than widening it.
+            - [ ] **Shadow settlement is simulated, not observed.** The maturation
+                  job replays a decision over stored bars through
+                  `backtest/simulator.py`; it is forward evidence, but it is not
+                  a fill. Paper execution through the real `OrderManager` is
+                  PR 6's.
 - [ ] **Phase 6 — order proposal→approval→execution** — gated on Phases 0–3 **and** on
       documenting whether Robinhood can place a protective exit that survives our
       process. Human-in-the-loop, not an autonomous goal run.

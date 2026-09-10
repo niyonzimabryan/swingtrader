@@ -208,3 +208,73 @@ def composite_result(
         model_provenance={"memo_id": 7, "run_id": "run-2026-03-31"},
         portfolio_context_hash="c" * 64,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3: the bars that come *after* a snapshot
+# --------------------------------------------------------------------------- #
+
+
+def sessions_from(first: date, count: int) -> list[date]:
+    """`count` weekday sessions starting at `first`, ascending.
+
+    The forward counterpart of :func:`sessions_ending`. A replay needs bars the
+    snapshot deliberately does not contain — a point-in-time snapshot has no bar
+    from after its cutoff — so a fixture builds them separately and hands them
+    to `strategy_lab.replay`.
+    """
+    out: list[date] = []
+    day = first
+    while len(out) < count:
+        if day.weekday() < 5:
+            out.append(day)
+        day += timedelta(days=1)
+    return out
+
+
+def forward_bars(
+    closes: Sequence[float],
+    *,
+    first_session: date = Q1_2026_SESSION,
+    volume: float = 1_000_000.0,
+    range_half_width: float = 1.0,
+) -> tuple[snapshots.SnapshotBar, ...]:
+    """The signal bar and everything after it, ascending from `first_session`.
+
+    `closes[0]` is the **signal** session; the simulator enters at the open of
+    `closes[1]`, so a two-element series is the shortest replayable one.
+    """
+    days = sessions_from(first_session, len(closes))
+    return tuple(
+        snapshots.SnapshotBar(
+            session_date=day,
+            raw_open=close,
+            raw_high=close + range_half_width,
+            raw_low=close - range_half_width,
+            raw_close=close,
+            volume=volume,
+            split_adjusted_close=close,
+            total_return_close=close,
+        )
+        for day, close in zip(days, closes)
+    )
+
+
+def rising_forward(
+    n: int = 16, *, start: float = 100.0, step: float = 1.0,
+    first_session: date = Q1_2026_SESSION,
+) -> tuple[snapshots.SnapshotBar, ...]:
+    """A straight line up from the signal session. Hits targets, never the stop."""
+    return forward_bars(
+        [start + step * i for i in range(n)], first_session=first_session
+    )
+
+
+def falling_forward(
+    n: int = 16, *, start: float = 100.0, step: float = 1.0,
+    first_session: date = Q1_2026_SESSION,
+) -> tuple[snapshots.SnapshotBar, ...]:
+    """A straight line down. Crosses a 2-ATR stop within a session or two."""
+    return forward_bars(
+        [start - step * i for i in range(n)], first_session=first_session
+    )

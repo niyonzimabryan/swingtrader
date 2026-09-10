@@ -28,19 +28,30 @@ characterising a statistic (Spec N §9) with extra steps. An answer with no
 policy lower bound is therefore ``discretionary`` with that reason stated, which
 is both honest and the smaller of the two budgets.
 
-**Known gap, stated rather than papered over.** As of this phase
-``comparables.report.PolicySummary`` carries ``net`` (the point estimate) and no
-interval, so a real Spec N answer reaches :func:`policy_bounds` with a point
-estimate and no bound and lands in ``discretionary``. The extractor already
-accepts the interval under any of :data:`POLICY_INTERVAL_FIELDS` the moment
-Phase 3c adds one, at which point evidenced sizing starts working with no change
-here. This is recorded in ``docs/EXECUTION_LIFECYCLE.md`` under "Needs owner".
+**Two shapes of citation, one code path.** A citation resolves through
+:mod:`research_workspace.citations` to a
+:class:`comparables.citations.ResolvedCitation` — the *stored row*, carrying the
+answer as a JSON dict — or, in a test or a caller that already has one, to an
+in-memory ``comparables.report.CohortAnswer``. Both are read through
+:func:`_field`, which is the whole adapter: a mapping and a dataclass differ in
+how you spell the lookup and in nothing else that matters here. There is
+deliberately no second branch of the rule, because a second branch is where the
+two shapes would quietly stop agreeing.
+
+**Same ticker, per Spec L §6.6.** A ``SetupSpec`` is a pattern and names no
+security (Spec N §4.0), so the ticker an answer is *about* is recorded on the
+query — ``subject_ticker`` — together with whether that name actually met the
+setup's conditions, ``subject_qualifies``. Same-ticker therefore means both: the
+subject is this proposal's ticker **and** it qualified. An answer whose subject
+did not qualify is a perfectly good cohort answer and is simply not evidence for
+that name, so it is labelled ``discretionary`` with that said out loud.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from typing import Mapping
 
 #: Names an interval on the policy summary may be published under. Whichever is
 #: present must expose ``lower``, ``estimate`` and ``level`` — the shape of
@@ -66,6 +77,7 @@ UNRESOLVABLE = "unresolvable_cohort_answer"
 NOT_CITABLE = "not_citable"
 NOT_OK = "citation_status_not_ok"
 WRONG_TICKER = "citation_other_ticker"
+SUBJECT_NOT_QUALIFIED = "citation_subject_did_not_qualify"
 STALE_CITATION = "citation_stale"
 NO_HORIZON = "citation_no_horizon"
 NO_POLICY_BOUND = "citation_no_policy_lower_bound"
@@ -145,37 +157,135 @@ def _naive_utc(value):
     return value
 
 
+def _field(holder, name, default=None):
+    """Read ``name`` off a dataclass **or** a mapping. The whole adapter.
+
+    A stored citation carries its answer as JSON, so every nested block —
+    ``horizons``, ``policy``, ``net_ci`` — arrives as a dict; an in-memory
+    answer carries the same blocks as frozen dataclasses. This is the one place
+    that difference is spelled out.
+    """
+    if holder is None:
+        return default
+    if isinstance(holder, Mapping):
+        return holder.get(name, default)
+    return getattr(holder, name, default)
+
+
+def _split(answer):
+    """``(citation, body)``: the row that was cited, and the §8 answer in it.
+
+    For a :class:`comparables.citations.ResolvedCitation` the two differ — the
+    subject and the ``as_of`` live on the row, the statistics live in the JSON.
+    For an in-memory answer they are the same object, which is why the rest of
+    this module can read both without knowing which it has.
+    """
+    body = _field(answer, "answer")
+    return (answer, body) if isinstance(body, Mapping) else (answer, answer)
+
+
+def citable_answer(answer):
+    """The cited answer, or raise :class:`CitationRefused` saying why not.
+
+    Spec N §8's predicate, applied to whichever shape arrived. For an in-memory
+    answer that is literally ``comparables.report.assert_citable`` — the same
+    call this module has always made, unchanged. For a stored citation the same
+    rule is applied to the stored JSON: ``depth='full'``, not ``insufficient``,
+    and every field in ``CITATION_REQUIRED_FIELDS`` actually present in the
+    body, so a ``quick`` answer is refused because it structurally lacks them
+    rather than because it says so about itself.
+    """
+    from comparables.report import (
+        CITATION_REQUIRED_FIELDS,
+        NotCitableError,
+        assert_citable,
+    )
+
+    citation, body = _split(answer)
+    if body is citation:
+        try:
+            return assert_citable(answer)
+        except NotCitableError as exc:
+            raise CitationRefused(NOT_CITABLE, str(exc)) from exc
+
+    depth = _field(citation, "depth") or _field(body, "depth") or ""
+    status = _field(citation, "status") or _field(body, "status") or ""
+    if status == "insufficient":
+        raise CitationRefused(
+            NOT_CITABLE,
+            "an insufficient answer carries no statistic to cite: "
+            f"{_field(body, 'refusal_reason') or 'the cohort was below the floor'}",
+        )
+    missing = [f for f in CITATION_REQUIRED_FIELDS if f not in body]
+    if missing:
+        raise CitationRefused(
+            NOT_CITABLE,
+            f"a depth={depth!r} answer lacks {', '.join(missing)}; only a full "
+            f"answer can be cited (Spec N §8)",
+        )
+    return answer
+
+
 def answer_ticker(answer) -> str:
     """The ticker a Spec N answer is about, or ``""`` when it does not say.
 
-    A ``SetupSpec`` is a *pattern*, not a name, so the ticker rides on the
-    answer's setup where the engine put it. Several field names are accepted
-    because the store that resolves an id is Phase 3c's and is being built in
-    parallel; an answer that names no ticker fails the same-ticker check rather
-    than passing it by default.
+    A ``SetupSpec`` is a *pattern*, not a name (Spec N §4.0), so the ticker is
+    not a property of the setup and cannot be recovered from the answer's
+    statistics. It is the query's ``subject_ticker``, recorded when the question
+    was asked. ``ticker``/``symbol`` are still accepted, on the citation and on
+    a ``setup``, for an answer object that carries one directly; an answer that
+    names no ticker fails the same-ticker check rather than passing it by
+    default.
     """
-    setup = getattr(answer, "setup", None)
-    for holder in (answer, setup):
+    citation, body = _split(answer)
+    for holder in (citation, body, _field(body, "setup"), _field(citation, "setup")):
         if holder is None:
             continue
-        for field in ("ticker", "symbol", "subject_ticker"):
-            value = getattr(holder, field, None)
+        for field in ("subject_ticker", "ticker", "symbol"):
+            value = _field(holder, field)
             if value:
                 return str(value).strip().upper()
     return ""
 
 
+def subject_qualifies(answer) -> bool | None:
+    """Whether the answer's subject met the setup's conditions. ``None`` = unsaid.
+
+    ``None`` and ``False`` are different statements and are kept apart: an
+    answer that never named a subject has nothing to say about qualification,
+    while one that named a subject and found it did not qualify has said
+    something quite specific, and §6.6 acts on the second and not the first.
+    """
+    citation, body = _split(answer)
+    for holder in (citation, body):
+        value = _field(holder, "subject_qualifies", "__absent__")
+        if value != "__absent__":
+            return None if value is None else bool(value)
+    return None
+
+
 def answer_as_of(answer) -> date | None:
-    """The date the answer was computed for, or ``None``."""
-    for holder in (answer, getattr(answer, "setup", None)):
+    """The date the answer was computed for, or ``None``.
+
+    For a stored citation this is the row's ``as_of`` — the vintage the cohort
+    was built at — which is the date the 5-session citation-age budget runs
+    from.
+    """
+    citation, body = _split(answer)
+    for holder in (citation, body, _field(body, "setup")):
         if holder is None:
             continue
         for field in ("as_of", "as_of_date", "computed_on", "as_of_utc"):
-            value = getattr(holder, field, None)
+            value = _field(holder, field)
             if isinstance(value, datetime):
                 return _naive_utc(value).date()
             if isinstance(value, date):
                 return value
+            if isinstance(value, str) and value:
+                try:
+                    return date.fromisoformat(value[:10])
+                except ValueError:
+                    continue
     return None
 
 
@@ -205,7 +315,8 @@ def _nearest_horizon(answer, expected_hold_sessions: int | None):
     horizon than it planned is the common case, and the shorter horizon's
     estimate is the more conservative of two equally-distant ones.
     """
-    horizons = tuple(getattr(answer, "horizons", ()) or ())
+    _citation, body = _split(answer)
+    horizons = tuple(_field(body, "horizons") or ())
     if not horizons:
         return None
     if expected_hold_sessions is None:
@@ -213,8 +324,8 @@ def _nearest_horizon(answer, expected_hold_sessions: int | None):
     target = int(expected_hold_sessions)
     return min(
         horizons,
-        key=lambda h: (abs(int(getattr(h, "horizon_sessions", 0)) - target),
-                       int(getattr(h, "horizon_sessions", 0))),
+        key=lambda h: (abs(int(_field(h, "horizon_sessions", 0) or 0) - target),
+                       int(_field(h, "horizon_sessions", 0) or 0)),
     )
 
 
@@ -236,8 +347,8 @@ def policy_bounds(answer, expected_hold_sessions: int | None):
             "the cited answer carries no horizon results, so there is no "
             "policy-simulated net return to scale from (Spec L §6.6).",
         )
-    horizon_sessions = int(getattr(horizon, "horizon_sessions", 0)) or None
-    policy = getattr(horizon, "policy", None)
+    horizon_sessions = int(_field(horizon, "horizon_sessions", 0) or 0) or None
+    policy = _field(horizon, "policy")
     if policy is None:
         raise CitationRefused(
             NO_HORIZON,
@@ -245,24 +356,37 @@ def policy_bounds(answer, expected_hold_sessions: int | None):
             "policy summary; §6.6 scales from the policy-simulated net return, "
             "not from the raw or market-adjusted one.",
         )
-    point_estimate = getattr(policy, "net", None)
-    point_estimate = float(point_estimate) if point_estimate is not None else None
+    # `comparables.report.to_json` renders every float as its `repr` — that is
+    # what makes the stored answer byte-comparable — so a number read out of a
+    # stored citation arrives as a string and a number read off an in-memory
+    # answer arrives as a float. `float()` is the whole difference, and it is a
+    # coercion of the engine's own output, not a number produced here.
+    point_estimate = _as_float(_field(policy, "net"))
 
     lower = None
     for field in POLICY_INTERVAL_FIELDS:
-        interval = getattr(policy, field, None)
+        interval = _field(policy, field)
         if interval is None:
             continue
-        level = getattr(interval, "level", None)
-        if level is None or abs(float(level) - REQUIRED_INTERVAL_LEVEL) > INTERVAL_LEVEL_TOLERANCE:
+        level = _as_float(_field(interval, "level"))
+        if level is None or abs(level - REQUIRED_INTERVAL_LEVEL) > INTERVAL_LEVEL_TOLERANCE:
             # A different confidence level is a different number. Say nothing
             # rather than relabel it.
             continue
-        bound = getattr(interval, "lower", None)
+        bound = _as_float(_field(interval, "lower"))
         if bound is not None:
-            lower = float(bound)
+            lower = bound
             break
     return lower, point_estimate, horizon_sessions
+
+
+def _as_float(value) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -319,20 +443,20 @@ def assess(
             answer_id,
         )
 
-    from comparables.report import NotCitableError, assert_citable
-
     try:
-        full = assert_citable(answer)
-    except NotCitableError as exc:
-        return _unevidenced(mode, NOT_CITABLE, str(exc), answer_id)
+        full = citable_answer(answer)
+    except CitationRefused as exc:
+        return _unevidenced(mode, exc.code, exc.message, answer_id)
 
-    status = getattr(full, "status", "")
+    # From here `full` is read through the adapter, whichever shape it is.
+    citation, body = _split(full)
+    status = _field(citation, "status") or _field(body, "status") or ""
     if status != "ok":
         return _unevidenced(
             mode,
             NOT_OK,
             f"a depth='full' answer with status={status!r} is not a citation: "
-            f"{getattr(full, 'refusal_reason', None) or 'no effect was established'}.",
+            f"{_field(body, 'refusal_reason') or 'no effect was established'}.",
             answer_id,
         )
 
@@ -344,6 +468,19 @@ def assess(
             f"the cited answer is for {cited_ticker or 'an unnamed ticker'} and "
             f"this proposal is for {symbol}. Evidence for one name does not "
             "size a position in another (Spec L §6.6).",
+            answer_id,
+        )
+
+    if subject_qualifies(full) is False:
+        return _unevidenced(
+            mode,
+            SUBJECT_NOT_QUALIFIED,
+            f"the cited answer names {symbol} as its subject and records that "
+            f"{symbol} did not meet the setup's conditions "
+            f"({_field(citation, 'subject_reason') or 'no reason recorded'}). "
+            "The cohort is a real answer about a pattern this name is not an "
+            "instance of, so it is not evidence for this trade (Spec L §6.6, "
+            "Spec N §4.0).",
             answer_id,
         )
 

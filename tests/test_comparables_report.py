@@ -348,6 +348,57 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(dict(self.answer.cost_model.half_spread_bps_by_decile)[1],
                          45.0)
 
+    def test_policy_net_carries_a_lower_90_bound(self):
+        """Spec L §6.6 sizes from this interval and no other (Spec N §5.3).
+
+        The level is 0.90 and not `CONFIDENCE_LEVEL`'s 0.95 on purpose: the
+        sizing rule names the lower **90%** bound, and `portfolio/evidence.py`
+        refuses an interval published at any other level rather than
+        relabelling it. The interval must bracket its own point estimate and
+        that estimate must be the policy net itself — not the headline, which
+        is a different quantity under a different exit rule.
+        """
+        for result in self.answer.horizons:
+            with self.subTest(horizon=result.horizon_sessions):
+                interval = result.policy.net_ci
+                self.assertIsNotNone(interval, "a full answer's policy leg needs its interval")
+                self.assertEqual(interval.level, config.POLICY_CONFIDENCE_LEVEL)
+                self.assertEqual(interval.level, 0.90)
+                self.assertEqual(interval.method, "stationary_block_bootstrap")
+                self.assertAlmostEqual(interval.estimate, result.policy.net, places=12)
+                self.assertLessEqual(interval.lower, interval.estimate)
+                self.assertLessEqual(interval.estimate, interval.upper)
+                # A different quantity, measured differently: they must not be
+                # the same object or the same numbers by accident.
+                self.assertNotEqual(interval.lower, result.headline.lower)
+
+    def test_policy_interval_is_seeded_like_everything_else(self):
+        """Same seed, same bound. A sizing input that wobbled per call is not one."""
+        again = build_answer(spec(), self.events, self.benchmark, self.calendar,
+                             policy=fx.POLICY, **FAST)
+        self.assertEqual(
+            [h.policy.net_ci.lower for h in self.answer.horizons],
+            [h.policy.net_ci.lower for h in again.horizons],
+        )
+
+    def test_policy_interval_round_trips_through_to_json(self):
+        """`to_json` stays a plain dict, and the new leg is in it."""
+        import json
+
+        body = json.loads(to_json(self.answer))
+        leg = body["horizons"][0]["policy"]["net_ci"]
+        self.assertEqual(
+            set(leg),
+            {"estimate", "lower", "upper", "level", "method", "block_length",
+             "reps", "seed"},
+        )
+        # `_plain` renders floats as `repr` strings for byte-determinism, so a
+        # reader coerces. The evidence gate does exactly this.
+        self.assertEqual(float(leg["level"]), 0.90)
+        self.assertAlmostEqual(
+            float(leg["lower"]), self.answer.horizons[0].policy.net_ci.lower, places=12
+        )
+
 
 class ModelNumberTests(unittest.TestCase):
     def test_no_model_number_in_output(self):
@@ -358,6 +409,7 @@ class ModelNumberTests(unittest.TestCase):
             PolicySummary(
                 policy_slug="event_swing_14cal_v1",
                 net="about 1.7%",                      # type: ignore[arg-type]
+                net_ci=None,
                 gross=0.02,
                 net_by_slippage_bps=(),
                 stopped_out=None,                      # type: ignore[arg-type]
@@ -369,8 +421,16 @@ class ModelNumberTests(unittest.TestCase):
                 realized_return=0.01, sign_correct=True, realized_percentile=61.0,
             )
         # The honest path still works.
-        summary = PolicySummary("p", 0.017, 0.021, ((10.0, 0.017),), None)
+        summary = PolicySummary("p", 0.017, None, 0.021, ((10.0, 0.017),), None)
         self.assertEqual(summary.net, 0.017)
+
+    def test_the_policy_interval_is_a_required_field(self):
+        """`net_ci` cannot be forgotten: §8 says no field is optional."""
+        with self.assertRaises(TypeError):
+            PolicySummary(                             # type: ignore[call-arg]
+                policy_slug="p", net=0.017, gross=0.021,
+                net_by_slippage_bps=(), stopped_out=None,  # type: ignore[arg-type]
+            )
 
 
 class PredictionRecordTests(unittest.TestCase):

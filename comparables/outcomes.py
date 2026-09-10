@@ -157,11 +157,26 @@ class TradingCalendar:
 
     def session_zero(self, known_at_utc: datetime) -> int:
         """First session whose open is at or after `known_at_utc` (§5.0)."""
+        index = self.session_zero_or_none(known_at_utc)
+        if index is None:
+            raise ValueError(f"no session opens at or after {known_at_utc}")
+        return index
+
+    def session_zero_or_none(self, known_at_utc: datetime) -> int | None:
+        """The same, or `None` when the calendar does not reach that far.
+
+        It does not reach that far for a fact that became knowable on the
+        query's own `as_of`: the day-precision convention stamps it at that
+        day's close and §5.0 puts entry at the *next* open, which has not
+        happened. That is an event with **no outcome yet**, which is exactly
+        what §4.4 calls censored — not an error, and not a reason to abort the
+        answer the other events support.
+        """
         for i, day in enumerate(self.sessions):
             opening = datetime.combine(day, config.SESSION_OPEN_UTC)
             if opening >= known_at_utc:
                 return i
-        raise ValueError(f"no session opens at or after {known_at_utc}")
+        return None
 
     def window(self, zero_index: int, horizon: int) -> tuple[date, ...]:
         """The `horizon` sessions of the event window, session 0 first."""
@@ -276,7 +291,9 @@ def maturity(
     event: EventRecord, calendar: TradingCalendar, horizon: int
 ) -> MaturityStatus:
     """Resolved-by-terminal-outcome is matured; everything else is censored."""
-    zero = calendar.session_zero(event.known_at_utc)
+    zero = calendar.session_zero_or_none(event.known_at_utc)
+    if zero is None:
+        return MaturityStatus(event.event_id, False, "entry_session_after_as_of")
     if event.terminal is not None and not event.terminal.resolved:
         return MaturityStatus(event.event_id, False, event.terminal.reason)
     if zero + horizon > len(calendar.sessions):
@@ -348,10 +365,20 @@ def calendar_time_series(
     horizon: int,
     risk_free_daily: float = 0.0,
 ) -> CalendarTimeSeries:
-    """Equal-weighted portfolio of every event inside its window on each date."""
+    """Equal-weighted portfolio of every event inside its window on each date.
+
+    An event whose window does not fit inside the calendar — because its entry
+    session is after the end, or because the horizon runs past it — contributes
+    nothing. It is the same set `maturity` calls censored, and dropping it here
+    is what lets a cohort containing a recent event be measured at all: before,
+    a single unmatured member raised out of the middle of the assembly and took
+    the whole answer with it.
+    """
     per_session: dict[date, list[float]] = {}
     for event in events:
-        zero = calendar.session_zero(event.known_at_utc)
+        zero = calendar.session_zero_or_none(event.known_at_utc)
+        if zero is None or zero + horizon > len(calendar.sessions):
+            continue
         days = calendar.window(zero, horizon)
         for day, r in zip(days, event_daily_returns(event, calendar, horizon)):
             per_session.setdefault(day, []).append(r)
@@ -668,5 +695,15 @@ def provenance_mix(events: Sequence[EventRecord]) -> dict[str, int]:
 def distinct_event_dates(
     events: Sequence[EventRecord], calendar: TradingCalendar
 ) -> tuple[date, ...]:
-    return tuple(sorted({calendar.sessions[calendar.session_zero(e.known_at_utc)]
-                         for e in events}))
+    """The §8 floor's denominator: sessions on which this cohort had an entry.
+
+    An event whose entry session is after the calendar's end contributes no
+    date, for the same reason it is censored: the session it names has not
+    happened. It stays a cohort member — membership is a property of the facts
+    and the conditions, and making it depend on when the question was asked is
+    the difference the §10 lookahead harness is built to catch.
+    """
+    zeros = (calendar.session_zero_or_none(e.known_at_utc) for e in events)
+    return tuple(sorted({
+        calendar.sessions[zero] for zero in zeros if zero is not None
+    }))
