@@ -119,17 +119,17 @@ def render_experiments(data) -> str:
         return (
             "*🧪 STRATEGY LAB — EXPERIMENTS*\n\n"
             "No experiment is registered yet\\. The configured name is "
-            f"`{escape_md(str(data.get('configured', '')))}`; it registers on the "
+            f"`{_code(str(data.get('configured', '')))}`; it registers on the "
             "first scan after STRATEGY\\_LAB\\_SHADOW\\_ENABLED is true\\."
         )
     lines = ["*🧪 STRATEGY LAB — EXPERIMENTS*", ""]
     for experiment in experiments:
         marker = " ⭐" if experiment.get("configured") else ""
         lines.append(
-            f"*{escape_md(experiment['name'])}*{marker} — `{escape_md(experiment['status'])}`"
+            f"*{escape_md(experiment['name'])}*{marker} — `{_code(experiment['status'])}`"
         )
         lines.append(
-            f"  primary metric: `{escape_md(str(experiment.get('primary_metric') or ''))}` "
+            f"  primary metric: `{_code(str(experiment.get('primary_metric') or ''))}` "
             f"\\| planned variants: `{experiment.get('planned_variants', 0)}`"
         )
         arms = list(experiment.get("arms") or ())
@@ -140,8 +140,8 @@ def render_experiments(data) -> str:
         lines.append(f"  arms: `{len(arms)}` \\({escape_md(tier_text or 'none')}\\)")
         for arm in arms:
             lines.append(
-                f"    `#{arm['arm_id']}` {escape_md(arm['slug'])}@{escape_md(arm['version'])} "
-                f"— `{escape_md(arm['mode'])}`/`{escape_md(arm['status'])}` "
+                f"    `#{arm['arm_id']}` `{_code(arm['slug'])}@{_code(arm['version'])}` "
+                f"— `{_code(arm['mode'])}`/`{_code(arm['status'])}` "
                 f"\\| decisions `{arm['decisions']}`"
             )
         lines.append("")
@@ -172,11 +172,11 @@ def render_strategies(data) -> str:
         role = "champion" if row.get("champion") else "challenger"
         replay = "replayable" if row.get("historically_replayable") else "forward\\-only"
         lines.append(
-            f"*{escape_md(row['slug'])}* `{escape_md(row['version'])}` — {escape_md(role)}"
+            f"*{escape_md(row['slug'])}* `{_code(row['version'])}` — {escape_md(role)}"
         )
         lines.append(
-            f"  status `{escape_md(row['status'])}` \\| scope `{escape_md(row['scope'])}` "
-            f"\\| policy `{escape_md(row['policy'])}` \\| {replay}"
+            f"  status `{_code(row['status'])}` \\| scope `{_code(row['scope'])}` "
+            f"\\| policy `{_code(row['policy'])}` \\| {replay}"
         )
         lines.append(
             f"  expected hold: `{row['expected_holding_days']}` calendar days"
@@ -222,15 +222,15 @@ def render_strategy(slug: str, detail, payload) -> str:
     if detail.get("unknown"):
         roster = ", ".join(detail.get("roster") or ())
         return (
-            f"Unknown strategy `{escape_md(slug)}`\\. The roster is "
-            f"`{escape_md(roster)}`\\."
+            f"Unknown strategy `{_code(slug)}`\\. The roster is "
+            f"`{_code(roster)}`\\."
         )
 
     lines = [
-        f"*🧬 {escape_md(detail['slug'])}* `{escape_md(detail['version'])}`",
+        f"*🧬 {escape_md(detail['slug'])}* `{_code(detail['version'])}`",
         "",
-        f"status `{escape_md(detail['status'])}` \\| scope `{escape_md(detail['scope'])}` "
-        f"\\| policy `{escape_md(detail['policy'])}`",
+        f"status `{_code(detail['status'])}` \\| scope `{_code(detail['scope'])}` "
+        f"\\| policy `{_code(detail['policy'])}`",
         "",
         f"_{escape_md(_clip(detail.get('hypothesis') or '', 300))}_",
         "",
@@ -246,7 +246,7 @@ def render_strategy(slug: str, detail, payload) -> str:
         lines.append("No arm for this strategy under the configured experiment\\.")
     for arm in arms:
         lines.append(
-            f"*arm `#{arm['arm_id']}`* — `{escape_md(arm['mode'])}`/`{escape_md(arm['status'])}`"
+            f"*arm `#{arm['arm_id']}`* — `{_code(arm['mode'])}`/`{_code(arm['status'])}`"
         )
         lines.append(
             f"  decisions `{arm['decisions']}` \\(long `{arm['long']}`, "
@@ -265,8 +265,8 @@ def render_strategy(slug: str, detail, payload) -> str:
             strength = row.get("signal_strength")
             strength_text = f"{strength:.2f}" if isinstance(strength, (int, float)) else "—"
             lines.append(
-                f"  `{escape_md(row['ticker'])}` `{escape_md(row['action'])}` "
-                f"s\\=`{escape_md(strength_text)}` \\(arm `#{row['arm_id']}`\\)"
+                f"  `{_code(row['ticker'])}` `{_code(row['action'])}` "
+                f"s\\=`{_code(strength_text)}` \\(arm `#{row['arm_id']}`\\)"
             )
     return "\n".join(lines)
 
@@ -279,6 +279,20 @@ def _clip(text: str, limit: int) -> str:
 # --------------------------------------------------------------------------- #
 # The scoreboard section, shared with the weekly report
 # --------------------------------------------------------------------------- #
+
+
+def _code(value) -> str:
+    """Escape a value for a MarkdownV2 **code span**, which is not prose.
+
+    Telegram's rule differs between the two: outside a code span every special
+    character must be escaped (`escape_md`), but *inside* one only a backtick
+    and a backslash may be — everything else is literal, and a stray `\\_` would
+    be shown to the reader as a backslash rather than swallowed. That matters
+    here more than anywhere else in the bot, because almost every value this
+    card prints is a slug or a semantic version: `momentum_v1@1.0.0/shadow`
+    escaped as prose renders as `momentum\\_v1@1\\.0\\.0/shadow`.
+    """
+    return str(value).replace("\\", "\\\\").replace("`", "\\`")
 
 
 def _fmt(value) -> str:
@@ -316,10 +330,10 @@ def _scoreboard_lines(payload, *, only_slug: str = "") -> list[str]:
     floors = inputs.get("floors") or {}
     lines = [
         "*📊 SCOREBOARD*",
-        f"  cutoff `{escape_md(str(inputs.get('cutoff_utc', '')))}` "
-        f"\\| metric `{escape_md(str(inputs.get('primary_metric', '')))}`",
-        f"  costs `{escape_md(_costs_text(costs))}` "
-        f"\\| floors `{escape_md(_floors_text(floors))}`",
+        f"  cutoff `{_code(str(inputs.get('cutoff_utc', '')))}` "
+        f"\\| metric `{_code(str(inputs.get('primary_metric', '')))}`",
+        f"  costs `{_code(_costs_text(costs))}` "
+        f"\\| floors `{_code(_floors_text(floors))}`",
         f"  variants: declared `{variants.get('planned_variants', 0)}`, "
         f"run `{variants.get('n_tried', 0)}`, "
         f"testing denominator `{variants.get('n_trials', 0)}`",
@@ -337,8 +351,8 @@ def _scoreboard_lines(payload, *, only_slug: str = "") -> list[str]:
         winner = section.get("winner")
         lines += [
             "",
-            f"*{title}* — `{escape_md(str(section.get('label', '')))}`"
-            + (f" \\| winner `{escape_md(str(winner))}`" if winner else ""),
+            f"*{title}* — `{_code(str(section.get('label', '')))}`"
+            + (f" \\| winner `{_code(str(winner))}`" if winner else ""),
         ]
         if evidence != EVIDENCE_CLEAN:
             lines.append(
@@ -348,20 +362,20 @@ def _scoreboard_lines(payload, *, only_slug: str = "") -> list[str]:
         for row in section.get("arms") or ():
             if only_slug and not str(row.get("arm", "")).startswith(only_slug):
                 continue
-            lines.append(f"  `{escape_md(str(row.get('arm', '')))}` — `{escape_md(str(row.get('status', '')))}`")
+            lines.append(f"  `{_code(str(row.get('arm', '')))}` — `{_code(str(row.get('status', '')))}`")
             lines.append(
                 f"    n matured `{row.get('n_matured', 0)}` \\| open `{row.get('n_open', 0)}` "
                 f"\\| dates `{row.get('n_distinct_dates', 0)}`"
             )
             lines.append(
-                f"    net `{escape_md(_fmt(row.get('mean_net_pct')))}%` "
-                f"\\| R `{escape_md(_fmt(row.get('mean_r')))}` "
-                f"\\| win `{escape_md(_fmt(row.get('win_rate')))}`"
+                f"    net `{_code(_fmt(row.get('mean_net_pct')))}%` "
+                f"\\| R `{_code(_fmt(row.get('mean_r')))}` "
+                f"\\| win `{_code(_fmt(row.get('win_rate')))}`"
             )
             lines.append(
-                f"    max DD `{escape_md(_fmt(row.get('max_drawdown_pct')))}%` "
-                f"\\| TUW `{escape_md(_fmt(row.get('time_under_water_days')))}d` "
-                f"\\| vs benchmark `{escape_md(_fmt(row.get('benchmark_relative_pct')))}pp`"
+                f"    max DD `{_code(_fmt(row.get('max_drawdown_pct')))}%` "
+                f"\\| TUW `{_code(_fmt(row.get('time_under_water_days')))}d` "
+                f"\\| vs benchmark `{_code(_fmt(row.get('benchmark_relative_pct')))}pp`"
             )
             interval = row.get("uncertainty")
             if interval:
@@ -375,24 +389,24 @@ def _scoreboard_lines(payload, *, only_slug: str = "") -> list[str]:
                 )
                 lines.append(
                     f"    family\\-adjusted lower "
-                    f"`{escape_md(_fmt(row.get('adjusted_lower')))}` over "
+                    f"`{_code(_fmt(row.get('adjusted_lower')))}` over "
                     f"`{row.get('n_trials', 0)}` trial\\(s\\); step\\-M "
-                    f"`{escape_md(_fmt(row.get('stepm_rejected')))}`"
+                    f"`{_code(_fmt(row.get('stepm_rejected')))}`"
                 )
             else:
                 lines.append("    no interval computed")
             for warning in row.get("warnings") or ():
-                lines.append(f"    ⚠️ `{escape_md(str(warning))}`")
+                lines.append(f"    ⚠️ `{_code(str(warning))}`")
 
         for pair in section.get("overlaps") or ():
             if only_slug and only_slug not in f"{pair.get('left')}{pair.get('right')}":
                 continue
             lines.append(
-                f"  overlap `{escape_md(str(pair.get('left')))}` vs "
-                f"`{escape_md(str(pair.get('right')))}`: shared "
+                f"  overlap `{_code(str(pair.get('left')))}` vs "
+                f"`{_code(str(pair.get('right')))}`: shared "
                 f"`{pair.get('n_shared', 0)}`, Jaccard "
-                f"`{escape_md(_fmt(pair.get('jaccard')))}`, correlation "
-                f"`{escape_md(_fmt(pair.get('correlation')))}` "
+                f"`{_code(_fmt(pair.get('jaccard')))}`, correlation "
+                f"`{_code(_fmt(pair.get('correlation')))}` "
                 f"\\({escape_md(str(pair.get('correlation_note', '')))}\\)"
             )
         for reason in section.get("reasons") or ():
@@ -400,12 +414,12 @@ def _scoreboard_lines(payload, *, only_slug: str = "") -> list[str]:
 
     for refusal in payload.get("refusals") or ():
         lines.append(
-            f"  ⛔ `{escape_md(str(refusal.get('arm', '')))}`: "
+            f"  ⛔ `{_code(str(refusal.get('arm', '')))}`: "
             f"{escape_md(_clip(str(refusal.get('reason', '')), 160))}"
         )
     warnings = payload.get("warnings") or ()
     if warnings:
-        lines.append("  warnings: " + ", ".join(f"`{escape_md(str(w))}`" for w in warnings))
+        lines.append("  warnings: " + ", ".join(f"`{_code(str(w))}`" for w in warnings))
     lines.append(
         "  _Recommendations are informational\\. Promotion is owner\\-only and "
         "nothing here performs one\\._"

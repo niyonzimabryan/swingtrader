@@ -298,6 +298,67 @@ class ScoreboardRenderingTests(unittest.TestCase):
         self.assertIn("never a promotion gate", text)
 
 
+class MarkdownEscapingTests(unittest.TestCase):
+    """MarkdownV2 escapes prose one way and a code span another.
+
+    Outside a code span every special character must be escaped; *inside* one
+    only a backtick and a backslash may be, and anything else is literal — so a
+    prose-escaped value inside backticks reaches the reader as
+    `momentum\\_v1@1\\.0\\.0/shadow`. Almost every value this card prints is a slug
+    or a semantic version, so getting it the wrong way round would put a
+    backslash on nearly every line.
+    """
+
+    def _cards(self):
+        yield "\n".join(handlers.scoreboard_lines(PAYLOAD))
+        yield handlers.render_experiments({
+            "configured": "shadow_roster_v1",
+            "experiments": [{
+                "name": "shadow_roster_v1", "status": "running",
+                "planned_variants": 4, "primary_metric": "mean_net_pct",
+                "owner": "bryan", "configured": True,
+                "arms": [{
+                    "arm_id": 1, "slug": "momentum_v1", "version": "1.0.0",
+                    "mode": "shadow", "status": "active", "risk_budget": 0.01,
+                    "decisions": 12,
+                }],
+            }],
+        })
+        yield handlers.render_strategies({"strategies": [{
+            "slug": "momentum_v1", "version": "1.0.0", "scope": "universe",
+            "status": "shadow", "policy": "momentum_quarterly_89cal_v1",
+            "expected_holding_days": 89, "historically_replayable": True,
+            "champion": False,
+        }]})
+
+    def test_no_card_carries_a_backslash_inside_a_code_span(self):
+        import re
+
+        for card in self._cards():
+            for span in re.findall(r"`([^`]*)`", card):
+                self.assertNotIn(
+                    "\\", span,
+                    f"code span {span!r} carries a prose escape; Telegram shows "
+                    "the backslash to the reader",
+                )
+
+    def test_prose_outside_a_code_span_is_still_escaped(self):
+        """The other half: dropping `escape_md` from prose would break parsing."""
+        card = handlers.render_experiments({
+            "configured": "shadow_roster_v1",
+            "experiments": [{
+                "name": "shadow_roster_v1", "status": "running",
+                "planned_variants": 4, "primary_metric": "mean_net_pct",
+                "owner": "bryan", "configured": True, "arms": [],
+            }],
+        })
+        self.assertIn("*shadow\\_roster\\_v1*", card)
+
+    def test_a_backtick_in_a_value_is_escaped_rather_than_closing_the_span(self):
+        self.assertEqual(handlers._code("a`b"), "a\\`b")
+        self.assertEqual(handlers._code("a\\b"), "a\\\\b")
+
+
 def _plain(text: str) -> str:
     """The message with MarkdownV2's escapes removed, for readable assertions."""
     return text.replace("\\", "")
