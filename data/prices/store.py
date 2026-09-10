@@ -296,3 +296,37 @@ def get_snapshot(session: Session, snapshot_slug: str) -> PriceSnapshot | None:
     return session.execute(
         select(PriceSnapshot).where(PriceSnapshot.snapshot_slug == snapshot_slug)
     ).scalars().first()
+
+
+# --------------------------------------------------------------------------- #
+# Truncation, for the Spec N §10 lookahead harness
+# --------------------------------------------------------------------------- #
+
+
+def delete_bars_after(session: Session, day: date) -> int:
+    """Remove every bar for a session later than `day`.
+
+    A price bar is a fact like any other, and its `known_at` is its session
+    date. `comparables/lookahead.py` deletes the future ones and rebuilds the
+    cohort to prove no covariate reached forward for them. **Call it inside a
+    savepoint you intend to roll back**; nothing else should call it.
+    """
+    deleted = session.query(PriceBar).filter(PriceBar.session_date > day).delete(
+        synchronize_session=False
+    )
+    session.flush()
+    return int(deleted or 0)
+
+
+def delete_membership_after(session: Session, cutoff: datetime) -> int:
+    """Remove membership rows that were not knowable at `cutoff`.
+
+    Same contract as `delete_bars_after`: harness only, inside a savepoint.
+    A universe reconstruction published after the event is exactly the kind of
+    lookahead §4.2 exists to catch, so the harness deletes it and looks.
+    """
+    deleted = session.query(UniverseMembership).filter(
+        UniverseMembership.known_at_utc > _naive_utc(cutoff)
+    ).delete(synchronize_session=False)
+    session.flush()
+    return int(deleted or 0)

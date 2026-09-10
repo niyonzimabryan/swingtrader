@@ -2275,3 +2275,193 @@ class PromotionEvent(Base):
     previous_risk_budget = Column(Float, nullable=False, default=0.0)
     new_risk_budget = Column(Float, nullable=False, default=0.0)
     created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+# --------------------------------------------------------------------------- #
+# Spec N Phase 3c: the comparable-setups registry
+#
+# Three tables, no foreign keys across phase boundaries. `price_snapshot_id`
+# points at `price_snapshots.id` and `query_id` at `comparable_queries.id` by
+# value rather than by constraint: Phases 1-4 are developed on parallel
+# branches and a cross-phase FK turns their integration merge into a schema
+# argument (`migrations/README.md`). The join is one integer either way.
+# --------------------------------------------------------------------------- #
+
+
+class ComparableQuery(Base):
+    """Every cohort query, asked and answered (Spec N §7).
+
+    *"The system will not stop Bryan from searching; it will refuse to let him
+    forget that he did."* The trial count in a response is a `COUNT(DISTINCT
+    setup_hash)` over this table within the setup's family slug, so the twelfth
+    variant cannot present itself as the first — and renaming a setup does not
+    reset it, because the family is derived from the universe and the primary
+    condition, never from the slug.
+
+    A refused query is logged exactly like an answered one. A search that
+    stopped counting when it stopped succeeding would be no accounting at all.
+    """
+
+    __tablename__ = "comparable_queries"
+    __table_args__ = (
+        Index("ix_comparable_queries_family", "family_slug", "created_at"),
+        Index("ix_comparable_queries_setup", "setup_hash", "as_of_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    setup_hash = Column(String(64), nullable=False)
+    setup_slug = Column(String(80), nullable=False)
+    setup_version = Column(String(20), nullable=False)
+    family_slug = Column(String(160), nullable=False)
+    setup_json = Column(Text, nullable=False)
+    #: The workspace token's *label*, never the token. Spec K §4.1 logs the
+    #: label and an argument hash and nothing else.
+    requester_label = Column(String(80), nullable=False, default="")
+    as_of_date = Column(Date, nullable=False)
+    price_snapshot_id = Column(Integer, nullable=True)
+    universe_slug = Column(String(64), nullable=False, default="")
+    #: Where the candidate events came from — `price_session` or the 8-K feed.
+    #: Stored rather than re-derived so `cohort_detail` rebuilds the *same*
+    #: cohort: an earnings setup walked as price sessions comes back empty, and
+    #: "empty" is indistinguishable from "nothing qualified" after the fact.
+    candidate_source = Column(String(32), nullable=False, default="")
+    depth = Column(String(8), nullable=False, default="quick")
+    status = Column(String(16), nullable=False)
+    evidence_tier = Column(String(32), nullable=False, default="")
+    refusal_reason = Column(Text, nullable=True)
+    n_matured = Column(Integer, nullable=False, default=0)
+    n_distinct_dates = Column(Integer, nullable=False, default=0)
+    trials_against_this_pattern = Column(Integer, nullable=False, default=0)
+    result_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(UtcDateTime, default=utcnow_naive)
+
+    @property
+    def result(self) -> dict:
+        return json.loads(self.result_json or "{}")
+
+    @property
+    def setup(self) -> dict:
+        return json.loads(self.setup_json or "{}")
+
+
+class CohortAnswerRow(Base):
+    """A stored answer, keyed exactly as Spec N §4.0 says it is cacheable.
+
+    *"A cohort answer is keyed by `(setup_hash, as_of_date,
+    data_snapshot_version)` and is therefore reproducible and cacheable."*
+    `depth` is in the key too, because `quick` and `full` are different answers
+    to the same question and only one of them is citable (§8) — a cache that
+    returned the `quick` body for a `full` request would hand a caller an
+    answer the type system says they may not cite.
+    """
+
+    __tablename__ = "cohort_answers"
+    __table_args__ = (
+        UniqueConstraint(
+            "setup_hash", "as_of_date", "price_snapshot_id", "depth",
+            name="uq_cohort_answers_key",
+        ),
+        Index("ix_cohort_answers_family", "family_slug", "as_of_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    setup_hash = Column(String(64), nullable=False)
+    family_slug = Column(String(160), nullable=False)
+    as_of_date = Column(Date, nullable=False)
+    #: `-1` stands for "no snapshot row", so the unique key still applies. A
+    #: NULL would make every un-snapshotted answer distinct from every other on
+    #: both engines, which is the opposite of a cache.
+    price_snapshot_id = Column(Integer, nullable=False, default=-1)
+    depth = Column(String(8), nullable=False)
+    status = Column(String(16), nullable=False)
+    evidence_tier = Column(String(32), nullable=False, default="")
+    query_id = Column(Integer, nullable=True)
+    answer_json = Column(Text, nullable=False)
+    #: The archival-provenance block, rendered separately and never pooled with
+    #: the point-in-time one (Spec N §8). NULL when the cohort has no archival
+    #: events at all.
+    archival_block_json = Column(Text, nullable=True)
+    provenance_mix_json = Column(Text, nullable=False, default="{}")
+    #: `[{horizon, n, mean, within_variance}, ...]` for this cohort, so a
+    #: *sibling* cohort in the same family can be shrunk toward the family mean
+    #: (Spec N §6.4) without re-running it. The moments come from
+    #: `comparables.outcomes.horizon_outcomes`, which is where every other
+    #: number in the answer comes from; storing them is not a second estimate,
+    #: it is the same one written down.
+    family_moments_json = Column(Text, nullable=False, default="[]")
+    created_at = Column(UtcDateTime, default=utcnow_naive)
+
+    @property
+    def answer(self) -> dict:
+        return json.loads(self.answer_json or "{}")
+
+    @property
+    def family_moments(self) -> list:
+        return json.loads(self.family_moments_json or "[]")
+
+    @property
+    def archival_block(self) -> dict | None:
+        return json.loads(self.archival_block_json) if self.archival_block_json else None
+
+    @property
+    def provenance_mix(self) -> dict:
+        return json.loads(self.provenance_mix_json or "{}")
+
+
+class CohortPredictionRow(Base):
+    """The engine's own track record (Spec N §6.5).
+
+    Every cited `full` answer is written here and scored later against the
+    realized outcome of the query event. Two scores, and deliberately not a
+    third:
+
+    * the **sign** of the realized return against the sign of the point
+      estimate;
+    * the realized return's **percentile** within the cohort's stored outcome
+      distribution. Over many predictions those percentiles should be uniform;
+      a pile-up at the tails means the cohorts are not describing the trades
+      being taken.
+
+    There is **no coverage field and no in-interval field**, and
+    `test_mean_ci_not_scored_as_prediction_interval` asserts the column does not
+    exist. The CI is on the cohort *mean*: one trade landing outside the
+    interval for the average of a hundred trades says nothing, and advertising
+    "coverage" against it would manufacture a failure out of a category error.
+    """
+
+    __tablename__ = "cohort_predictions"
+    __table_args__ = (
+        UniqueConstraint(
+            "cohort_answer_id", "horizon_sessions", "query_ticker",
+            name="uq_cohort_predictions_answer_horizon",
+        ),
+        Index("ix_cohort_predictions_due", "matures_on", "scored_at"),
+        Index("ix_cohort_predictions_family", "family_slug", "as_of_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cohort_answer_id = Column(Integer, nullable=False)
+    query_id = Column(Integer, nullable=True)
+    setup_hash = Column(String(64), nullable=False)
+    family_slug = Column(String(160), nullable=False)
+    as_of_date = Column(Date, nullable=False)
+    #: The event the citation was about — the trade being contemplated.
+    query_ticker = Column(String(20), nullable=False, default="")
+    horizon_sessions = Column(Integer, nullable=False)
+    point_estimate = Column(Float, nullable=False)
+    ci_low = Column(Float, nullable=False)
+    ci_high = Column(Float, nullable=False)
+    #: The cohort's per-event outcome distribution at this horizon, stored so
+    #: the percentile is computed against the cohort as it stood when the
+    #: prediction was made, not against a cohort re-derived later.
+    cohort_outcomes_json = Column(Text, nullable=False, default="[]")
+    matures_on = Column(Date, nullable=False)
+    realized_return = Column(Float, nullable=True)
+    sign_correct = Column(Boolean, nullable=True)
+    realized_percentile = Column(Float, nullable=True)
+    scored_at = Column(UtcDateTime, nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow_naive)
+
+    @property
+    def cohort_outcomes(self) -> list:
+        return json.loads(self.cohort_outcomes_json or "[]")
