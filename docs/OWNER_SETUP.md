@@ -9,8 +9,9 @@ Railway project `swingtrader` (`e556a6d9-2023-4c81-a031-e32e160a33be`),
 environment `production`. Services: `swingtrader` (the bot), `Postgres`
 (provisioned 2026-09-10, empty, nothing reads it yet), `workspace` (created
 2026-09-10 with start command `python -m workspace.server`, healthcheck
-`/health`, `SERVICE_ROLE=workspace`, `WORKSPACE_API_ENABLED=false`; **no source
-attached yet**).
+`/health`, `SERVICE_ROLE=workspace`, `WORKSPACE_API_ENABLED=false`; linked to
+the repo and deployed 2026-09-12 at
+`https://workspace-production-6e7b.up.railway.app`, `/health` → 200).
 
 Already set on the bot service: `SHARADAR_API_KEY` (rotate it at
 https://sharadar.com/account when convenient — the value went through a chat),
@@ -19,7 +20,16 @@ https://sharadar.com/account when convenient — the value went through a chat),
 last one predates this build; Phase 6 treats it as one of three live gates, so
 decide deliberately before ever setting `EXECUTION_MODE=live`.
 
-## 1. Connect the workspace service to the repo (dashboard, 1 minute)
+## 1. Connect the workspace service to the repo (dashboard, 1 minute) — DONE 2026-09-12
+
+Done: the service builds from `main`, the `SERVICE_ROLE` guard hands off to
+the workspace server, `/health` returns 200 with `workspace_api_enabled: false`,
+and `WORKSPACE_BASE_URL` is set on the service. Until step 2 the workspace
+reads its **own ephemeral SQLite** (no volume): it sees none of the bot's data
+and anything written there is lost on redeploy, which is why `WORKSPACE_API_ENABLED`
+stays false and no token is issued before the cutover.
+
+Original instructions, kept for a rebuild:
 
 The project token cannot link GitHub, so this is yours: Railway → `swingtrader`
 → service `workspace` → Settings → Source → connect
