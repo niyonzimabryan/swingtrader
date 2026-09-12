@@ -6,8 +6,19 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-12 06:15 UTC, by the orchestrating session
-(`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
+**Last updated:** 2026-09-12 16:30 UTC, by a local Claude Code session on
+Bryan's laptop (was 2026-09-12 06:15 UTC, orchestrating session
+`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
+
+> **Read this first:**
+> [`OWNER_SETUP_EXECUTION_2026-09-12.md`](OWNER_SETUP_EXECUTION_2026-09-12.md) —
+> `docs/OWNER_SETUP.md` §2–§6 were executed against production on 2026-09-12.
+> The Postgres cutover is **done**; the workspace has a token; real Sharadar
+> prices are loaded. Three things are blocked and one production bug was found
+> and fixed on this branch: **the MCP tool surface was returning `421` to every
+> request and is still down in production until this PR merges and the workspace
+> redeploys from `main`.** That report is the authority on what is and is not
+> verified; §8 below is the dated summary.
 
 ## 1. Where main is
 
@@ -142,3 +153,90 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   `https://workspace-production-6e7b.up.railway.app` (ephemeral SQLite until the
   Postgres cutover). `WORKSPACE_BASE_URL` set on the service. Next owner step:
   `docs/OWNER_SETUP.md` §2.
+- 2026-09-12 15:44Z — **OWNER_SETUP §2 done: the Postgres cutover is executed.**
+  Rehearsal and cutover both PASS, 61 tables / 1764 rows, every row `ok`; reports
+  committed under `docs/audits/`. The bot logs `schema_ready action=upgraded
+  backend=postgresql` and the workspace `/health` reports
+  `"backend": "postgresql"` at `0011_comparable_subject_ticker`. The SQLite file
+  stays on the `/data` volume as the archive and rollback is one variable. The
+  bot was **not** paused: `railway scale` panics on CLI 4.29.0, so the window was
+  *proved* clean instead — a snapshot hashed before the migration and the live
+  file re-hashed after it were byte-identical
+  (`23455bf6…bf51`), with `SCHEDULER_ENABLED=false` and no holdings or open
+  orders. `docs/OWNER_SETUP.md` §2 and the runbook now carry the three shell
+  traps that cost the most time (zsh `#`, `railway ssh` re-parsing argv through
+  `sh -c`, and the PTY corrupting binary output).
+- 2026-09-12 15:46Z — **OWNER_SETUP §3 done: workspace on Postgres, token
+  issued.** `claude-code`, scopes `read,research:write,propose`. `GET /v1/whoami`
+  returns the label, the scopes, and `"execute_scope_exists": false`; no token is
+  `401`. Note the REST `/v1` namespace serves **only** `whoami` — every other
+  tool is MCP, so `/v1/portfolio_overview` is a `404` by design.
+- 2026-09-12 15:50Z — **Production bug found and fixed: the MCP surface was
+  unreachable.** Every request to `/mcp`, GET or POST and with a valid token,
+  returned `421 Invalid Host header`. Not Railway: `workspace/app.py` built
+  `FastMCP(...)` with no `host`, so it defaulted to `127.0.0.1`, and mcp 1.28.1
+  auto-enables DNS-rebinding protection on a loopback host with
+  `allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"]`. `/health` and
+  `/v1/...` kept answering because they are ordinary FastAPI routes, so nothing
+  pointed at the cause. The suite could not see it either — `workspacefixture.py`
+  serves on `127.0.0.1`, so every existing MCP test sends a loopback `Host`.
+  Fixed by passing `transport_security` explicitly (allowlist derived from
+  `WORKSPACE_BASE_URL`, protection still on; explicitly off only when there is no
+  base URL to name). New `tests/test_workspace_mcp_host.py` sets `Host`
+  explicitly; verified it fails on the unpatched app and passes on the patched
+  one. **`portfolio_overview` over MCP stays unverified in production until this
+  is on `main` and the workspace has redeployed.**
+- 2026-09-12 15:56Z — **§4 flags set, backfill started; §5 and §6 flags set.**
+  Bot now carries `PRICE_PLANE_ENABLED`, `PRICE_PLANE_SOURCE=sharadar`,
+  `PHASE6_EXECUTION_ENABLED`, `EXECUTION_MODE=paper`, a fresh
+  `EXECUTION_APPROVAL_SECRET` (also on the workspace), `SEC_USER_AGENT`, all four
+  `PLANE_*` flags, `STRATEGY_LAB_ENABLED` and `STRATEGY_LAB_SHADOW_ENABLED`.
+  `STRATEGY_LAB_UNIVERSE_ENABLED` deliberately still unset; `EXECUTION_MODE` is
+  not `live`; `ALLOW_LIVE_TRADING` untouched; `STRATEGY_LAB_LIVE_*` untouched.
+  `scripts.price_backfill --source sharadar --bulk years=10` runs detached in the
+  bot container. Both zips downloaded in under a minute (`stocks.zip` 351 MB,
+  `actions.zip` 5 MB); ingest is the long part. **Any variable change redeploys
+  the service and kills it** — set variables before starting long work.
+- 2026-09-12 — **§6 fixtures NOT recorded, deliberately.** `record_macro_fixtures`
+  requires `--series`; `SP500` is not in ALFRED and `VIXCLS`/`DGS10`/`DGS3MO`/
+  `DGS2` each blow ALFRED's 2000-vintage ceiling, so only `CPIAUCSL` and `USREC`
+  can be recorded at all — and committing those would break
+  `test_usrec_only_via_vintage`, which asserts no recession at the 2024-06-30
+  vintage while real USREC carries 579 `1.0` rows there. Re-writing those
+  assertions against real vintages is its own pull request. Also note
+  `config/settings.py` calls `load_dotenv(override=True)`, so the gitignored
+  `.env` overrides exported variables for every laptop-side script.
+- 2026-09-12 16:25Z — **§4 partly done: real prices in production, cohorts still blocked.**
+  20,411 bars / 133 corporate actions / 10 securities for the ten names in
+  `historical_events` (`AAPL, BBIO, CPRT, DAL, GIS, HIMS, HNGE, OSCR, PANW,
+  VRTX`), back to the tier floor of 2016-09-12, reconstruction identity check
+  passing. Three blockers found, none of them operator error:
+  (a) **`--bulk years=10` is not runnable in this container.** `load_bulk_bars`
+  materialises the whole-market zip twice over; instrumented, it hit 3.4 GB RSS
+  at t=15 s and the container was SIGKILLed (exit 137) three times, bouncing the
+  bot. Not the cgroup's 8 GB `memory.max` — `oom_kill` stays 0 and the platform
+  kills earlier, and `memory.peak` read afterwards is meaningless because it
+  resets on restart. `--tickers` cannot help: `backfill_bulk` filters after the
+  parse. Needs a streaming parse or a bigger instance. The slice path was used
+  instead and is memory-safe.
+  (b) **No benchmark, so `cohort_smoke` cannot run.** Sharadar splits equities
+  (`stocks`/SEP) from funds (`funds`/SFP); SPY's only `tickers` row is
+  `table=funds` and `data/prices/sharadar.py` hardcodes `table=stocks`, so the
+  adapter is equities-only and SPY is unreachable.
+  `COMPARABLE_BENCHMARK_SECURITY_UID` is unset and the smoke stops at
+  `CohortContext.benchmark_security_uid is required`. Adding SFP support is a
+  feature with its own adjustment semantics; a stand-in benchmark was refused on
+  purpose.
+  (c) **`audit_delisting_returns` aborts on `RSH`.** Two verified causes: the
+  audit list uses pre-bankruptcy symbols where Sharadar keys the `Q` symbol
+  (`RSH`→`RSHCQ`, plus `SHLDQ`/`BBBYQ`/`SIVBQ`/`FTRCQ`/`RADCQ`/`BIGGQ`; `JCPNQ`
+  does not resolve, so it needs judgement, not a suffix rule — only 4 of 20
+  resolve as written), and the 10-year window has no prices for the 2015 cases
+  even under the right symbol. That list is the survivorship-bias check, so a
+  symbol resolving to nothing is precisely the failure it exists to catch.
+- 2026-09-12 — **§5 flags set, no trade submitted.** `PHASE6_EXECUTION_ENABLED`
+  on both services with a shared fresh `EXECUTION_APPROVAL_SECRET`, and
+  `EXECUTION_MODE=paper` on the bot. `EXECUTION_MODE` is not `live`,
+  `ALLOW_LIVE_TRADING` was left as found, and `STRATEGY_LAB_LIVE_*` was not
+  touched. The proposal is the owner's to make — an agent must not both propose
+  and approve — and it needs the MCP fix deployed first.
