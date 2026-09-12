@@ -6,7 +6,7 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-10 11:30 UTC, by the orchestrating session
+**Last updated:** 2026-09-12 06:15 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 
 ## 1. Where main is
@@ -137,3 +137,8 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
 - 2026-09-10 11:30Z — #74 (Strategy Lab 6) merged; the build queue is empty.
   PR 6's rulings appended to Spec Q §21. What remains is owner-side
   (`docs/OWNER_SETUP.md`), plus the non-blocking follow-ups in §3.
+- 2026-09-12 06:15Z — Bryan linked the Railway `workspace` service to the repo;
+  first deploy SUCCESS, `/health` 200 at
+  `https://workspace-production-6e7b.up.railway.app` (ephemeral SQLite until the
+  Postgres cutover). `WORKSPACE_BASE_URL` set on the service. Next owner step:
+  `docs/OWNER_SETUP.md` §2.
