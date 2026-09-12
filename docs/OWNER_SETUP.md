@@ -396,6 +396,21 @@ to approve, and an agent must not both propose and approve. From an attached
 client, `propose_order` with `ticker`, `entry`, `stop`, `risk_fraction` — and no
 quantity, because the execution service sizes it.
 
+**One more variable, still missing as of 2026-09-12 18:00Z.** The card is sent
+by the **workspace** process (`workspace/proposal_card.py`), so the workspace
+service needs `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` too. Without them the
+workspace logs `proposal_card_channel_unconfigured` at startup and every
+`propose_order` creates a `proposed` row that nobody can approve. Sending
+messages does not conflict with the bot's polling (only `getUpdates` is
+exclusive). Use Railway variable references so the values are not copied:
+
+```bash
+railway variables --service workspace --set 'TELEGRAM_BOT_TOKEN=${{swingtrader.TELEGRAM_BOT_TOKEN}}' --set 'TELEGRAM_CHAT_ID=${{swingtrader.TELEGRAM_CHAT_ID}}'
+```
+
+Then confirm the warning is gone from `railway logs --service workspace` after
+the redeploy.
+
 
 ```bash
 railway variables --service workspace --set "PHASE6_EXECUTION_ENABLED=true" --set "EXECUTION_APPROVAL_SECRET=<long random>"
