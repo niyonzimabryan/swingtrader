@@ -240,3 +240,14 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   `ALLOW_LIVE_TRADING` was left as found, and `STRATEGY_LAB_LIVE_*` was not
   touched. The proposal is the owner's to make — an agent must not both propose
   and approve — and it needs the MCP fix deployed first.
+- 2026-09-12 18:05Z — **#77 merged by the orchestrator; the MCP fix is live.**
+  The workspace redeployed from `main` and an unauthenticated `initialize` on
+  `/mcp` now returns `401`, not `421`; `/health` still reports `postgresql` at
+  `0011`. Remaining before the first paper trade: `TELEGRAM_BOT_TOKEN` /
+  `TELEGRAM_CHAT_ID` on the **workspace** service (OWNER_SETUP §5, one
+  command), then `propose_order` from an attached client. Open engineering
+  follow-ups from #77, none blocking paper: a streaming parse for
+  `--bulk years=10` (the whole-market zip OOMs the bot container); SFP/funds
+  support in `data/prices/sharadar.py` so SPY can be the benchmark and
+  `cohort_smoke` can run; the delisting audit list keyed by Sharadar's `Q`
+  symbols; macro fixture tests rewritten against real vintages.
