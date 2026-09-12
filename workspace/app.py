@@ -11,11 +11,13 @@ One process, separate from the bot. Nothing here imports ``bot`` or
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import StreamableHTTPASGIApp
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.routing import Route
 
 from database.schema import current_revision
@@ -55,14 +57,61 @@ def build_mcp(settings=None) -> FastMCP:
     ``streamable_http_path`` is left at its default because the transport is
     attached as an explicit route rather than a mount; see
     :func:`mount_mcp_endpoint`.
+
+    ``transport_security`` is passed **explicitly** and must stay that way.
+    ``FastMCP``'s ``host`` defaults to ``127.0.0.1``, and on that default the
+    SDK auto-enables DNS-rebinding protection with
+    ``allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"]``
+    (``mcp/server/fastmcp/server.py``). This process never binds that host —
+    uvicorn serves it behind Railway's edge — but the guard fired anyway and
+    answered **every** ``/mcp`` request on the public domain with
+    ``421 Invalid Host header``, while ``/health`` and ``/v1/...`` kept working
+    because they are ordinary FastAPI routes. The whole agent tool surface was
+    unreachable in production and nothing pointed at the cause.
+
+    The protection guards a *browser* against a malicious page rebinding DNS at
+    a server bound to loopback. This server is bearer-authenticated, is not
+    bound to loopback, and is not reachable from a browser origin without a
+    token, so the control it provides here is redundant — but it is only
+    disabled where we can name the host we do serve. When ``WORKSPACE_BASE_URL``
+    is set, that host is the allowlist and the protection stays on.
     """
     mcp = FastMCP(
         SERVICE_NAME,
         instructions=MCP_INSTRUCTIONS,
         stateless_http=True,
+        transport_security=_transport_security(settings),
     )
     tool_module.register(mcp, settings)
     return mcp
+
+
+def _transport_security(settings=None) -> TransportSecuritySettings:
+    """Allow the host this workspace is actually served on.
+
+    See :func:`build_mcp` for why this is never left to the SDK default. With a
+    configured ``WORKSPACE_BASE_URL`` the protection stays on and names that
+    host (plus loopback, for local development). Without one there is no host to
+    name, and refusing every request would be the same outage in a new costume,
+    so it is switched off explicitly rather than inherited by accident.
+    """
+    base_url = getattr(settings, "workspace_base_url", "") if settings else ""
+    if not base_url:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+    host = urlsplit(base_url).netloc
+    if not host:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+    hostname = host.split("@")[-1].split(":")[0]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[host, hostname, f"{hostname}:*",
+                       "127.0.0.1:*", "localhost:*", "[::1]:*"],
+        allowed_origins=[f"https://{hostname}", f"https://{hostname}:*",
+                         "http://127.0.0.1:*", "http://localhost:*",
+                         "http://[::1]:*"],
+    )
 
 
 def mount_mcp_endpoint(app: FastAPI, mcp: FastMCP) -> None:
