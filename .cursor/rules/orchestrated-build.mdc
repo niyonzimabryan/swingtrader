@@ -30,3 +30,5 @@ differs in Cursor.
   `.codex/prompts/orchestrated-build.md`.
 - **Close out.** When a PR merges, close its worker and delete any local
   worktree; nothing a finished worker started should still be running.
+- **Idle worker, no PR** means stuck: tell it to push and open the PR now.
+  Workers open the PR before waiting on CI, never after.
