@@ -36,7 +36,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 from data.prices import store, universes
-from data.prices.base import DailyBar, MembershipInterval, SecurityMasterRow
+from data.prices.base import (
+    ASSET_CLASS_EQUITY,
+    DailyBar,
+    MembershipInterval,
+    SecurityMasterRow,
+)
 from filings.observations import (
     PRECISION_DAY,
     PRECISION_SECOND,
@@ -237,7 +242,8 @@ def _bar(uid: str, ticker: str, day: date, open_: float, close: float,
 
 def seed_prices(session, *, sessions: list[date], delisting_date: date,
                 merger_date: date,
-                gap_followthrough: float = 0.0) -> tuple[dict, list[date]]:
+                gap_followthrough: float = 0.0,
+                benchmark_asset_class: str = ASSET_CLASS_EQUITY) -> tuple[dict, list[date]]:
     paths, gap_sessions = _paths(sessions, gap_followthrough=gap_followthrough)
     opens, closes = paths["open"], paths["close"]
 
@@ -249,6 +255,7 @@ def seed_prices(session, *, sessions: list[date], delisting_date: date,
         security_uid=BENCH_UID, ticker=BENCH_TICKER, source=SOURCE,
         name="Fixture total-return benchmark", exchange="INDEX", venue="other",
         ticker_valid_from=sessions[0], listing_date=sessions[0],
+        asset_class=benchmark_asset_class,
     ))
     for i, day in enumerate(sessions):
         bars.append(_bar(BENCH_UID, BENCH_TICKER, day, b_open[i], b_close[i], 0.0))
@@ -586,6 +593,7 @@ def seed_world(
     with_share_counts: bool = True,
     snapshot_slug: str = SNAPSHOT_SLUG,
     gap_followthrough: float = 0.0,
+    benchmark_asset_class: str = ASSET_CLASS_EQUITY,
 ) -> World:
     """Build the stored world and return the handles a test needs.
 
@@ -598,6 +606,14 @@ def seed_world(
     it: a real post-gap drift, so the evidenced half of Spec L §6.6 has a world
     in which it can actually fire. `0.0` — the default every other test uses —
     leaves the bars bit-for-bit as they were.
+
+    `benchmark_asset_class` is the shape production actually has: SPY is a
+    fund, and a fund is excluded from `liquid_us_equity_v1`
+    (`data/prices/universes.py`). It defaults to `equity` so that every test
+    written before funds existed keeps the universe it was calibrated against —
+    dropping the benchmark from the ranking changes the membership count, which
+    moves the universe delisting rate, which moves numbers other tests assert
+    on. `tests/test_cohort_smoke_fund_benchmark.py` is the one that opts in.
     """
     sessions = business_days(start, n_sessions)
     delisting_date = sessions[int(n_sessions * 0.72)]
@@ -606,6 +622,7 @@ def seed_world(
     _paths_unused, gap_sessions = seed_prices(
         session, sessions=sessions, delisting_date=delisting_date,
         merger_date=merger_date, gap_followthrough=gap_followthrough,
+        benchmark_asset_class=benchmark_asset_class,
     )
     if with_universe:
         seed_universe(session, sessions)

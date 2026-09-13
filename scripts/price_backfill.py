@@ -3,6 +3,8 @@
     python -m scripts.price_backfill --source fixture --since 2023-01-01
     python -m scripts.price_backfill --source sharadar --since 2015-01-01 --tickers AAPL,MSFT
     python -m scripts.price_backfill --source sharadar --bulk years=10
+    python -m scripts.price_backfill --source sharadar --since 2016-01-01 \
+        --tickers SPY --asset-class fund
 
 Idempotent: the natural keys in `data/prices/store.py` mean re-running the same
 `--since` rewrites the same rows rather than duplicating them, so a run that
@@ -24,6 +26,23 @@ table either way (Sharadar re-publishes it whole regardless of `years`).
 `--tickers` still narrows a bulk run to a subset after the zip is parsed;
 omitted, every ticker in the zip is loaded.
 
+`--asset-class equity|fund|auto` says which Sharadar price table to read.
+`equity` is the default and sends `table=stocks`, exactly as this script did
+before funds existed. `fund` sends `table=funds` (legacy SFP) — the only table
+SPY is in, and therefore the only way to load the benchmark that every abnormal
+return in Spec N §5.2 is measured against. `auto` asks the vendor's `tickers`
+master which table each name is in and uses that, which is the right answer for
+a mixed `--tickers` list and the wrong answer to guess from a symbol.
+
+`fund` and `auto` additionally require `PRICE_PLANE_FUNDS_ENABLED=true`; the
+default `equity` does not, so this script behaves identically to before with no
+new variable set.
+
+A fund run prints the resulting `security_uid` for each name, because that is
+the value the owner has to paste into `COMPARABLE_BENCHMARK_SECURITY_UID`
+(`docs/ENV_SETUP.md` §7). `scripts/benchmark_uid.py` prints the same value from
+the stored master afterwards, without re-running a backfill.
+
 Requires `PRICE_PLANE_ENABLED=true`, and for `--source sharadar`,
 `SHARADAR_API_KEY`.
 """
@@ -38,7 +57,12 @@ from pathlib import Path
 
 from data.prices import config as plane_config
 from data.prices import store
-from data.prices.base import PricePlane, PricePlaneError
+from data.prices.base import (
+    ASSET_CLASS_EQUITY,
+    ASSET_CLASS_FUND,
+    PricePlane,
+    PricePlaneError,
+)
 from data.prices.derived import check_reconstruction
 
 #: Tickers per `security_master` call in bulk mode, so the comma-joined
@@ -57,27 +81,49 @@ def backfill(
     since: date | None,
     until: date | None = None,
     check: bool = True,
+    asset_class: str | None = ASSET_CLASS_EQUITY,
 ) -> dict:
-    """Pull master, actions and bars for `tickers` and store them."""
+    """Pull master, actions and bars for `tickers` and store them.
+
+    `asset_class` is passed straight to `plane.security_master`: a class name
+    to look up one table, or `None` to let the vendor's master say which table
+    each name is in. It is **not** passed to `daily_bars`, which resolves the
+    table itself through the same master — one source of truth for "what kind
+    of instrument is this", and no way for the two calls to disagree.
+
+    `security_uid_by_ticker` is in the summary because a fund run exists to
+    produce exactly that value: `COMPARABLE_BENCHMARK_SECURITY_UID` is a uid,
+    not a ticker, and it is otherwise only discoverable by querying the
+    database by hand. `main()` prints it and then drops it before recording the
+    snapshot — see the comment there.
+    """
     from database.db import get_session
 
     summary = {
         "source": plane.source,
         "since": since.isoformat() if since else None,
         "until": until.isoformat() if until else None,
+        "asset_class": asset_class or "auto",
         "tickers_requested": len(tickers),
         "tickers_with_bars": 0,
         "bars_written": 0,
         "actions_written": 0,
         "securities_written": 0,
         "tickers_empty": [],
+        "security_uid_by_ticker": {},
+        "asset_class_by_ticker": {},
         "reconstruction_checked": check,
     }
 
     with get_session() as session:
-        summary["securities_written"] = store.upsert_securities(
-            session, plane.security_master(tickers)
-        )
+        master_rows = plane.security_master(tickers, asset_class=asset_class)
+        summary["securities_written"] = store.upsert_securities(session, master_rows)
+        summary["security_uid_by_ticker"] = {
+            row.ticker: row.security_uid for row in master_rows
+        }
+        summary["asset_class_by_ticker"] = {
+            row.ticker: row.asset_class for row in master_rows
+        }
         for ticker in tickers:
             bars = plane.daily_bars(ticker, since, until)
             if not bars:
@@ -214,6 +260,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Sharadar only: load stocks+actions from the vendor's bulk zip "
         "instead of paging per ticker",
     )
+    parser.add_argument(
+        "--asset-class", default=ASSET_CLASS_EQUITY,
+        choices=(ASSET_CLASS_EQUITY, ASSET_CLASS_FUND, "auto"),
+        help="which Sharadar price table to read: equity -> stocks (default, "
+        "unchanged behaviour), fund -> funds/SFP (SPY lives here), auto -> ask "
+        "the vendor master per ticker. fund and auto need "
+        "PRICE_PLANE_FUNDS_ENABLED=true.",
+    )
     parser.add_argument("--snapshot", default=None, help="snapshot slug to record coverage on")
     parser.add_argument("--skip-reconstruction-check", action="store_true")
     args = parser.parse_args(argv)
@@ -228,6 +282,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.bulk and plane.source != "sharadar":
         print(f"--bulk is Sharadar-only; --source resolved to {plane.source!r}", file=sys.stderr)
+        return 2
+
+    asset_class = None if args.asset_class == "auto" else args.asset_class
+    if asset_class != ASSET_CLASS_EQUITY:
+        try:
+            plane_config.require_funds_enabled(settings)
+        except PricePlaneError as exc:
+            print(f"price backfill refused: {exc}", file=sys.stderr)
+            return 2
+    if args.bulk and asset_class != ASSET_CLASS_EQUITY:
+        # The bulk zips this script knows how to parse are `stocks` and
+        # `actions`. A `funds` bulk zip is a separate brief; refusing is the
+        # honest answer, because `--bulk --asset-class fund` would otherwise
+        # silently load equities and report success.
+        print(
+            "--bulk covers the `stocks` zip only; run a fund with the slice "
+            "path (--tickers SPY --asset-class fund).",
+            file=sys.stderr,
+        )
         return 2
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
@@ -259,8 +332,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         summary = backfill(
-            plane, tickers, args.since, args.until, check=not args.skip_reconstruction_check
+            plane, tickers, args.since, args.until,
+            check=not args.skip_reconstruction_check, asset_class=asset_class,
         )
+
+    # The two per-ticker maps are for the printout below, not for the stored
+    # snapshot: `coverage_summary_json` is one text column, and a 5,000-name
+    # equity backfill would put a 5,000-entry uid map in it on every run. The
+    # scalar `asset_class` stays, because "which table was this snapshot
+    # loaded from" is exactly the kind of thing a snapshot should record.
+    uids = summary.pop("security_uid_by_ticker", None) or {}
+    classes = summary.pop("asset_class_by_ticker", None) or {}
 
     snapshot = args.snapshot or settings.price_plane_snapshot
     with get_session() as session:
@@ -273,6 +355,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     if summary["tickers_empty"]:
         print(f"no bars for: {', '.join(summary['tickers_empty'])}")
+
+    # The uid printout. A fund run exists to produce it: the benchmark variable
+    # is a `security_uid`, and nothing else in the pipeline ever shows one to a
+    # human. Printed for every non-default asset class, including `auto`, since
+    # `auto` is how an operator finds out a name was a fund at all.
+    funds = sorted(t for t, k in classes.items() if k == ASSET_CLASS_FUND)
+    if funds:
+        print("\nfunds loaded — these are the security_uids:")
+        for ticker in funds:
+            print(f"  {ticker:<8} {uids.get(ticker, '?')}")
+        print(
+            "\nSet the cohort benchmark to one of them, e.g.\n"
+            f"  COMPARABLE_BENCHMARK_SECURITY_UID={uids.get(funds[0], '?')}\n"
+            "then run `python -m scripts.cohort_smoke` (docs/ENV_SETUP.md §7)."
+        )
+    elif asset_class != ASSET_CLASS_EQUITY:
+        print(
+            f"\nno fund rows came back for {', '.join(tickers) or 'the requested names'}; "
+            "the vendor master put every one of them in the equity table."
+        )
     return 0
 
 

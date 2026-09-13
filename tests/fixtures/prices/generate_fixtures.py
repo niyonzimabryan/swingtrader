@@ -134,6 +134,10 @@ def main() -> None:
             "listing_date": spec["listing"].isoformat(),
             "delisting_date": spec["delisting"].isoformat() if spec["delisting"] else "",
             "delisting_reason": spec["reason"],
+            # Every committed fixture name is an operating company. The fund
+            # cases live in the tests that need them, so that adding one here
+            # does not move the liquidity ranking every other test asserts on.
+            "asset_class": spec.get("asset_class", "equity"),
         })
 
         for i in range(n):
