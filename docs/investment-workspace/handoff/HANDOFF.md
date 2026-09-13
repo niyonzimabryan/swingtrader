@@ -6,7 +6,7 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-13 04:30 UTC, by the orchestrating session
+**Last updated:** 2026-09-13 05:40 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 Bryan's laptop (was 2026-09-12 06:15 UTC, orchestrating session
 `session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
@@ -52,9 +52,20 @@ signed full-page view served by the workspace.
 | #81 `claude/notify-email-cards` | `notify/` package, Resend channel behind `NOTIFY_EMAIL_ENABLED`, HTML card renderer + PNG chart, signed `/cards/<uid>` page, `cards` + `notifications_sent` tables (`0012_notify_email_cards`) | `session_01NSbbAvFecNAkxaZSQ6v8P9` | opus | **merged** |
 | #82 `claude/owner-tools-mcp` | `OWNER_ID`; ten `admin`/`read` owner tools behind `WORKSPACE_OWNER_TOOLS_ENABLED`; `orchestrator/approval_poller.py` behind `OWNER_ACTION_POLLER_ENABLED`; `owner_actions` table (`0012_owner_control_surface`); Spec K §10 + L §10 rulings; merge revision `0013_merge_notify_owner` added by the orchestrator | `session_01A4B5sYhhr8ZDnRFHkVq4xY` | opus | **merged** |
 
-| `claude/headless-runtime` | `TELEGRAM_ENABLED` (default true); headless `main.py` with scheduler, monitors, execution services and the approval poller; channel-agnostic `NotificationManager` over `notify/`; headless email card sender; `OWNER_ID` refusal | `session_01Fe9DRSdz2HRirVDsj3yogd` | opus | building |
+| `claude/headless-runtime` | `TELEGRAM_ENABLED` (default true); headless `main.py` with scheduler, monitors, execution services and the approval poller; channel-agnostic `NotificationManager` over `notify/`; headless email card sender; `OWNER_ID` refusal | `session_01Fe9DRSdz2HRirVDsj3yogd` | opus | **merged (#85)** |
 
-Alembic head on `main`: `0013_merge_notify_owner` (single). In flight: the headless runtime — `TELEGRAM_ENABLED=false` runs scheduler,
+Alembic head on `main`: `0013_merge_notify_owner` (single). **The notifications
+sprint is complete**: #80 (overview), #81 (email + cards), #82 (owner tools +
+poller), #85 (headless runtime) are on `main`. No worker is building. Nothing
+in production changed yet — every flag is still off; the owner turn-on sequence
+is in §7 below and in `docs/OWNER_SETUP.md` §5.
+
+Note from #85: `main.py` on `main` between #82 and #85 had a function-local
+`import os` that would have crashed startup the moment
+`OWNER_ACTION_POLLER_ENABLED=true` was set; #85 removed it. Set that flag only
+on a bot deploy that includes #85 (check `railway logs` for `runtime_mode`).
+
+Previously described as in flight: the headless runtime — `TELEGRAM_ENABLED=false` runs scheduler,
 monitors, and the approval poller with no Telegram token, and
 `NotificationManager` routes through `notify/`. Then Bryan's final steps:
 `NOTIFY_EMAIL_ENABLED`, `OWNER_ACTION_POLLER_ENABLED` (bot), then
@@ -158,16 +169,32 @@ the brief and tell it the branch already carries N commits.
   default courtesy; the owner's standing instruction is to merge everything
   that validates.
 
-## 7. Owner actions to reach a testing state (unchanged from ENV_SETUP)
+## 7. Owner actions — the turn-on sequence (2026-09-13)
 
-`docs/ENV_SETUP.md` "Order of operations" is the runbook. Open owner items:
-commit `docs/robinhood/tool_schemas.json`; record real SEC / Robinhood / macro
-fixtures from the laptop; confirm the Rule 10b5-1 element; name tracked
-investors; buy Sharadar Prices, run the delisting audit and backfill; Postgres
-cutover per `docs/POSTGRES_CUTOVER_RUNBOOK.md`; workspace service + token;
-`COMPARABLE_BENCHMARK_SECURITY_UID`; `scripts/cohort_smoke.py` against prod;
-the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
-`schema_status` against the prod DB.
+In this order, from the laptop with `railway` linked (`docs/OWNER_SETUP.md` §5
+has the same with commentary):
+
+1. `NOTIFY_EMAIL_ENABLED=true` on **both** services; `WORKSPACE_BASE_URL` on
+   the bot as a reference to the workspace's. Confirm one email arrives (the
+   workspace logs `proposal_card_channel` names at startup).
+2. `OWNER_ID=<your Telegram chat id, or any stable string>` on **both**.
+3. `OWNER_ACTION_POLLER_ENABLED=true` on the bot (after a deploy that includes
+   #85 — see the note in §2). Expect `approval_poller_wired` in the logs.
+4. `WORKSPACE_OWNER_TOOLS_ENABLED=true` on the workspace.
+5. `TELEGRAM_ENABLED=false` on the bot. Expect `runtime_mode mode=headless
+   channels=email`. Leave `TELEGRAM_BOT_TOKEN` set so it is reversible.
+6. Issue an `admin`-scoped token (`docs/WORKSPACE_ACCESS.md` §1), export
+   `WORKSPACE_BASE_URL` and `WORKSPACE_TOKEN`, open the repo, call `whoami`,
+   `portfolio_overview`, `proposals_pending`.
+7. First paper trade: `propose_order`, read the card in your inbox and in
+   chat, `approve_order(proposal_uid=...)`; the bot's poller places on Alpaca
+   paper and emails the outcome.
+
+Still owner-only and untouched: the Robinhood Agentic account and the live
+`gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6); the Rule 10b5-1
+element and tracked investors (Spec O); the `ALLOW_LIVE_TRADING` decision;
+rotating the Sharadar key; `SCHEDULER_ENABLED` (scans and therefore Strategy
+Lab shadow are off until it is true). Next engineering sprint: §2b.
 
 ## 8. Change log of this file
 
@@ -322,3 +349,7 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
 - 2026-09-13 04:30Z — #82 merged (full 3.12 suite on the integrated tree:
   1,951 tests, 3 skips; CI green). Headless-runtime worker spawned from
   `main` at `d705572`; brief verbatim in `briefs/headless-runtime.md`.
+- 2026-09-13 05:40Z — #85 (headless runtime) merged; full 3.12 suite on the
+  merged tree 1,992 tests, 3 skips; CI green. Sprint complete. Workers
+  archived, Routines deleted. Owner turn-on sequence in §7; next sprint
+  briefs in §2b, not spawned.
