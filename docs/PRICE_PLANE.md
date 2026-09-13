@@ -471,18 +471,29 @@ These are known and unresolved, not oversights.
    row on 2024-03-15 with a value near `1.60` means the log covers funds, and
    an empty result means the design note above was not paranoia. Either answer
    is worth appending to Spec N §12.
-6. **Fund coverage is the slice path only.** `--bulk` parses the `stocks` zip;
+6. **No fund split has been observed.** The free sample carries exactly one
+   fund, SPY, and SPY has never split: `closeunadj == close` on every session
+   observed, so live coverage of the fund path exercises the split arithmetic
+   only at a ratio of 1.0, and the raw-OHLC reconstruction
+   `field x (closeunadj / close)` only at a scale of 1.0. The split derivation
+   `F(i-1)/F(i)` and the snap-to-1.0 threshold are covered by a synthetic
+   two-session case in `tests/test_price_plane_funds.py`
+   (`test_a_real_split_survives_the_snap`), which is a test of the arithmetic
+   and not of the vendor. A paid key on a fund that has split — a leveraged ETF
+   is the usual case — would close this. Every other fund ticker tried (QQQ,
+   IVV, TQQQ, SOXL, UVXY, DIA, IWM, VOO, GLD) returns `403 Exceeds free tier`.
+7. **Fund coverage is the slice path only.** `--bulk` parses the `stocks` zip;
    a `funds` bulk zip is a separate change and `--bulk --asset-class fund`
    refuses rather than silently loading equities. For one benchmark that is the
    right trade — SPY through the slice path is a single paged request.
-7. **A fund's `volume` is stored as the vendor publishes it**, which for both
+8. **A fund's `volume` is stored as the vendor publishes it**, which for both
    `stocks` and `funds` is split-adjusted, while `raw_close` is not. So
    `DailyBar.dollar_volume` mixes an unadjusted price with an adjusted volume
    across a split. This is pre-existing on the equity path and was deliberately
    not changed here: it moves every liquidity rank and therefore every
    universe, which is not a thing to fold into a benchmark change. It does not
    reach the benchmark, which is never ranked.
-8. **`liquid_us_equity_v1` rebuilds in memory.** `universes.rebuild` loads every
+9. **`liquid_us_equity_v1` rebuilds in memory.** `universes.rebuild` loads every
    stored bar to rank month-ends. That is fine for the fixture and for a few
    hundred names; a full 5,000-name, 10-year file is ~12M rows and will need a
    windowed rebuild (one month-end at a time, bars restricted to the window).

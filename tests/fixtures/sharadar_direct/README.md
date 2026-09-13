@@ -120,6 +120,16 @@ the one explicitly marked otherwise at the end.
   numbers are. Replace it with a real capture from a paid key and every test
   that reads it should still pass; if one does not, that test was wrong.
 
+### What the fund capture does *not* cover
+
+**No split.** SPY is the only fund in the free sample — QQQ, IVV, TQQQ, SOXL,
+UVXY, DIA, IWM, VOO and GLD all return `403 Exceeds free tier` on `funds` — and
+SPY has never split, so `closeunadj == close` on every session recorded here.
+The live fixture therefore exercises the fund split arithmetic only at a ratio
+of 1.0. The split derivation and its snap-to-1.0 threshold are tested against a
+synthetic two-session case instead, which is honest about what it is: a test of
+the arithmetic, not of the vendor.
+
 ## Things that did *not* produce a 403
 
 `GET /data/tickers` is not free-tier-limited at all: SPY, IVV and QQQ each
