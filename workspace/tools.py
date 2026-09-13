@@ -50,6 +50,16 @@ channel, because this package may not import ``bot`` any more than it may import
 ``execution``. Everything above about the import closure holds unchanged with it
 registered, which is the property the two import-graph tests assert.
 
+The owner control surface (Spec K §10, owner ruling 2026-09-13) adds ten more
+behind ``WORKSPACE_OWNER_TOOLS_ENABLED``: ``proposals_pending`` at ``read``,
+``kill_switch`` at ``read`` so engaging it is always available, and the rest at
+``admin``. They let the owner decide in his agent chat instead of on a Telegram
+button — and they keep every property that made that safe to allow, because a
+tool here **records** a decision into ``owner_actions`` and the runtime process
+is what acts on one. Nothing in that group imports ``execution/``, ``bot/`` or
+``orchestrator/`` either; ``workspace/owner_tools.py`` says what the ruling
+costs and what it does not.
+
 Every tool body starts with :func:`authorize_call`, which is where the scope
 check, the rate limit, and the Spec K §4.1 call log live. Nothing enforces that
 by construction, so ``tests/test_workspace_mcp.py`` enforces it by test: every
@@ -96,6 +106,7 @@ def registered_tools(settings=None) -> tuple[str, ...]:
     :data:`REGISTERED_TOOLS`, because the surface is now flag-dependent and a
     health check that reports a fixed list would be reporting a guess.
     """
+    from workspace.owner_tools import OWNER_TOOLS
     from workspace.proposal_tools import PROPOSAL_TOOLS
     from workspace.research_tools import RESEARCH_TOOLS
 
@@ -106,6 +117,8 @@ def registered_tools(settings=None) -> tuple[str, ...]:
         names = names + COMPARABLE_TOOLS
     if settings is not None and getattr(settings, "phase6_execution_enabled", False):
         names = names + PROPOSAL_TOOLS
+    if settings is not None and getattr(settings, "workspace_owner_tools_enabled", False):
+        names = names + OWNER_TOOLS
     return names
 
 
@@ -315,6 +328,16 @@ def register(mcp: FastMCP, settings=None) -> tuple[str, ...]:
         from workspace import proposal_tools
 
         names = names + proposal_tools.register(
+            mcp, settings, authorize_call=authorize_call, ToolRefused=ToolRefused
+        )
+    if settings is not None and getattr(settings, "workspace_owner_tools_enabled", False):
+        # The owner control surface (Spec K §10). Same deferred import and same
+        # flag rule as every other optional group. It records decisions into
+        # `owner_actions`; it reaches no broker, and the import-graph tests hold
+        # that unchanged with it registered.
+        from workspace import owner_tools
+
+        names = names + owner_tools.register(
             mcp, settings, authorize_call=authorize_call, ToolRefused=ToolRefused
         )
 
