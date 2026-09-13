@@ -575,10 +575,17 @@ class NotificationManager:
     async def system_message(self, message: str):
         """Send a generic system notification."""
         text = f"ℹ️ {escape_md(message)}"
+        # The first non-blank line is the subject. A page routed through here
+        # leads with what happened, so that line is the useful one — and an
+        # empty subject is a message a mail client shows as "(no subject)".
+        headline = next(
+            (line.strip() for line in str(message or "").splitlines() if line.strip()),
+            "notice",
+        )
         await self._emit(
             Alert(
                 event="system_message",
-                subject=f"[SYSTEM] {str(message).splitlines()[0][:120] if message else 'notice'}",
+                subject=f"[SYSTEM] {headline[:120]}",
                 title="system message",
                 body=str(message),
                 telegram_text=text,
