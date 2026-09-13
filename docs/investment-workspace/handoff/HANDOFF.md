@@ -6,7 +6,7 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-13 05:45 UTC, by the orchestrating session
+**Last updated:** 2026-09-13 07:40 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 Bryan's laptop (was 2026-09-12 06:15 UTC, orchestrating session
 `session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
@@ -72,7 +72,7 @@ monitors, and the approval poller with no Telegram token, and
 `WORKSPACE_OWNER_TOOLS_ENABLED` (workspace), an `admin` token, attach, first
 paper trade (`docs/ENV_SETUP.md` §9a and §11, `docs/OWNER_SETUP.md` §5).
 
-## 2b. Research-engine sprint — SPAWNED 2026-09-13 05:42Z (owner's go)
+## 2b. Research-engine sprint — COMPLETE 2026-09-13 (#89, #88, #90 merged)
 
 The three engineering blockers on the research engine, each with a brief under
 `briefs/`, none overlapping the headless-runtime worker (they touch
@@ -81,14 +81,25 @@ The three engineering blockers on the research engine, each with a brief under
 
 | Brief | Fixes | Model | Session |
 |---|---|---|---|
-| `briefs/sharadar-funds-benchmark.md` | SPY as the benchmark: `asset_class` on securities (`0014`), `funds`/SFP in the adapter with the §4.3 three-series contract, funds excluded from universes, backfill + uid printout, Spec N ruling | opus | `session_01A5zDwgGTNpxEauSWa6MqK1` |
-| `briefs/bulk-backfill-streaming.md` | `--bulk years=10` without OOM: stream → SQLite staging → per-ticker derive/upsert, `--tickers` during staging, `--resume`, an RSS guard with a measured bound | sonnet | `session_01RChYn3xaQXfyrxmwtWwYRW` |
-| `briefs/delisting-audit-symbols.md` | The survivorship audit resolves Sharadar's `Q` symbols, adds `unresolved` and `out_of_window` classes, refuses below a testable minimum, `--resolve` mode for the owner's keyed agent | sonnet | `session_01CBkhcRBftv3LNtc2ubLmYj` |
+| `briefs/sharadar-funds-benchmark.md` | SPY as the benchmark: `asset_class` on securities (`0014`), `funds`/SFP in the adapter with the §4.3 three-series contract, funds excluded from universes, backfill + uid printout, Spec N ruling | opus | `session_01A5zDwgGTNpxEauSWa6MqK1` — **merged #89** |
+| `briefs/bulk-backfill-streaming.md` | `--bulk years=10` without OOM: stream → SQLite staging → per-ticker derive/upsert, `--tickers` during staging, `--resume`, an RSS guard with a measured bound | sonnet | `session_01RChYn3xaQXfyrxmwtWwYRW` — **merged #90** |
+| `briefs/delisting-audit-symbols.md` | The survivorship audit resolves Sharadar's `Q` symbols, adds `unresolved` and `out_of_window` classes, refuses below a testable minimum, `--resolve` mode for the owner's keyed agent | sonnet | `session_01CBkhcRBftv3LNtc2ubLmYj` — **merged #88** |
 
-Owner-side after they merge: backfill SPY as a fund and set
-`COMPARABLE_BENCHMARK_SECURITY_UID`; run `cohort_smoke`; run the bulk backfill
-from the container with the RSS guard; run the audit's `--resolve` with the
-API key and open the follow-up PR that fills the remaining symbols.
+Alembic head after the sprint: `0014_securities_asset_class` (single). Owner
+steps now (`docs/OWNER_SETUP.md` §4, `docs/ENV_SETUP.md` §7a): set
+`PRICE_PLANE_FUNDS_ENABLED=true` on the bot *before* starting any backfill (a
+variable change redeploys and kills running work); backfill SPY with
+`--asset-class fund`, read the printed uid, set
+`COMPARABLE_BENCHMARK_SECURITY_UID` on the workspace, run `cohort_smoke`; run
+`--bulk years=10 --max-rss-mb 1500` from the container (streamed; measured 98 MB
+peak on a synthetic 5M-row zip vs 3.37 GB before; `--resume` on a drop); run
+the audit's `--resolve` with the key and open the follow-up PR filling the nine
+unmapped `vendor_symbols`.
+
+Not verified by the workers: no live Sharadar bulk zip (free key 401s on bulk);
+no fund split ever observed (SPY has none); whether `actions` carries fund
+distributions (free key 403s); the resolver against the nine unmapped cases;
+whether the staging/checkpoint file survives a `railway ssh` drop.
 
 ## 3. What is left, in order
 
@@ -359,3 +370,11 @@ Lab shadow are off until it is true). Next engineering sprint: §2b.
   first (it adds `0014`; the other two add no migration), then the rest. The
   owner's terminal agent is running the notifications turn-on sequence (§7)
   concurrently.
+- 2026-09-13 07:40Z — Research-engine sprint merged: #89 funds/SFP (adds
+  `0014`), #88 delisting-audit symbology, #90 streaming bulk backfill. #88 was
+  integrated on top of #89 (union of the adapter helpers and the Spec N §12
+  rulings); #90 on top of both (adapter tail = funds `_resolve` + bulk stream
+  class; backfill CLI = both argument sets, checkpoint/abort before the fund uid
+  printout; OWNER_SETUP §4 = bulk fix + funds FIXED, stale blocker dropped).
+  Full 3.12 suites on each integrated tree green. Workers archived, Routines
+  deleted.
