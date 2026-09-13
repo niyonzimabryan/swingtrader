@@ -151,18 +151,22 @@ def _vars(palette: dict) -> str:
     return "\n".join(f"      --{key}: {value};" for key, value in sorted(palette.items()))
 
 
-def stylesheet(*, page: bool) -> str:
-    """The ``<style>`` block. Dark-mode overrides only; light is inline too.
+def stylesheet() -> str:
+    """The ``<style>`` block. One sheet for the email and the page alike.
 
-    On the **page** this is the whole stylesheet and CSS variables carry it. In
-    the **email** the light palette is additionally inlined on every element,
-    because a client that drops ``<style>`` (Gmail's clipped view, some webmail)
-    must still get a correctly coloured card — the classes here only ever
-    *override* toward dark.
+    It carries dark-mode overrides and layout, and nothing that the light
+    baseline needs, because the light palette is *also* inlined on every element
+    that uses it: a client that drops ``<style>`` (Gmail's clipped view, some
+    webmail) must still render a correctly coloured card. Every rule in here only
+    ever overrides toward dark, or fixes a width.
+
+    The email and the page share it deliberately. The page could use plain CSS
+    variables without the ``!important``, but two stylesheets is two things to
+    keep in step for a saved keyword, and the whole point of one renderer is that
+    the two cannot drift.
     """
-    root = ":root" if page else ":root"
     blocks = [
-        f"{root} {{\n{_vars(LIGHT)}\n    }}",
+        f":root {{\n{_vars(LIGHT)}\n    }}",
         "    @media (prefers-color-scheme: dark) {\n"
         f"      :root {{\n{_vars(DARK)}\n      }}\n"
         "      body, .st-page, .st-wrap { background: var(--page) !important; }\n"
@@ -491,7 +495,7 @@ def _shell(inner: str, *, page: bool, title: str) -> str:
             '<meta charset="utf-8">\n'
             '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
             '<meta name="robots" content="noindex, nofollow">\n'
-            f"<title>{esc(title)}</title>\n<style>\n    {stylesheet(page=True)}\n"
+            f"<title>{esc(title)}</title>\n<style>\n    {stylesheet()}\n"
             f"    body {{ margin:0; background: {LIGHT['page']}; }}\n"
             "</style>\n</head>\n"
             f'<body class="st-page" style="margin:0;background:{LIGHT["page"]};">\n'
@@ -506,7 +510,7 @@ def _shell(inner: str, *, page: bool, title: str) -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         '<meta name="color-scheme" content="light dark">\n'
         '<meta name="supported-color-schemes" content="light dark">\n'
-        f"<title>{esc(title)}</title>\n<style>\n    {stylesheet(page=False)}\n</style>\n"
+        f"<title>{esc(title)}</title>\n<style>\n    {stylesheet()}\n</style>\n"
         "</head>\n"
         f'<body class="st-page" style="margin:0;padding:0;background:{LIGHT["page"]};">\n'
         f'<table role="presentation" class="st-wrap" cellpadding="0" cellspacing="0" '

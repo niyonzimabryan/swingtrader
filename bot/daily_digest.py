@@ -16,10 +16,6 @@ log = get_logger("daily_digest")
 ET = ZoneInfo("America/New_York")
 
 
-def now_et() -> datetime:
-    return datetime.now(ET)
-
-
 class DailyDigest:
     def __init__(self, alpaca, notification_manager, settings):
         self.alpaca = alpaca
@@ -33,11 +29,11 @@ class DailyDigest:
             if text and self.nm:
                 await self.nm.mq.send(self.nm.chat_id, text)
                 log.info("daily_digest_sent")
-                self._email_card(text, now=now_et())
+                self._email_card(text)
         except Exception as e:
             log.error("daily_digest_failed", error=str(e))
 
-    def _email_card(self, text: str, *, now) -> None:
+    def _email_card(self, text: str) -> None:
         """The same digest as an HTML email card, when the flag is on.
 
         Built from the MarkdownV2 the Telegram message already carried rather
@@ -50,6 +46,8 @@ class DailyDigest:
         if not self.nm:
             return
         from notify.cards.digest import from_markdown
+
+        now = datetime.now(ET)
 
         self.nm.email_card(
             from_markdown(

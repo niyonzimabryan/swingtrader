@@ -16,8 +16,11 @@ A chart, where the card has one, is the sibling `*.chart.png`. In production it
 is served by the workspace at `/cards/<uid>/chart.png?s=<hmac>` and referenced
 by URL, because Gmail strips `data:` URIs and proxies remote images instead.
 
-Re-render after any change to `notify/cards/` and commit the diff; the script
-is deterministic, so a diff is a real rendering change.
+Re-render after any change to `notify/cards/` and commit the diff. The HTML
+and text are byte-stable, so a diff in those is a real rendering change; the
+PNGs carry matplotlib's version in their metadata and will differ between
+environments even when the chart is identical, which is why
+`--check` compares the HTML strictly and the PNGs for presence only.
 
 | card | what it is |
 |---|---|

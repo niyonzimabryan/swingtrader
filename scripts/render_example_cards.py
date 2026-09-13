@@ -1,17 +1,22 @@
 """Render one of each card to ``docs/examples/cards/`` from a fixture.
 
-Deterministic and offline: it reads ``tests/notifyfixture.py``, renders, and
-writes. No database, no network, no clock — run it twice and the files are
-byte-identical, so a diff in review is a real change to the rendering rather
-than noise.
+Offline and free of a clock: it reads ``tests/notifyfixture.py``, renders, and
+writes. No database, no network, no ``now()`` — so a diff in the HTML and text
+files is a real change to the rendering rather than noise.
 
     python -m scripts.render_example_cards
-    python -m scripts.render_example_cards --check     # fail if stale
+    python -m scripts.render_example_cards --check     # fail if the text is stale
 
-``--check`` is what a reviewer (or a future CI step) runs to find out whether
-the committed examples still match the renderer. It is not wired into CI here:
-adding a job is its own change, and the test suite already asserts the
-structural properties these files illustrate.
+``--check`` compares the **HTML and text** byte for byte and checks only that
+each PNG is *present*. The PNGs are not byte-stable across environments:
+matplotlib stamps its own version into the PNG metadata and the glyph raster
+depends on the freetype build, so a strict comparison would fail on any machine
+whose matplotlib differs from the one that last committed them — a false alarm
+about a chart that is in fact identical. The HTML is pure Python string
+building and has no such dependency, which is why it gets the strict half.
+
+Not wired into CI: adding a job is its own change, and the test suite already
+asserts the structural properties these files illustrate.
 """
 
 from __future__ import annotations
@@ -225,8 +230,11 @@ def _readme(names) -> str:
         "is served by the workspace at `/cards/<uid>/chart.png?s=<hmac>` and referenced",
         "by URL, because Gmail strips `data:` URIs and proxies remote images instead.",
         "",
-        "Re-render after any change to `notify/cards/` and commit the diff; the script",
-        "is deterministic, so a diff is a real rendering change.",
+        "Re-render after any change to `notify/cards/` and commit the diff. The HTML",
+        "and text are byte-stable, so a diff in those is a real rendering change; the",
+        "PNGs carry matplotlib's version in their metadata and will differ between",
+        "environments even when the chart is identical, which is why",
+        "`--check` compares the HTML strictly and the PNGs for presence only.",
         "",
         "| card | what it is |",
         "|---|---|",
@@ -263,16 +271,18 @@ def main(argv=None) -> int:
     files = render_files()
 
     if args.check:
-        stale = [
-            name
-            for name, content in sorted(files.items())
-            if not (out / name).exists() or (out / name).read_bytes() != content
-        ]
+        stale = []
+        for name, content in sorted(files.items()):
+            path = out / name
+            if not path.exists():
+                stale.append(f"{name} (missing)")
+            elif not name.endswith(".png") and path.read_bytes() != content:
+                stale.append(name)
         if stale:
             print("stale example cards: " + ", ".join(stale))
             print("re-run: python -m scripts.render_example_cards")
             return 1
-        print(f"{len(files)} example files are current.")
+        print(f"{len(files)} example files are current (PNGs checked for presence only).")
         return 0
 
     out.mkdir(parents=True, exist_ok=True)

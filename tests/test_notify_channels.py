@@ -5,7 +5,7 @@ body the provider would receive rather than that something was attempted.
 
 The rows asserted here:
 
-* the Resend request body — from, to, subject, text, html, tags;
+* the Resend request body — exactly from, to, subject, text, html;
 * the Authorization header carries the key as a bearer;
 * a 4xx, a transport exception and a missing configuration each fail closed,
   return ``False``, and write a ``failed``/``skipped`` row;
@@ -93,13 +93,10 @@ class ResendChannelTests(ChannelDatabaseTests):
         self.assertEqual(payload["subject"], "[approval needed] AMD — proposal 42")
         self.assertIn("AMD", payload["text"])
         self.assertIn("<html>", payload["html"])
-        self.assertEqual(
-            payload["tags"],
-            [
-                {"name": "kind", "value": "proposal"},
-                {"name": "ref", "value": "11111111-2222-3333-4444-555555555555"},
-            ],
-        )
+        # Exactly these keys. Resend rejects some optional fields outright (a bad
+        # `tags` value 422s the whole send), and the delivery log this package
+        # writes already answers everything an extra field would have.
+        self.assertEqual(set(payload), {"from", "to", "subject", "text", "html"})
 
     def test_a_text_only_notification_carries_no_html_key(self):
         transport = nf.RecordingTransport()
@@ -143,11 +140,12 @@ class ResendChannelTests(ChannelDatabaseTests):
         (row,) = self.sends()
         self.assertEqual(row["status"], store.SKIPPED)
 
-    def test_a_tag_value_is_sanitised_rather_than_rejected_by_resend(self):
+    def test_the_kind_and_ref_go_to_the_delivery_log_not_into_the_request(self):
         transport = nf.RecordingTransport()
         self._channel(transport).send(a_notification(kind="page", ref="sync failed: AMD"))
-        values = {tag["name"]: tag["value"] for tag in transport.last["payload"]["tags"]}
-        self.assertEqual(values["ref"], "sync_failed__AMD")
+        self.assertNotIn("tags", transport.last["payload"])
+        (row,) = self.sends()
+        self.assertEqual((row["kind"], row["ref"]), ("page", "sync failed: AMD"))
 
 
 class ResendRecipientTests(unittest.TestCase):

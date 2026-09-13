@@ -93,10 +93,18 @@ class ResendChannel:
     # -- the request ------------------------------------------------------- #
 
     def build_payload(self, notification: Notification) -> dict:
-        """The exact JSON body posted to Resend.
+        """The exact JSON body posted to Resend. Four keys, deliberately.
 
         ``text`` travels alongside ``html`` always: a text part is what a client
         that refuses HTML shows, and its absence is a well-known spam signal.
+
+        **No ``tags``.** Resend takes a ``tags`` array, and an earlier draft sent
+        the card kind and the row reference in it. It was removed: a tag value
+        Resend rejects fails the *whole* send with a 422, and the thing it would
+        have bought — "which kind, about which row, delivered when" — is already
+        in ``notifications_sent``, which this package writes on every attempt and
+        which is authoritative in a way a vendor console is not. Risking the only
+        channel for a duplicate of a log we own is a bad trade.
         """
         payload = {
             "from": self.sender,
@@ -106,10 +114,6 @@ class ResendChannel:
         }
         if notification.html:
             payload["html"] = notification.html
-        tags = [{"name": "kind", "value": _tag_value(notification.kind)}]
-        if notification.ref:
-            tags.append({"name": "ref", "value": _tag_value(notification.ref)})
-        payload["tags"] = tags
         return payload
 
     # -- delivery ---------------------------------------------------------- #
@@ -173,13 +177,3 @@ class ResendChannel:
             card_uid=notification.card_uid,
             session_factory=self.session_factory,
         )
-
-
-def _tag_value(value) -> str:
-    """Resend tag values accept ASCII letters, digits, ``_`` and ``-`` only.
-
-    A rejected tag fails the whole send, so anything else is replaced rather
-    than passed through and allowed to 422 a card nobody then sees.
-    """
-    cleaned = "".join(ch if (ch.isascii() and (ch.isalnum() or ch in "_-")) else "_" for ch in str(value))
-    return cleaned[:64] or "unknown"
