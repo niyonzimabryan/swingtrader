@@ -46,9 +46,15 @@ Workspace tools appear as `mcp__swingtrader-workspace__<tool>`.
   import closure never reaches `execution/`, `bot/`, or `orchestrator/`, and
   `tests/test_no_execute_scope.py` asserts that statically.
 - `research_workspace/` — dossiers, theses, invalidators, journal, git mirror.
-- `portfolio/` — the ledger, sync, reconciliation.
+- `portfolio/` — the ledger, sync, reconciliation, and `owner_actions.py`: the
+  queue an MCP owner tool writes a decision into. It is here rather than in
+  `workspace/` because the runtime has to read it too, and `portfolio/` is the
+  one package both sides may import.
 - `comparables/` — the cohort engine. Every number in an answer comes from here.
 - `filings/`, `data/` — the evidence planes and vendor adapters.
 - `execution/`, `bot/`, `orchestrator/` — the trading path. Off-limits to the
   workspace and to anything an agent session can reach.
+  `orchestrator/approval_poller.py` is the one thing that acts on an owner
+  decision recorded over MCP, and it lives here precisely because the workspace
+  cannot import this side (Spec K §10).
 - `specs/investment-workspace/` — the K–Q specs behind all of the above.

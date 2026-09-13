@@ -283,6 +283,34 @@ class SubagentToolScopeTests(unittest.TestCase):
                 f"{stem} lists propose_order; no subagent may (Spec P §4)",
             )
 
+    def test_no_subagent_can_record_an_owner_decision(self):
+        """Spec K §10: the owner control surface belongs to the lead agent.
+
+        Approving an order, changing an arm's tier or releasing the kill switch
+        is something Bryan does through the session he is talking to, on his
+        explicit yes, after being shown the card. A subagent is by construction
+        not in that conversation — it cannot show him anything and cannot be
+        told yes — so none of these may appear in any allowlist. The scope map
+        already refuses them to a read token; this refuses them to a delegate.
+        """
+        owner_tools = {
+            name
+            for name, scope in scope_module.TOOL_SCOPES.items()
+            if scope == scope_module.ADMIN
+        } | {"kill_switch"}
+        self.assertTrue(owner_tools, "the control is stale: no owner tool found")
+        for stem, (_front, _body, tools) in self.subagents.items():
+            for tool in tools:
+                bare = _workspace_tool(tool)
+                if bare is None:
+                    continue
+                self.assertNotIn(
+                    bare,
+                    owner_tools,
+                    f"{stem} allowlists {bare!r}; an owner decision is never a "
+                    "subagent's to record (Spec K §10, Spec P §4)",
+                )
+
     def test_the_critic_and_the_cohort_analyst_cannot_spawn_agents(self):
         for stem in NO_AGENT_TOOL:
             _front, _body, tools = self.subagents[stem]

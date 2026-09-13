@@ -256,6 +256,11 @@ Rules for all of them:
 - **The critic is never asked to be fair.** Balance is the lead agent's job at
   synthesis. An adversary instructed to be balanced is a rubber stamp.
 - No subagent may write a thesis to `active` or call `propose_order`.
+- **No subagent touches the owner control surface.** Approving an order,
+  changing an arm's tier, releasing the kill switch — those need Bryan's
+  explicit yes in *this* conversation, after he has been shown the card, and a
+  delegate is by construction not in it. `tests/test_agent_layer.py` asserts no
+  brief allowlists one.
 - `thesis-critic` and `cohort-analyst` do not list `Agent`, so they cannot spawn
   further agents.
 - A subagent that cannot source a claim **returns unknown**. Unsourced assertion

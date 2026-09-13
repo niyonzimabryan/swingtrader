@@ -467,3 +467,65 @@ Ratified 2026-09-10 from the evidenced-budget closure (§6.6, Spec N §8):
   the reason and the evidence printed, including a negative lower bound.
   `strict` still refuses an uncited or non-citation proposal and still sizes
   `LB <= 0` to zero.
+
+Ratified 2026-09-13 — **owner ruling: approval may be recorded through an agent**:
+
+- **§6's diagram said the approval channel is "never a tool an agent can call".
+  The owner has overruled that**, and this is the record of it. Bryan is the only
+  user of this deployment; he reads the card in his coding-agent chat (Claude
+  Code, Codex, Cursor), says approve there, and the agent calls an MCP tool. He
+  declined a confirmation code, having considered one. Spec K §10 carries the
+  same ruling from the tool surface's side.
+- **What the ruling costs, stated rather than glossed.** An agent session
+  holding an `admin` token can record an approval. The remaining controls on
+  that are the **placement of the token** — `docs/WORKSPACE_ACCESS.md` says an
+  `admin` token is the owner's and is never put in an agent's standing
+  environment — and the **client's own permission prompt** on the tool call.
+  That is a real widening of the trust boundary and it is the owner's to make.
+- **What the ruling did not change, and what makes it a widening rather than a
+  breach.** A tool **records** a decision into `owner_actions`; it never acts on
+  one. `orchestrator/approval_poller.py`, in the bot container, is the only
+  thing that acts, and it acts by calling `execution/lifecycle.py::on_approval`
+  with the same arguments the Telegram callback passes. So: still no `execute`
+  scope; still no import path from `workspace/` to `execution/`, `bot/` or
+  `orchestrator/`; still one signed, single-use, expiring, owner-bound reference
+  per order, consumed inside the transaction that also re-runs every risk check
+  from fresh state; still the persistent kill switch, surviving restart. The
+  worst a compromised session with an admin token reaches is the release of a
+  proposal the workspace itself created and risk-checked, at a size code
+  computed, into a book the guards re-check at placement.
+- **Single-use has exactly one writer on the approval path.** Recording an
+  approval touches neither `proposals.status` nor `proposals.approval_consumed_at`.
+  A second writer of that column would have made the guarantee a two-place
+  invariant, which is how such guarantees stop being one. The recording queue is
+  its own table (`owner_actions`, migration `0012`), and the poller's claim is a
+  conditional `UPDATE` that sits *in front of* the consumed-at column rather
+  than replacing it — so two pollers, or a poller racing the Telegram button,
+  still place once.
+- **A rejection is applied where it is recorded, not queued.** Rejecting a plain
+  proposal writes a ledger row and nothing else, so the tool does it
+  synchronously and consumes the approval. A deployment with the poller off must
+  still be able to say no; no is the one answer that must always be available. A
+  Strategy Lab execution's rejection needs `execution/` (its `strategy_trades`
+  row has to be cancelled or it holds its decision's open-execution slot), so
+  that one is queued like an approval.
+- **`OWNER_ID` names the owner once.** Approvals were bound to
+  `telegram_chat_id` because Telegram was the only channel; with two channels, a
+  card minted on one has to verify on the other.
+  `portfolio.approvals.resolve_owner_id` is that single name, defaulting to
+  `telegram_chat_id`, so an unset `OWNER_ID` changes nothing.
+- **Both new flags default off**, and the poller is gated on
+  `OWNER_ACTION_POLLER_ENABLED` *as well as* `PHASE6_EXECUTION_ENABLED`. Phase 6
+  is already on in production, and a deploy that turned a second path to
+  placement on as a side effect would be exactly the surprise the flag rule
+  exists to prevent.
+- **The scan-memo path was not folded into Phase 6, and that is a deferral
+  rather than a decision.** `approve_memo` records against the older `memos`
+  path and the poller calls `execution/order_manager.py::execute_approved_trade`,
+  as the Telegram callback does. Converting a memo into a Phase 6 proposal would
+  mean inventing a `risk_fraction` for it (a memo carries `entry`, `stop` and a
+  *size*, not a risk budget) and moving the scan path from `RiskManager` onto
+  the §6.6 caps and the evidenced/discretionary budgets. That is a change to how
+  the scan bot sizes real positions, not a refactor, and it wants its own PR and
+  its own owner ruling. Until then the memo path's honest description is the one
+  `approve_memo` gives: no signed reference, no budget, prefer `propose_order`.

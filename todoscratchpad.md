@@ -631,6 +631,30 @@ Codex, phone) can attach to. Umbrella + owner decisions + delivery order in
 - [x] **Second research pass — verification, folded in as v0.3 (2026-09-06)** — report
       at `docs/research/2026-09-research-verification.md` (merged from
       `claude/research-workspace-verify-hbuexz`); README §10 is the v0.2→v0.3 changelog.
+- [x] **Approval channel — owner ruling 2026-09-13: approve in the coding-agent
+      chat.** Bryan reads the card in Claude Code / Codex / Cursor, says approve, and
+      the agent calls an MCP tool. He declined a confirmation code. This overrules
+      Spec L §6's "never a tool an agent can call" and Spec K §7's Telegram-or-`/admin`
+      framing; both rulings logs now carry it (K §10, L §10). Built on
+      `claude/owner-tools-mcp`: ten tools behind `WORKSPACE_OWNER_TOOLS_ENABLED` and a
+      runtime poller behind `OWNER_ACTION_POLLER_ENABLED`, both default off. The tool
+      **records** a decision; `orchestrator/approval_poller.py` acts on it, through the
+      same `on_approval` the Telegram callback calls.
+- [ ] **P1 (ops) — turn the owner tools on, in this order:**
+      `OWNER_ACTION_POLLER_ENABLED=true` on the **bot** service first (nothing for it
+      to find yet), then `WORKSPACE_OWNER_TOOLS_ENABLED=true` on the **workspace**.
+      Leave `OWNER_ID` unset on both (it resolves to `TELEGRAM_CHAT_ID`, which every
+      existing card is already bound to) and make sure `EXECUTION_APPROVAL_SECRET`
+      still matches across the two. Then issue a short-lived `admin` token —
+      `docs/WORKSPACE_ACCESS.md` §1 — and revoke it when you are not in the session.
+      That token is the weakest link in this ruling and the doc says so.
+- [ ] **P2 — decide whether the scan-memo path should create a Phase 6 proposal.**
+      `approve_memo` records against the older `memos` path as it stands, because
+      converting a memo would mean inventing a `risk_fraction` for it (a memo carries
+      entry, stop and a *size*, not a risk budget) and moving the scan bot from
+      `RiskManager` onto the §6.6 caps and the two budgets. That changes how real
+      positions are sized, so it is its own PR and its own ruling. Recorded in
+      Spec L §10.
 - [ ] **P0 (ops) — cherry-pick the `mcp<2` pin to `main` before the next Railway
       deploy** (commit `18b47a2` on this branch). Verified in a clean venv: `mcp` 2.1.1
       drops `streamablehttp_client`, so a fresh install breaks every Robinhood call and

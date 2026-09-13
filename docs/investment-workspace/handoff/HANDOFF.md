@@ -6,9 +6,8 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-12 16:30 UTC, by a local Claude Code session on
-Bryan's laptop (was 2026-09-12 06:15 UTC, orchestrating session
-`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
+**Last updated:** 2026-09-13, by the `claude/owner-tools-mcp` worker session
+(was 2026-09-12 16:30 UTC, a local Claude Code session on Bryan's laptop).
 
 > **Read this first:**
 > [`OWNER_SETUP_EXECUTION_2026-09-12.md`](OWNER_SETUP_EXECUTION_2026-09-12.md) —
@@ -37,10 +36,15 @@ ENV_SETUP (#52), rulings (#55), **Phase 3c (#56), Phase 6 (#57), Strategy Lab 2
 
 | PR / branch | What | Session | State |
 |---|---|---|---|
-| `claude/spec-q-rulings-pr6` | Spec Q §21 rulings for PR 6; this handoff refresh | orchestrator | opening |
+| `claude/owner-tools-mcp` | The owner control surface over MCP + the runtime poller (Spec K §10, Spec L §10) | worker | opening |
 
-No worker session is building. Every Strategy Lab and Investment Workspace
-build PR is on `main`.
+Every Strategy Lab and Investment Workspace build PR before this one is on
+`main`. `claude/owner-tools-mcp` is the first PR to act on an **owner ruling**
+rather than a spec: Bryan approves in his coding-agent chat. Read the two
+rulings logs (Spec K §10, Spec L §10) before reviewing it — they state the
+trade-off, and the shape that makes it safe (a tool records; the runtime acts).
+
+Alembic head after it merges: `0012_owner_control_surface` (single).
 
 ## 3. What is left, in order
 
@@ -240,6 +244,22 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   `ALLOW_LIVE_TRADING` was left as found, and `STRATEGY_LAB_LIVE_*` was not
   touched. The proposal is the owner's to make — an agent must not both propose
   and approve — and it needs the MCP fix deployed first.
+- 2026-09-13 — **The owner control surface built on `claude/owner-tools-mcp`.**
+  Ten MCP tools behind `WORKSPACE_OWNER_TOOLS_ENABLED` (default off) and a
+  runtime poller behind `OWNER_ACTION_POLLER_ENABLED` (default off, and
+  additionally gated on `PHASE6_EXECUTION_ENABLED`). With neither variable set,
+  production behaves exactly as it did. The division that makes it safe: a tool
+  **records** a decision into the new `owner_actions` table and places nothing;
+  `orchestrator/approval_poller.py`, in the bot container, is the only thing
+  that acts on one, by calling the same `on_approval` the Telegram callback
+  calls. `tests/test_no_execute_scope.py`, `tests/test_portfolio_import_graph.py`
+  and the lifecycle-isolation tests are all still green; two assertions in the
+  last of those were **widened and simultaneously strengthened** (the caller
+  allowlist gained the poller, and gained a per-caller check that each name on it
+  is absent from the workspace closure). Owner-side to turn it on:
+  `docs/ENV_SETUP.md` §9a, and `docs/WORKSPACE_ACCESS.md` §1 on issuing the
+  `admin` token — which is the weakest link in the ruling and is labelled as
+  such.
 - 2026-09-12 18:05Z — **#77 merged by the orchestrator; the MCP fix is live.**
   The workspace redeployed from `main` and an unauthenticated `initialize` on
   `/mcp` now returns `401`, not `421`; `/health` still reports `postgresql` at

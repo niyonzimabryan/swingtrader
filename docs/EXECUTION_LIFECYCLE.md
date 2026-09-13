@@ -59,8 +59,59 @@ Two import-graph facts hold this together, and both are asserted statically
   `portfolio.proposals`, which lives on the ledger side of the boundary so that
   it can be reached from the workspace without dragging a broker in.
 * `execution/lifecycle.py` is **not** reachable from the workspace, and its entry
-  point `on_approval` is called from exactly one file — `bot/handlers/proposals.py`,
-  the out-of-band channel. No MCP tool and no REST route can trigger it.
+  point `on_approval` is called from exactly two files — `bot/handlers/proposals.py`
+  and `orchestrator/approval_poller.py` — both of them in packages the workspace's
+  import closure cannot reach, which
+  `tests/test_execution_lifecycle_isolation.py` now asserts for each of them by
+  name. No MCP tool and no REST route can trigger it.
+
+### 1a. The second approval channel (owner ruling 2026-09-13)
+
+Bryan may also approve in his coding-agent chat rather than on the Telegram
+button. The ruling is in Spec K §10 and Spec L §10; the picture it adds is one
+box, and the box is the point:
+
+```
+ agent session                workspace service          owner_actions        bot process
+       │                             │                    (a table)               │
+       │  "approve proposal <uid>"   │                        │                   │
+       │  ── after showing the card  │                        │                   │
+       │     and hearing an explicit │                        │                   │
+       │     yes from Bryan ───────► │                        │                   │
+       │                             │ verify the signed,     │                   │
+       │                             │ single-use, expiring,  │                   │
+       │                             │ owner-bound reference  │                   │
+       │                             │ RECORD the decision ──►│                   │
+       │  ◄── "recorded; places      │                        │                   │
+       │       nothing"              │                        │◄── claim (a       │
+       │                             │                        │    conditional    │
+       │                             │                        │    UPDATE)        │
+       │                             │                        │                   │
+       │                             │          execution.lifecycle ◄─────────────┤
+       │                             │           (the SAME call, the same          │
+       │                             │            arguments, the same guards)      │
+```
+
+Nothing in the second row of that diagram is new machinery: the poller calls
+`on_approval` with exactly the arguments `bot/handlers/proposals.py` passes, and
+every guard in §3 runs unchanged. What is new is only *where the owner's yes
+comes from*.
+
+Three independent things stop a double placement, and they fail differently:
+
+1. the **claim** — `portfolio.owner_actions.claim` is a single conditional
+   `UPDATE ... WHERE claimed_at IS NULL` whose row count decides the winner, on
+   SQLite and Postgres alike — so two pollers cannot both take one decision;
+2. **`proposals.approval_consumed_at`**, consumed inside `on_approval`'s own
+   transaction, so a claim that somehow double-fired (or a poller racing the
+   Telegram button) still places once;
+3. `on_approval` refusing anything not still `proposed`.
+
+Recording a decision writes **neither** of the first two columns on the
+proposal: `execution/lifecycle.py` keeps exactly one writer on the approval
+path. Rejecting a plain proposal is the one thing the tool applies itself,
+because it writes a ledger row and nothing else, and a deployment with the
+poller off must still be able to say no.
 
 ---
 
@@ -236,11 +287,18 @@ gate's. Tracked as a candidate follow-up.
 | `APPROVAL_TTL_SECONDS` | `1800` | How long an approval card stays valid. |
 | `PROPOSAL_MAX_POSITION_PCT` | `0.10` | Concentration cap over the combined book (separate from the scan bot's caps). |
 | `PROPOSAL_MAX_SECTOR_PCT` | `0.30` | Sector cap over the combined book. |
+| `WORKSPACE_OWNER_TOOLS_ENABLED` | `false` | **Workspace service.** Off ⇒ the ten owner tools are not registered at all. |
+| `OWNER_ACTION_POLLER_ENABLED` | `false` | **Bot service.** Off ⇒ nothing acts on a recorded decision. Gated on `PHASE6_EXECUTION_ENABLED` as well. |
+| `OWNER_ID` | `TELEGRAM_CHAT_ID` | Who an approval binds to. **Must match on both services.** |
+| `OWNER_ACTION_POLL_SECONDS` | `20` | Poller cadence, clamped to 5–120. |
+| `OWNER_ACTION_TTL_SECONDS` | `900` | How long a prepared tier-change confirmation stays valid. |
 
 The kill switch is **not** an env var: it is a database row
-(`execution_kill_switch`), set with `/live_kill on|off`, so it survives a restart
-(Spec L §6.5). `ROBINHOOD_ACCOUNT_BUDGET` (existing) still caps the Agentic
-account's loaded budget in code.
+(`execution_kill_switch`), set with `/live_kill on|off` — or with the
+`kill_switch` MCP tool, which needs only a `read` token to **engage** and an
+`admin` one to release — so it survives a restart (Spec L §6.5).
+`ROBINHOOD_ACCOUNT_BUDGET` (existing) still caps the Agentic account's loaded
+budget in code.
 
 ---
 
