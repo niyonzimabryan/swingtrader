@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from database.db import get_session
 from execution.brokers.capabilities import BrokerCapabilities
@@ -967,10 +968,22 @@ class NoAutomaticPromotionTests(unittest.TestCase):
     def test_no_module_calls_confirm_outside_the_owner_path(self):
         """Spec Q §3: promotion authority is owner-only.
 
-        The only callers of a confirmation are the Telegram handler (behind
-        ``@authorized`` and a signed callback) and the tests. A scheduled job, the
-        pipeline hook or the dispatcher calling it would be an automatic
-        promotion, which is the one thing §3 forbids outright.
+        The only callers of a confirmation are the two owner paths and the
+        tests. A scheduled job, the pipeline hook or the dispatcher calling it
+        would be an automatic promotion, which is the one thing §3 forbids
+        outright.
+
+        `orchestrator/approval_poller.py` is on this list and is the entry that
+        needs justifying, because it *is* a loop on a timer. It is the second
+        half of an owner path, not a path of its own: it calls `confirm` only
+        for an `owner_actions` row in status `confirmed`, and the only way a row
+        reaches that status is `portfolio.owner_actions.consume_confirmation`,
+        which verifies and burns a signed, expiring, owner-bound, single-use
+        confirmation the owner quoted back through an MCP tool (Spec K §10). The
+        grep cannot see that, so
+        `test_the_poller_never_confirms_without_an_owner_confirmation` below
+        asserts it behaviourally — the two rows belong together and neither is
+        sufficient alone.
         """
         import subprocess
         from pathlib import Path
@@ -986,8 +999,11 @@ class NoAutomaticPromotionTests(unittest.TestCase):
             "./strategy_lab/promotion.py",
             "./strategy_lab/registry.py",
             "./orchestrator/strategy_lab_promotion.py",
-            # The owner path: `@authorized`, behind a signed single-use callback.
+            # Owner path 1: `@authorized`, behind a signed single-use callback.
             "./bot/handlers/strategy_lab.py",
+            # Owner path 2: the runtime half of the MCP owner tools. See the
+            # docstring above, and the behavioural row below.
+            "./orchestrator/approval_poller.py",
             "./tests/",
             "./docs/",
         )
@@ -996,6 +1012,93 @@ class NoAutomaticPromotionTests(unittest.TestCase):
             if not line.startswith(allowed_prefixes)
         ]
         self.assertEqual(offenders, [], f"a non-owner path promotes: {offenders}")
+
+    def test_the_poller_never_confirms_without_an_owner_confirmation(self):
+        """The argument the allowlist entry above rests on, asserted.
+
+        A tier change that has been *prepared* but not confirmed is the exact
+        state an automatic promotion would have to exploit: the plan exists, the
+        target arm exists, and only the owner's yes is missing. Run the poller
+        over one repeatedly and nothing is confirmed.
+        """
+        from database.db import get_session, init_db
+        from orchestrator.approval_poller import ApprovalPoller
+        from portfolio import owner_actions
+        from tests.dbfixture import TestDatabase
+        from database.models import OwnerAction
+
+        db = TestDatabase("poller_owner_only")
+        self.addCleanup(db.cleanup)
+        init_db(db.url)
+
+        confirmed = []
+
+        class _Wiring:
+            @staticmethod
+            def build_request(session, settings, **kwargs):
+                return SimpleNamespace(
+                    source_arm_id=1,
+                    target_arm_id=2,
+                    evidence_metric_snapshot_id=3,
+                    requested_mode=ExecutionMode.PAPER,
+                    requested_risk_budget=1000.0,
+                    owner="bryan",
+                    reason="r",
+                )
+
+            @staticmethod
+            def plan(settings, request, adapters=None):
+                return SimpleNamespace(
+                    confirmable=True,
+                    refusals=(),
+                    external_refusals=(),
+                    notes=(),
+                    recommendation="owner decides",
+                )
+
+            @staticmethod
+            def confirm(settings, request, adapters=None):
+                confirmed.append(request)
+                return {}
+
+        settings = SimpleNamespace(
+            execution_approval_secret="test-approval-secret",
+            owner_id="99887766",
+            owner_action_ttl_seconds=900,
+            strategy_lab_experiment_owner="bryan",
+        )
+        poller = ApprovalPoller(
+            session_factory=get_session,
+            settings=settings,
+            promotion_wiring=_Wiring,
+            instance_id="owner-only",
+        )
+
+        with get_session() as session:
+            owner_actions.record(
+                session,
+                kind="promote_arm",
+                subject_kind="arm",
+                subject_ref="1",
+                status="requested",
+                owner_id="99887766",
+                payload={"source_arm_id": 1, "to_mode": "paper", "reason": "r"},
+            )
+            session.commit()
+
+        for _ in range(3):
+            poller.run_once()
+
+        self.assertEqual(
+            confirmed,
+            [],
+            "the poller promoted an arm the owner never confirmed; a prepared "
+            "plan is not a yes (Spec Q §3).",
+        )
+        with get_session() as session:
+            rows = session.query(OwnerAction).all()
+            self.assertEqual([r.status for r in rows], ["prepared"])
+            self.assertIsNone(rows[0].confirm_consumed_at)
 
     def test_the_scheduler_registers_no_promotion_job(self):
         import inspect

@@ -6,7 +6,7 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-13 02:20 UTC, by the orchestrating session
+**Last updated:** 2026-09-13 04:05 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 Bryan's laptop (was 2026-09-12 06:15 UTC, orchestrating session
 `session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
@@ -42,21 +42,23 @@ will not adopt it; every human-facing message goes to email (Resend, from
 approval happens **in his coding-agent chat** through an `admin`-scoped MCP
 tool, with no confirmation code (he declined one; single user, private
 deployment; the specs' "never a tool an agent can call" is overridden by owner
-ruling and must be recorded in L §10 and a new K rulings log); owner mutations
-(kill switch, promotions) also go over MCP; cards are designed HTML emails
-with a signed full-page view served by the workspace.
+ruling, recorded in Spec L §10 and Spec K §10 by #82); owner mutations (kill
+switch, promotions) also go over MCP; cards are designed HTML emails with a
+signed full-page view served by the workspace.
 
 | PR / branch | What | Session | Model | State |
 |---|---|---|---|---|
-| `claude/notify-email-cards` | `notify/` package, Resend channel behind `NOTIFY_EMAIL_ENABLED`, HTML card renderer + PNG chart, signed `/cards/<uid>` page, `notifications_sent` table | `session_01NSbbAvFecNAkxaZSQ6v8P9` | opus | building |
-| `claude/owner-tools-mcp` | `OWNER_ID`; `admin`-scoped `approve_order`/`reject_order`/`approve_memo`/`kill_switch`/`promote_arm`/…; runtime approval poller calling `on_approval`; spec rulings | `session_01A4B5sYhhr8ZDnRFHkVq4xY` | opus | building |
-| `claude/system-overview-doc` | `docs/SYSTEM_OVERVIEW.md`, standalone, sourced; published to Google Drive by the orchestrator after merge | `session_01D8jUpshohWT44o1L6gLPHd` | sonnet | building |
+| #80 `claude/system-overview-doc` | `docs/SYSTEM_OVERVIEW.md`; published to Google Drive: https://docs.google.com/document/d/1_dy3kIiaM3VwkivuIPjbnH1p1OKdI6w5ohXJ3CxpJL0/edit | `session_01D8jUpshohWT44o1L6gLPHd` | sonnet | **merged** |
+| #81 `claude/notify-email-cards` | `notify/` package, Resend channel behind `NOTIFY_EMAIL_ENABLED`, HTML card renderer + PNG chart, signed `/cards/<uid>` page, `cards` + `notifications_sent` tables (`0012_notify_email_cards`) | `session_01NSbbAvFecNAkxaZSQ6v8P9` | opus | **merged** |
+| #82 `claude/owner-tools-mcp` | `OWNER_ID`; ten `admin`/`read` owner tools behind `WORKSPACE_OWNER_TOOLS_ENABLED`; `orchestrator/approval_poller.py` behind `OWNER_ACTION_POLLER_ENABLED`; `owner_actions` table (`0012_owner_control_surface`); Spec K §10 + L §10 rulings; merge revision `0013_merge_notify_owner` added by the orchestrator | `session_01A4B5sYhhr8ZDnRFHkVq4xY` | opus | integrated; CI |
 
-Briefs are verbatim in `briefs/notify-email-cards.md`, `briefs/owner-tools-mcp.md`,
-`briefs/system-overview-doc.md`. Not yet spawned, **after the first two merge**
-(they both rewire `main.py`): the headless runtime — `TELEGRAM_ENABLED=false`
-runs scheduler, monitors and the approval poller with no Telegram token, and
-`NotificationManager` routes through `notify/`.
+Alembic head after #82: `0013_merge_notify_owner` (single). Next, **after #82
+merges**: the headless runtime — `TELEGRAM_ENABLED=false` runs scheduler,
+monitors, and the approval poller with no Telegram token, and
+`NotificationManager` routes through `notify/`. Then Bryan's final steps:
+`NOTIFY_EMAIL_ENABLED`, `OWNER_ACTION_POLLER_ENABLED` (bot), then
+`WORKSPACE_OWNER_TOOLS_ENABLED` (workspace), an `admin` token, attach, first
+paper trade (`docs/ENV_SETUP.md` §9a and §11, `docs/OWNER_SETUP.md` §5).
 
 ## 3. What is left, in order
 
@@ -291,3 +293,10 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   `WORKSPACE_BASE_URL` on the **bot** service so links in email from the bot
   work (`docs/OWNER_SETUP.md` §5). Not verified: any real Resend send, and the
   page against a real Postgres — both need production credentials.
+- 2026-09-13 04:05Z — #80 merged and published to Google Drive; #81 merged
+  (CI green on its head; 156 targeted tests re-run on the merged tree). #82
+  integrated by the orchestrator: union-resolved `config/settings.py`,
+  `database/models.py`, `migrations/README.md` (both branches appended blocks
+  at the same spot), HANDOFF taken from `main`, and `0013_merge_notify_owner`
+  added over the two `0012_*` heads. Full 3.12 suite run on the merged tree
+  before pushing.

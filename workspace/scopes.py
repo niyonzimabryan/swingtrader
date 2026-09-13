@@ -47,6 +47,28 @@ TOOL_SCOPES: dict[str, str] = {
     "experiments_status": READ,
     # Phase 6 (Spec L §6) — creates a `proposed` row. Places nothing.
     "propose_order": PROPOSE,
+    # The owner control surface (Spec K §10, owner ruling 2026-09-13). Behind
+    # `WORKSPACE_OWNER_TOOLS_ENABLED`, and `admin` almost throughout: these are
+    # the owner's own controls, exercised through his agent, and an `admin`
+    # token is by policy the owner's token and not an agent's standing one
+    # (`docs/WORKSPACE_ACCESS.md`). None of them places anything — they record a
+    # decision the runtime acts on — but recording one is not something a read
+    # token should be able to do.
+    "proposals_pending": READ,
+    "approve_order": ADMIN,
+    "reject_order": ADMIN,
+    "approve_memo": ADMIN,
+    "reject_memo": ADMIN,
+    # `read`, deliberately, and the asymmetry is the point: ENGAGING the kill
+    # switch must be available to anything attached, because a switch that is
+    # expensive to pull is a switch nobody pulls in time. RELEASING it requires
+    # `admin`, checked inside the tool body against the caller's own scopes —
+    # `TOOL_SCOPES` has one entry per tool and this tool has two directions.
+    "kill_switch": READ,
+    "pause_experiment": ADMIN,
+    "resume_experiment": ADMIN,
+    "promote_arm": ADMIN,
+    "demote_arm": ADMIN,
 }
 
 #: Scopes whose calls count against the write rate limit rather than the read

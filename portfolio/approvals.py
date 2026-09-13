@@ -81,6 +81,25 @@ def _naive_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
 
 
+def resolve_owner_id(settings) -> str:
+    """The identity every approval is bound to, whatever channel carries it.
+
+    Approvals have always been bound to ``telegram_chat_id`` because Telegram
+    was the only channel. It is now one of two (the other is the MCP owner
+    tools, Spec K §10), and a second channel that minted its *own* notion of
+    "the owner" would mean a card signed on one channel could not be verified on
+    the other — or worse, could be verified by the wrong person.
+
+    So the owner is named once, here. ``OWNER_ID`` when it is set, and
+    ``TELEGRAM_CHAT_ID`` when it is not, which is what every deployment has
+    today: an unset ``OWNER_ID`` changes nothing.
+    """
+    explicit = str(getattr(settings, "owner_id", "") or "").strip()
+    if explicit:
+        return explicit
+    return str(getattr(settings, "telegram_chat_id", "") or "").strip()
+
+
 def signing_secret(settings) -> str:
     """The HMAC key, or a refusal.
 

@@ -190,9 +190,11 @@ async def main():
     # The card sender posts through the existing message queue; the execution
     # service is the ONLY path from an approval to a placement, and it lives in
     # execution/ where the workspace can never import it.
+    approval_poller = None
     if getattr(settings, "phase6_execution_enabled", False):
         from bot.handlers.proposals import register_bot_card_sender
         from execution.lifecycle import ExecutionService
+        from portfolio.approvals import resolve_owner_id as _resolve_owner_id
 
         from database.db import get_session as _get_session
 
@@ -254,7 +256,7 @@ async def main():
             settings=settings,
             adapters=_adapters,
             pager=_pager,
-            owner_id=str(getattr(settings, "telegram_chat_id", "") or ""),
+            owner_id=_resolve_owner_id(settings),
         )
         log.info(
             "strategy_lab_execution_wired",
@@ -262,6 +264,43 @@ async def main():
             paper_enabled=bool(getattr(settings, "strategy_lab_paper_enabled", False)),
             live_enabled=bool(getattr(settings, "strategy_lab_live_enabled", False)),
         )
+
+        # The owner control surface's runtime half (Spec K §10). The MCP tools
+        # RECORD a decision into `owner_actions`; this is the only thing that
+        # acts on one, and it acts by calling the same services the Telegram
+        # callback calls, with the same arguments. It is behind its own flag as
+        # well as Phase 6's: PHASE6_EXECUTION_ENABLED is already on in
+        # production, and turning a second path to placement on as a side effect
+        # of a deploy is exactly what "every new capability ships behind a flag
+        # defaulting off" exists to prevent.
+        if getattr(settings, "owner_action_poller_enabled", False):
+            from orchestrator.approval_poller import ApprovalPoller
+
+            def _memo_executor(memo_id: int) -> dict:
+                # `execute_approved_trade` is a coroutine on the bot loop; the
+                # poller runs its pass on a worker thread. Bridge it the same way
+                # the card sender bridges the message queue, and wait: the
+                # poller's claim is what makes waiting safe.
+                future = asyncio.run_coroutine_threadsafe(
+                    pipeline.order_manager.execute_approved_trade(memo_id),
+                    pipeline.bot_loop,
+                )
+                return future.result(timeout=120)
+
+            approval_poller = ApprovalPoller(
+                session_factory=_get_session,
+                settings=settings,
+                execution_service=app.bot_data["execution_service"],
+                strategy_execution_service=app.bot_data["strategy_execution_service"],
+                memo_executor=_memo_executor,
+                adapters=_adapters,
+                notify=_pager,
+                instance_id=os.environ.get("RAILWAY_REPLICA_ID", "") or "",
+            )
+            log.info(
+                "approval_poller_wired",
+                interval_seconds=getattr(settings, "owner_action_poll_seconds", 20),
+            )
 
     # Initialize order monitor — always bound to the Alpaca broker, never the
     # mode-sensitive router. These monitors manage Alpaca order lifecycles only;
@@ -292,6 +331,11 @@ async def main():
     async def _graceful_restart_cleanup():
         """Best-effort cleanup before the daily self-restart releases the container."""
         log.info("daily_restart_cleanup_start")
+        if approval_poller is not None:
+            try:
+                await approval_poller.stop()
+            except Exception as e:
+                log.warning("daily_restart_cleanup_poller_failed", error=str(e))
         for name, monitor in (("position_monitor", position_monitor), ("order_monitor", order_monitor)):
             try:
                 await monitor.stop()
@@ -349,6 +393,11 @@ async def main():
         await watchdog.start()
         log.info("watchdog_ready")
 
+        # Start the owner-decision poller (no-op unless both flags are on)
+        if approval_poller is not None:
+            await approval_poller.start()
+            log.info("approval_poller_ready")
+
         # Keep running
         stop_event = asyncio.Event()
 
@@ -365,6 +414,8 @@ async def main():
         log.info("shutting_down")
         if langfuse_client:
             langfuse_client.flush()
+        if approval_poller is not None:
+            await approval_poller.stop()
         await watchdog.stop()
         await position_monitor.stop()
         await order_monitor.stop()

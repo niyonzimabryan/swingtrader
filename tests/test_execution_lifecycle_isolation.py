@@ -141,22 +141,60 @@ class ExecutionServiceIsUnreachableTests(unittest.TestCase):
                 callers.append(rel.as_posix())
         return sorted(callers)
 
-    def test_only_the_bot_handler_calls_on_approval_from_outside_execution(self):
-        """Outside `execution/`, the Telegram handler is the only caller.
+    #: Outside `execution/`, exactly these files may call into placement.
+    #:
+    #: Two entries, and the second was added by owner ruling on 2026-09-13
+    #: (Spec K §10, Spec L §10): Bryan approves in his coding-agent chat, an MCP
+    #: tool records that decision into `owner_actions`, and
+    #: `orchestrator/approval_poller.py` is what acts on it. Both live in
+    #: packages the workspace's import closure may never reach, which is the
+    #: property that matters and which
+    #: `test_every_outside_caller_is_unreachable_from_the_workspace` below now
+    #: asserts for each of them by name — so widening this list cannot, by
+    #: itself, put a caller within an agent's reach.
+    #:
+    #: Adding a third entry means writing down the same argument for it.
+    APPROVAL_CALLERS = [
+        "bot/handlers/proposals.py",
+        "orchestrator/approval_poller.py",
+    ]
+
+    def test_only_the_approval_channels_call_on_approval_from_outside_execution(self):
+        """Outside `execution/`, only the two owner-approval channels call it.
 
         A grep-level control on top of the import graph: even if some module
-        could import the service, only the bot's proposal handler and the wiring
-        in main.py may *call* the entry point into placement. No workspace or
-        REST module may.
+        could import the service, only the Telegram handler and the owner-action
+        poller may *call* the entry point into placement. No workspace or REST
+        module may.
         """
         outside = [c for c in self._on_approval_callers() if not c.startswith("execution/")]
         self.assertEqual(
             outside,
-            ["bot/handlers/proposals.py"],
-            "on_approval is called from somewhere other than the bot's "
-            "out-of-band approval handler; the approval callback must not be "
-            "reachable from an MCP tool or a REST route.",
+            self.APPROVAL_CALLERS,
+            "on_approval is called from somewhere other than the owner's two "
+            "approval channels; the approval path must not be reachable from an "
+            "MCP tool or a REST route.",
         )
+
+    def test_every_outside_caller_is_unreachable_from_the_workspace(self):
+        """The assertion the list above rests on, per allowed caller.
+
+        A file may call into placement only because nothing an agent can reach
+        can import it. Asserted by name rather than by package, so that adding a
+        caller to `APPROVAL_CALLERS` is checked rather than trusted.
+        """
+        closure = _workspace_closure()
+        for caller in self.APPROVAL_CALLERS:
+            module = caller[: -len(".py")].replace("/", ".")
+            with self.subTest(module):
+                self.assertNotIn(
+                    module,
+                    closure,
+                    f"{caller} calls into placement and is reachable from the "
+                    "workspace surface. An MCP tool may RECORD an owner's "
+                    "decision; only a process the workspace cannot import may "
+                    "act on one (Spec K §10, Spec L §6.1).",
+                )
 
     def test_every_execution_side_caller_is_unreachable_from_the_workspace(self):
         """The other half, and the one that carries the guarantee.

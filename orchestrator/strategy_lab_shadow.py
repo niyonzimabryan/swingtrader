@@ -1004,23 +1004,16 @@ def strategy_detail(settings, slug: str, *, recent: int = 5) -> Mapping | None:
 
 
 def _experiment_by_name_or_id(session, token: str):
-    """Resolve an experiment from what an operator types.
+    """Kept as this module's spelling of ``registry.experiment_by_name_or_id``.
 
-    Spec Q §13 writes the commands as ``/pause_experiment <id>``; `/experiments`
-    prints names, which are slugs and are what a person actually has to hand.
-    Both work, and a numeric token is tried as a row id only after the name
-    lookup fails, so an experiment legitimately named `2026` is not shadowed by
-    a row with that id.
+    The body moved to ``strategy_lab/registry.py`` when the MCP owner tools
+    needed it: the workspace may not import ``orchestrator/``
+    (``tests/test_no_execute_scope.py``), and two copies of an operator-input
+    lookup is exactly the kind of duplication that drifts.
     """
-    from database import models
     from strategy_lab import registry
 
-    row = registry.get_experiment(session, token)
-    if row is not None:
-        return row
-    if token.isdigit():
-        return session.get(models.Experiment, int(token))
-    return None
+    return registry.experiment_by_name_or_id(session, token)
 
 
 def set_experiment_paused(settings, name: str, *, paused: bool) -> Mapping:
@@ -1029,27 +1022,20 @@ def set_experiment_paused(settings, name: str, *, paused: bool) -> Mapping:
     A paused experiment is not in `registry.RUNNABLE_EXPERIMENT_STATUSES`, so
     every arm under it refuses at the runner — pausing stops the work, not only
     the write.
+
+    The decision moved to ``registry.set_experiment_paused`` so that the MCP
+    owner tool can make the same one without importing this package. What stays
+    here is the session and the log line: the behaviour, the return shape and
+    the refusals are unchanged.
     """
     from database.db import get_session
     from strategy_lab import registry
-    from strategy_lab.domain import ExperimentStatus, StrategyLabError
 
-    target = ExperimentStatus.PAUSED if paused else ExperimentStatus.RUNNING
     with get_session() as session:
-        row = _experiment_by_name_or_id(session, name)
-        if row is None:
-            return {"ok": False, "error": f"no experiment named {name!r}"}
-        name = row.name
-        before = row.status
-        if ExperimentStatus(before) is target:
-            return {"ok": True, "name": name, "status": before, "changed": False}
-        try:
-            updated = registry.set_experiment_status(session, name, target)
-        except StrategyLabError as exc:
-            return {"ok": False, "error": str(exc), "name": name, "status": before}
-        status = updated.status
-    log.info(
-        "experiment_arm_paused" if paused else "experiment_arm_started",
-        experiment=name, status=status,
-    )
-    return {"ok": True, "name": name, "status": status, "changed": True}
+        result = registry.set_experiment_paused(session, name, paused=paused)
+    if result.get("ok") and result.get("changed"):
+        log.info(
+            "experiment_arm_paused" if paused else "experiment_arm_started",
+            experiment=result["name"], status=result["status"],
+        )
+    return result

@@ -1420,6 +1420,49 @@ performance figure on every card is copied out of
 `scripts/strategy_lab_scoreboard.py`'s payload. Nothing in `bot/` computes,
 rounds, selects or characterises a number.
 
+### 27a. The same five controls over MCP (owner ruling 2026-09-13)
+
+Behind `WORKSPACE_OWNER_TOOLS_ENABLED`, default off, Bryan can also drive
+`pause_experiment`, `resume_experiment`, `promote_arm` and `demote_arm` from his
+coding-agent chat, and read or engage the kill switch there (Spec K §10). The
+Telegram commands are unchanged and remain the primary surface.
+
+Pause and resume are applied **in the workspace process**, because
+`registry.set_experiment_paused` touches only `strategy_lab/`. Its body moved
+down from `orchestrator/strategy_lab_shadow.py` for exactly that reason; the
+orchestrator keeps the session-opening wrapper and its return shape, so the
+Telegram path is byte-for-byte the same decision.
+
+A tier change cannot be. The gates in `orchestrator/strategy_lab_promotion.py`
+import `execution.lifecycle` for Phase 6's live checks, and the workspace may
+import neither — so the request crosses the boundary as a row in `owner_actions`
+and takes **two passes of the poller**:
+
+1. `promote_arm(source_arm_id=…, to_tier=…)` records a request. Nothing is
+   planned, nothing is created.
+2. The runtime builds the request through the *same* `build_request` /`plan`
+   §25 uses, renders the card, and mints a signed, expiring, owner-bound,
+   single-use confirmation with `portfolio.approvals.sign` — the same HMAC
+   `PendingPromotions` uses. A non-confirmable plan is recorded `refused` with
+   both refusal lists on the card and there is nothing to confirm.
+3. Calling `promote_arm` again returns the prepared card and a
+   `confirmation_reference`. The agent shows the card in full and asks.
+4. `promote_arm(confirmation_reference=…)` verifies and consumes it.
+5. The runtime **re-plans** and refuses with `plan_changed` if the target arm,
+   evidence snapshot, mode or budget differs from what was signed — an evaluator
+   run between passes moves the evidence snapshot, and executing a plan the owner
+   did not see would be the one way this shape could go wrong.
+
+§13's four controls are all preserved. The one property that is not is
+`PendingPromotions`' in-process lifetime: a row survives a restart where the
+in-memory store does not, so `OWNER_ACTION_TTL_SECONDS` (default 900) is what
+bounds it instead, and it is deliberately shorter than an approval's.
+
+§26 holds unchanged and is worth restating because the MCP path makes it easier
+to forget: **a tier change is never an entry approval.** A promoted live arm
+places nothing until each of its executions is separately approved, and the
+tool's own answer says so.
+
 ## 28. What PR 6 does not do
 
 - **It does not enable anything.** `STRATEGY_LAB_PAPER_ENABLED` and

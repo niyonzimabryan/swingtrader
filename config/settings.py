@@ -229,6 +229,29 @@ class Settings(BaseSettings):
     proposal_max_position_pct: float = 0.10
     proposal_max_sector_pct: float = 0.30
 
+    # --- Owner identity and the owner control surface (Spec K §10, Spec L §10) ---
+    # Who an approval is bound to. Approvals have always been bound to the
+    # Telegram chat id; this names the owner *independently of the channel* so a
+    # second channel (the MCP owner tools below) binds to the same identity
+    # rather than inventing one. Unset means `telegram_chat_id`, so a deployment
+    # that never sets it behaves exactly as before.
+    owner_id: str = ""
+    # The owner tools on the MCP surface (`approve_order`, `reject_order`,
+    # `approve_memo`, `reject_memo`, `kill_switch`, the Strategy Lab controls).
+    # Off by default, like every new capability: with the flag false the tools
+    # are not registered at all and nothing about the workspace changes.
+    workspace_owner_tools_enabled: bool = False
+    # The runtime half. The owner tools RECORD a decision; this poller is the
+    # only thing that acts on one, and it lives in the bot process where
+    # `execution/` is importable. Off by default *as well as* behind
+    # PHASE6_EXECUTION_ENABLED, so turning Phase 6 on does not silently start a
+    # second path to placement in a deployment that never asked for one.
+    owner_action_poller_enabled: bool = False
+    owner_action_poll_seconds: int = 20
+    # How long a prepared MCP promotion confirmation stays valid. Single-use and
+    # owner-bound too, exactly like an execution approval (Spec Q §13).
+    owner_action_ttl_seconds: int = 900
+
     # --- Notification channels and HTML cards (notify/) ---
     # Off by default, like every new capability. With `notify_email_enabled`
     # false no email is sent, no card row is written, and the workspace does

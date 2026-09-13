@@ -133,10 +133,13 @@ def _propose(
 ) -> dict:
     """Synchronous body, run on a worker thread: the session is blocking."""
     from database.db import get_session
+    from portfolio import approvals
     from portfolio import proposals
     from portfolio.approvals import ApprovalRefused
 
-    owner_id = str(getattr(settings, "telegram_chat_id", "") or "")
+    # Spec K §10: the owner is named once, in `portfolio.approvals`, so the card
+    # minted here verifies identically whichever channel the owner approves on.
+    owner_id = approvals.resolve_owner_id(settings)
     try:
         with get_session() as session:
             row = proposals.create_proposal(

@@ -192,6 +192,48 @@ The Robinhood `gtc` `stop_market` live probe (`docs/EXECUTION_LIFECYCLE.md` §6)
 is an **owner action** and is not run from a build session. Until it passes,
 keep `EXECUTION_MODE=live` off.
 
+### 9a. Approving in the coding-agent chat (owner ruling 2026-09-13)
+
+Owner ruling, recorded in Spec K §10 and Spec L §10: Bryan reads the card in his
+coding-agent chat and approves there, instead of on a Telegram button. Two flags,
+on two different services, and **both default off**. With neither set, nothing
+about §9 changes.
+
+| Variable | Service | Default | What it does |
+|---|---|---|---|
+| `WORKSPACE_OWNER_TOOLS_ENABLED` | workspace | `false` | Registers the ten owner tools (`AGENTS.md` §3) |
+| `OWNER_ACTION_POLLER_ENABLED` | bot | `false` | The runtime acts on a recorded decision |
+| `OWNER_ID` | both | `TELEGRAM_CHAT_ID` | Who an approval binds to |
+| `OWNER_ACTION_POLL_SECONDS` | bot | `20` | Poll interval, clamped to 5–120 |
+| `OWNER_ACTION_TTL_SECONDS` | both | `900` | A prepared tier change's lifetime |
+
+The division of labour is the point: an MCP tool **records** a decision into the
+`owner_actions` table and places nothing; the poller in the bot container is the
+only thing that acts on one, and it acts through the same execution service the
+Telegram callback drives. So with the tools on and the poller off, an approval
+you record simply sits there — and the tool's own answer says so, in the
+response, rather than leaving you to notice.
+
+Three things to get right:
+
+- **`OWNER_ID` must match on both services.** A card minted by one and verified
+  by the other fails `owner_mismatch` otherwise. Leaving it unset on both is the
+  safe default: it resolves to `TELEGRAM_CHAT_ID`, which every existing card was
+  already bound to.
+- **`EXECUTION_APPROVAL_SECRET` must already match on both**, as §9 requires. It
+  signs the tier-change confirmations too.
+- **The `admin` scope is the control.** Eight of the ten tools require it, and
+  nothing in the code distinguishes a token you are holding from one left in an
+  agent's standing environment. `docs/WORKSPACE_ACCESS.md` §1 is the policy and
+  the revocation recipe. `kill_switch` is deliberately reachable on a plain
+  `read` token in the engaging direction — you never need the admin token to
+  stop the system, only to start it again.
+
+Turning them on, in order: set `OWNER_ACTION_POLLER_ENABLED=true` on the bot
+first (there is nothing for it to find yet), then
+`WORKSPACE_OWNER_TOOLS_ENABLED=true` on the workspace. Each variable change
+redeploys its service.
+
 ## 10. Strategy Lab shadow integration (Spec Q, PR 4)
 
 Versioned strategies running in shadow beside the existing scan. Everything

@@ -23,7 +23,9 @@ migrations/
     0009_execution_lifecycle.py      Phase 6: proposals + the persistent kill switch (spec L §6)
     0010_merge_execution_lifecycle.py joins Phase 6 to 0009_merge_comparables (the head)
     0011_comparable_subject_ticker.py  the Spec L §6.6 subject ticker on a query and its answer
+    0012_owner_control_surface.py    owner_actions: decisions recorded over MCP (spec K §10)
     0012_notify_email_cards.py       the notification delivery log and the stored card (notify/)
+    0013_merge_notify_owner.py       merge point: 0012_notify_email_cards + 0012_owner_control_surface (no schema change)
 ```
 
 `0009_execution_lifecycle` branches from the single head `0008_merge_strategy_lab`
@@ -55,7 +57,21 @@ questions about different names share one row and one id. The swap goes through
 `ALTER TABLE ... DROP/ADD CONSTRAINT` on Postgres, and `downgrade()` narrows the
 key back *before* dropping the column it names.
 
-It is also the first revision whose `downgrade()` can **refuse**. Two answers
+`0012_owner_control_surface` branches from `0011_comparable_subject_ticker` and
+adds one table, `owner_actions`: the queue the MCP owner tools write a decision
+into and `orchestrator/approval_poller.py` acts on (Spec K §10). It adds **no
+column to any existing table**, and that is a constraint rather than a
+coincidence — `memos` is a baseline-era table, and `database/schema.py::classify`
+adopts an unversioned production database by matching its table-and-column
+signature against a revision exactly, so a column added to a baseline table turns
+every un-adopted database into `unknown` at startup. A new table costs that path
+nothing. If you find yourself wanting a column on `memos`, `trades`, `tickers` or
+anything else `0001_baseline` created, check
+`tests/test_schema_discipline.py::test_a_baseline_era_database_is_still_adopted_after_a_new_table_lands`
+first: it will tell you.
+
+`0011_comparable_subject_ticker` is also the first revision whose `downgrade()`
+can **refuse**. Two answers
 that differ only by their subject cannot both survive the narrow key, and each
 is the target of a citation (`cohort:<id>`) a journal entry may already carry,
 so there is no correct row to discard — it raises and names the choice instead
