@@ -2731,3 +2731,85 @@ class ExecutionKillSwitch(Base):
     engaged_at = Column(UtcDateTime, nullable=True)
     released_at = Column(UtcDateTime, nullable=True)
     updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+# --------------------------------------------------------------------------- #
+# Notification delivery and the stored card (notify/)
+# --------------------------------------------------------------------------- #
+
+
+class Card(Base):
+    """One rendered human-facing card, kept so its page can be re-rendered.
+
+    **Why a table of its own rather than a JSON column on ``notifications_sent``.**
+    A card is one resource and a delivery is an event: the same card goes out on
+    email and on Telegram, and a re-send is another delivery of the *same* card.
+    Hanging the payload off a delivery row would duplicate it once per channel
+    and per retry, and would leave ``/cards/<uid>`` having to pick which of
+    several identical copies is the page — a choice with no right answer. The
+    uid is the page's identity, so it belongs to a row that is the card.
+
+    ``payload_json`` is the card's **source data**, not its HTML: every number
+    on the page comes out of this blob exactly as it was when the card was
+    minted, including the price bars behind the chart and every staleness flag.
+    Re-rendering therefore cannot drift, and the page a reviewer opens in March
+    is the page the email linked to in January (AGENTS.md §1.2, §1.3).
+    """
+
+    __tablename__ = "cards"
+    __table_args__ = (
+        Index("ix_cards_kind_ref", "kind", "ref"),
+        Index("ix_cards_created_at", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    #: The opaque id in the URL. The HMAC in the link is computed over it.
+    card_uid = Column(String(64), unique=True, nullable=False, index=True)
+    #: `proposal` | `scan_memo` | `scorecard` | `page` | `digest`.
+    kind = Column(String(32), nullable=False, default="")
+    #: A stable id for the underlying row — a proposal uid, a memo id, a page
+    #: event. Not unique: a proposal that is re-proposed mints a second card.
+    ref = Column(String(120), nullable=False, default="")
+    subject = Column(Text, nullable=False, default="")
+    payload_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+    @property
+    def payload(self) -> dict:
+        try:
+            loaded = json.loads(self.payload_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+
+class NotificationSend(Base):
+    """One delivery attempt on one channel. Append-only.
+
+    Written whether the attempt succeeded or failed, because the question this
+    table answers is "was the owner actually told" — and a channel that failed
+    silently is the failure mode the row exists to make visible. A failure never
+    unwinds the underlying write (``portfolio.approvals.send_card``'s rule): a
+    proposal whose card could not be delivered stays ``proposed`` and simply
+    cannot be approved.
+    """
+
+    __tablename__ = "notifications_sent"
+    __table_args__ = (
+        Index("ix_notifications_sent_kind_ref", "kind", "ref"),
+        Index("ix_notifications_sent_created_at", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(String(32), nullable=False, default="")
+    ref = Column(String(120), nullable=False, default="")
+    channel = Column(String(32), nullable=False, default="")
+    #: `sent` | `failed` | `skipped`.
+    status = Column(String(24), nullable=False, default="")
+    #: The provider's id for the message — Resend's `id`, Telegram's
+    #: `message_id` — so a delivery can be traced in the provider's own console.
+    provider_id = Column(String(120), nullable=False, default="")
+    error = Column(Text, nullable=False, default="")
+    #: The card this delivery carried, when there was one.
+    card_uid = Column(String(64), nullable=False, default="")
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)

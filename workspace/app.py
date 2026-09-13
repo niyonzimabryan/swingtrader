@@ -13,8 +13,8 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import StreamableHTTPASGIApp
 from mcp.server.transport_security import TransportSecuritySettings
@@ -180,6 +180,91 @@ def _database_health() -> dict:
         return {"reachable": False, "detail": f"{type(exc).__name__}: {exc}"}
 
 
+def build_cards_router(settings) -> APIRouter:
+    """The signed, unauthenticated, read-only card page (Spec K §7's successor).
+
+    Two routes and one control. ``/cards/{uid}`` renders the page from the
+    stored payload; ``/cards/{uid}/chart.png`` renders the chart from the bars
+    in that same payload. Both verify an HMAC over the uid with
+    ``CARD_LINK_SECRET`` — falling back to ``EXECUTION_APPROVAL_SECRET`` — in
+    constant time, and both answer **404** for a bad signature, an unknown uid,
+    an unreachable database, and a card with no chart alike.
+
+    One 404 for all of those on purpose: a route that distinguished "no such
+    card" from "wrong signature" would be an oracle for enumerating uids, and
+    the uid is half the credential. The cost is a slightly less helpful error
+    for a link somebody mangled, which is the right side of that trade.
+
+    Nothing here writes, and nothing here reaches an approval: approval is
+    Telegram's signed, single-use, expiring callback, handled in the bot process
+    that this service cannot import (Spec L §6.1). The page is a record.
+    """
+    router = APIRouter(tags=["cards"])
+
+    def _verify(uid: str, signature: str) -> bool:
+        from notify.links import CardLinkUnavailable, card_secret, verify_uid
+
+        try:
+            secret = card_secret(settings)
+        except CardLinkUnavailable as exc:
+            log.warning("card_link_secret_missing", detail=str(exc))
+            return False
+        return verify_uid(uid, signature, secret)
+
+    def _not_found() -> Response:
+        return Response(status_code=404)
+
+    @router.get("/cards/{uid}")
+    def card_page(uid: str, s: str = ""):
+        from notify.cards import render
+        from notify.store import load_card
+
+        if not _verify(uid, s):
+            return _not_found()
+        payload = load_card(uid)
+        if payload is None:
+            return _not_found()
+        from notify.links import card_links
+
+        card_url, chart_url = card_links(uid, settings=settings)
+        if not (payload.get("chart") or {}).get("bars"):
+            chart_url = ""
+        rendered = render(payload, chart_url=chart_url, card_url=card_url)
+        return HTMLResponse(
+            rendered.html_page,
+            headers={"Cache-Control": "private, max-age=300", "X-Robots-Tag": "noindex"},
+        )
+
+    @router.get("/cards/{uid}/chart.png")
+    def card_chart(uid: str, s: str = ""):
+        from notify.cards.chart import ChartUnavailable, render_png
+        from notify.store import load_card
+
+        if not _verify(uid, s):
+            return _not_found()
+        payload = load_card(uid)
+        if payload is None:
+            return _not_found()
+        try:
+            png = render_png(payload.get("chart") or {})
+        except ChartUnavailable as exc:
+            log.info("card_chart_unavailable", card_uid=uid, detail=str(exc))
+            return _not_found()
+        return Response(
+            content=png,
+            media_type="image/png",
+            headers={
+                # The payload behind a card never changes, so the image is
+                # immutable for the life of the uid. Gmail proxies and caches it
+                # anyway; saying so keeps the proxy from re-fetching.
+                "Cache-Control": "private, max-age=86400, immutable",
+                "X-Robots-Tag": "noindex",
+            },
+        )
+
+    return router
+
+
 def build_v1_router(auth: WorkspaceAuth) -> APIRouter:
     router = APIRouter(prefix="/v1", tags=["v1"])
 
@@ -234,13 +319,14 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
         # default stays and nothing can be approved (workspace/proposal_card.py).
         from workspace.proposal_card import register_if_configured
 
-        card_channel = register_if_configured(settings)
+        card_channels = register_if_configured(settings)
         log.info(
             "workspace_starting",
             enabled=bool(settings.workspace_api_enabled),
             oauth_enabled=bool(settings.workspace_oauth_enabled),
             phase6_enabled=bool(getattr(settings, "phase6_execution_enabled", False)),
-            approval_card_channel=("telegram" if card_channel else "log_only"),
+            approval_card_channel=(",".join(card_channels) if card_channels else "log_only"),
+            card_page=bool(getattr(settings, "notify_email_enabled", False)),
             tools=list(tool_module.registered_tools(settings)),
         )
         async with mcp.session_manager.run():
@@ -282,6 +368,10 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
                     "transport": "streamable-http",
                     "tools": list(tool_module.registered_tools(settings)),
                 },
+                "notifications": {
+                    "email_enabled": bool(getattr(settings, "notify_email_enabled", False)),
+                    "card_page": bool(getattr(settings, "notify_email_enabled", False)),
+                },
                 "research_workspace_enabled": bool(
                     getattr(settings, "research_workspace_enabled", False)
                 ),
@@ -302,6 +392,11 @@ def create_app(settings=None, *, limiter: RateLimiter | None = None) -> FastAPI:
             return protected_resource_metadata(settings.workspace_base_url)
 
     app.include_router(build_v1_router(auth))
+    # The card page ships with the email channel and only with it: with
+    # NOTIFY_EMAIL_ENABLED off nothing mints a card, so a route that could only
+    # ever 404 is not registered at all.
+    if bool(getattr(settings, "notify_email_enabled", False)):
+        app.include_router(build_cards_router(settings))
     mount_mcp_endpoint(app, mcp)
     app.add_middleware(WorkspaceAuthMiddleware, auth=auth)
 

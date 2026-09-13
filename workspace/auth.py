@@ -33,7 +33,13 @@ log = get_logger("workspace")
 #: Reachable without a token: liveness, and the OAuth discovery documents a
 #: client must read *before* it has one.
 PUBLIC_PATHS = frozenset({"/health", "/"})
-PUBLIC_PREFIXES = ("/.well-known/",)
+#: `/cards/` is public because the *link* is the credential: it carries a full
+#: HMAC over the card uid, verified in the route, and the page it unlocks is
+#: read-only and exposes only what the email that linked to it already contains
+#: (notify/links.py states the trade in full). Requiring a bearer token here
+#: would mean putting one in an email, which is strictly worse. A bad or absent
+#: signature is a 404, indistinguishable from an unknown uid.
+PUBLIC_PREFIXES = ("/.well-known/", "/cards/")
 
 STATE_KEY = "workspace_identity"
 AUTH_STATE_KEY = "workspace_auth"
