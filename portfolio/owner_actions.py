@@ -122,6 +122,25 @@ def open_action_for(session, subject_kind: str, subject_ref: str):
     )
 
 
+def latest_action_for(session, subject_kind: str, subject_ref: str, *, kind: str = ""):
+    """The most recent decision on this subject, terminal or not.
+
+    :func:`open_action_for` deliberately ignores terminal rows, which is right
+    for "may I record a new decision" and wrong for "what happened last time".
+    A caller that re-asks the same question — an agent polling for a prepared
+    card — needs the second answer, or a refusal looks like no answer at all and
+    it asks again forever.
+    """
+    query = (
+        session.query(OwnerAction)
+        .filter(OwnerAction.subject_kind == str(subject_kind))
+        .filter(OwnerAction.subject_ref == str(subject_ref))
+    )
+    if kind:
+        query = query.filter(OwnerAction.kind == str(kind))
+    return query.order_by(OwnerAction.id.desc()).first()
+
+
 def get_by_uid(session, action_uid: str):
     return (
         session.query(OwnerAction)

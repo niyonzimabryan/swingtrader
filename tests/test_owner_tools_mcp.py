@@ -418,6 +418,57 @@ class OwnerToolsMcpTests(unittest.TestCase):
         self.assertTrue(result.isError, _text(result))
         self.assertIn("already_pending", _text(result))
 
+    def test_re_asking_after_a_refusal_replays_it_rather_than_queueing_again(self):
+        """Otherwise an agent that was refused asks forever and never sees why.
+
+        A refusal is terminal, so the open-action check steps over it. Without
+        this, every re-ask would queue a fresh request and the agent would keep
+        being told "recorded; the runtime is planning it".
+        """
+        from database.db import get_session
+        from database.models import OwnerAction
+        from portfolio import owner_actions
+
+        first = self._payload(
+            self._call(
+                self.admin_token,
+                "promote_arm",
+                {"source_arm_id": 42, "to_tier": "paper"},
+            )
+        )
+        # Stand in for the runtime's preparing pass deciding the plan is not
+        # confirmable — that decision is the poller's and is tested there.
+        with get_session() as session:
+            row = owner_actions.get_by_uid(session, first["action"]["action_uid"])
+            row.card_md = "TIER CHANGE — NOT CONFIRMABLE\nrefusals:\n  - evidence incomplete"
+            owner_actions.finish(
+                session,
+                row,
+                status="refused",
+                outcome_code="not_confirmable",
+                outcome_detail="evidence incomplete",
+            )
+            session.commit()
+
+        again = self._payload(
+            self._call(
+                self.admin_token,
+                "promote_arm",
+                {"source_arm_id": 42, "to_tier": "paper"},
+            )
+        )
+        self.assertEqual(again["action"]["status"], "refused")
+        self.assertEqual(
+            again["action"]["action_uid"], first["action"]["action_uid"]
+        )
+        self.assertIn("evidence incomplete", again["action"]["card_md"])
+        with get_session() as session:
+            self.assertEqual(
+                session.query(OwnerAction).count(),
+                1,
+                "re-asking after a refusal must not queue a second request",
+            )
+
     def test_an_unknown_tier_is_refused(self):
         result = self._call(
             self.admin_token, "promote_arm", {"source_arm_id": 42, "to_tier": "moon"}

@@ -951,6 +951,23 @@ def _tier_change(
             payload["confirmation_reference"] = _reference(existing)
             return _tier_answer(settings, payload, existing.status)
 
+        # A refusal is terminal, so `open_action_for` steps over it — which is
+        # right for "may I record a new decision" and wrong here. An agent that
+        # asked, was refused, and asks again would otherwise queue a fresh
+        # request every time and never see why, so replay the recent refusal
+        # instead. The TTL bounds it: after that, asking again is a real retry
+        # against a world that may have changed.
+        last = owner_actions.latest_action_for(session, "arm", str(source_arm_id), kind=kind)
+        if (
+            last is not None
+            and last.status == "refused"
+            and (last.payload or {}).get("to_mode") == to_tier
+            and last.requested_at is not None
+            and (now - last.requested_at).total_seconds()
+            < owner_actions.ttl_seconds(settings)
+        ):
+            return _tier_answer(settings, owner_actions.payload_of(last), "refused")
+
         row = owner_actions.record(
             session,
             kind=kind,
@@ -996,7 +1013,10 @@ def _tier_answer(settings, payload: dict, status: str) -> dict:
         ),
         "refused": (
             "Refused, and the card says why. Nothing was changed and there is "
-            "nothing to confirm."
+            "nothing to confirm. Asking again returns this same refusal until "
+            "it ages out — fix what the refusals name (usually an incomplete "
+            "evidence snapshot, an unacknowledged warning, or a gate that is "
+            "off) rather than re-asking."
         ),
         "confirmed": (
             "Already confirmed; the runtime has it. Nothing further to do."
