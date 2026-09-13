@@ -18,8 +18,11 @@ being exact about what it does *not* buy an attacker:
   (``tests/test_no_execute_scope.py``, ``tests/test_portfolio_import_graph.py``);
 * every approval is still **signed, single-use, expiring, owner-bound and
   re-risk-checked at placement**. Recording one does not consume it — the
-  runtime's call to ``execution/lifecycle.py::on_approval`` does, inside the
-  transaction that also re-runs every guard from fresh state;
+  runtime's call into the execution service does, inside the transaction
+  that also re-runs every guard from fresh state. (This file does not name
+  that entry point, and `tests/test_execution_lifecycle_isolation.py`
+  asserts no file under `workspace/` does — the workspace must not even be
+  able to spell the way into a placement.);
 * the **kill switch survives restart**, and engaging it here is deliberately the
   cheapest operation on this surface;
 * the tool **records**; ``orchestrator/approval_poller.py``, in the bot
@@ -580,7 +583,7 @@ def _decide_order(settings, decision: str, proposal_uid: str, reason: str, token
         # The proposal's own four-part check, against the full stored signature.
         # It refuses an expired, consumed, or wrong-owner card here rather than
         # letting the runtime discover it a poll interval later — and it is run
-        # again, unchanged, inside `on_approval` before anything is placed.
+        # again, unchanged, inside the execution service before it places.
         try:
             approvals.verify(
                 row,

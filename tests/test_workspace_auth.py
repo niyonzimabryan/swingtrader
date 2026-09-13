@@ -163,9 +163,29 @@ class TokenScopeEnforcementTests(unittest.TestCase):
         with self.assertRaises(AuthError):
             require_scope(self.identity, "execute")
 
+    #: The owner control surface (Spec K §10, owner ruling 2026-09-13). Every
+    #: one of these is `admin`, asserted below rather than merely listed: they
+    #: record the owner's own decisions, and an `admin` token is by policy his
+    #: and not an agent's standing one (`docs/WORKSPACE_ACCESS.md`).
+    OWNER_ADMIN_TOOLS = {
+        "approve_order",
+        "reject_order",
+        "approve_memo",
+        "reject_memo",
+        "pause_experiment",
+        "resume_experiment",
+        "promote_arm",
+        "demote_arm",
+    }
+
     def test_every_spec_k_tool_has_a_declared_scope(self):
         """Spec K §4.2's table, so a phase cannot ship a write tool at `read`."""
-        expected_writes = {"research_write", "thesis_review", "journal_append", "propose_order"}
+        expected_writes = {
+            "research_write",
+            "thesis_review",
+            "journal_append",
+            "propose_order",
+        } | self.OWNER_ADMIN_TOOLS
         writes = {
             name
             for name, scope in scope_module.TOOL_SCOPES.items()
@@ -173,6 +193,30 @@ class TokenScopeEnforcementTests(unittest.TestCase):
         }
         self.assertEqual(writes, expected_writes)
         self.assertEqual(scope_module.TOOL_SCOPES["propose_order"], scope_module.PROPOSE)
+
+    def test_every_owner_tool_that_decides_requires_admin(self):
+        """Not just "a write scope" — `admin` specifically, tool by tool."""
+        for tool in sorted(self.OWNER_ADMIN_TOOLS):
+            with self.subTest(tool=tool):
+                self.assertEqual(
+                    scope_module.TOOL_SCOPES[tool],
+                    scope_module.ADMIN,
+                    f"{tool} records an owner decision and must require 'admin'",
+                )
+
+    def test_the_kill_switch_is_readable_so_engaging_it_is_always_possible(self):
+        """The one deliberate asymmetry on this surface (Spec L §6.5).
+
+        A switch that is expensive to pull is a switch nobody pulls in time, so
+        the tool's declared scope is `read`. RELEASING it requires `admin`, and
+        that half is checked inside the tool body — `TOOL_SCOPES` has one entry
+        per tool and this tool has two directions. `tests/test_owner_tools_mcp.py`
+        asserts the release refusal over the real transport.
+        """
+        self.assertEqual(scope_module.TOOL_SCOPES["kill_switch"], scope_module.READ)
+        self.assertEqual(
+            scope_module.TOOL_SCOPES["proposals_pending"], scope_module.READ
+        )
 
 
 class RateLimitTests(unittest.TestCase):

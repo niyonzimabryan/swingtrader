@@ -760,7 +760,7 @@ class ApprovalPoller:
     def _page(self, event: str, detail: dict) -> None:
         """Tell the owner. Never raises: a channel failure must not lose the row."""
         if self.notify is None:
-            log.info("owner_action_not_notified", event=event, **_safe(detail))
+            log.info("owner_action_not_notified", notice=event, **_safe(detail))
             return
         try:
             self.notify(event, detail)
