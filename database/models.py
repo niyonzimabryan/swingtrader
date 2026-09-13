@@ -2731,3 +2731,199 @@ class ExecutionKillSwitch(Base):
     engaged_at = Column(UtcDateTime, nullable=True)
     released_at = Column(UtcDateTime, nullable=True)
     updated_at = Column(UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+# --------------------------------------------------------------------------- #
+# The owner control surface (Spec K §10, Spec L §10 — owner ruling 2026-09-13)
+# --------------------------------------------------------------------------- #
+#
+# Bryan approves in his coding-agent chat rather than in Telegram. The ruling
+# that allows it is written into both specs, and the shape it takes here is the
+# whole reason the ruling is safe to make: **an MCP tool records a decision; it
+# never acts on one.** The runtime process — `orchestrator/approval_poller.py`,
+# in the bot container where `execution/` is importable — is the only thing that
+# turns a recorded decision into a placement, and it does so by calling the same
+# `execution/lifecycle.py::on_approval` the Telegram callback calls, which
+# re-verifies the signed single-use reference and re-runs every risk check from
+# fresh state.
+#
+# One table, not a column on each subject. Two reasons, and the second is the
+# one that decided it:
+#
+# * a queue is what this is — "the owner decided X; the runtime has not acted
+#   yet" — and a queue belongs in its own table, where the claim that stops two
+#   pollers from both acting is a single row lock rather than a lock per table;
+# * `memos` is a **baseline-era table**. Adding a column to one breaks the
+#   unversioned-database adoption path (`database/schema.py::classify` matches a
+#   schema signature exactly, and `tests/test_schema_discipline.py` asserts a
+#   pre-Alembic database is still classified `legacy`). A new table costs that
+#   path nothing, which is the whole point of computing the signatures from the
+#   migration graph.
+#
+# Nothing on `proposals` changes either. `proposals.status` and
+# `proposals.approval_consumed_at` remain exactly what they were — the execution
+# state and the single-use lock — and `execution/lifecycle.py::on_approval`
+# remains their only writer on the approval path. A second writer of
+# `approval_consumed_at` would have made single-use a two-place invariant, which
+# is the kind of invariant that stops being one.
+
+#: `owner_actions.kind` — every decision the owner can record over MCP.
+OWNER_ACTION_KINDS: tuple[str, ...] = (
+    "approve_order",
+    "reject_order",
+    "approve_memo",
+    "reject_memo",
+    "promote_arm",
+    "demote_arm",
+)
+
+#: Which table `subject_ref` points into, as a plain value. Not a foreign key,
+#: for the same reason `proposals.cohort_answer_id` is not one: the subject is
+#: owned by another phase and a cross-phase FK makes the integration merge
+#: non-trivial (`migrations/README.md`).
+OWNER_ACTION_SUBJECTS: tuple[str, ...] = ("proposal", "memo", "arm")
+
+#: `owner_actions.status`, in the order a row moves through them.
+#:
+#: ``requested``  the workspace wrote the row; nothing has been computed. Only
+#:                a tier change starts here — it needs the runtime to build its
+#:                plan before there is anything for the owner to say yes to.
+#: ``prepared``   the runtime built the plan, rendered the card, and minted a
+#:                signed, expiring, owner-bound, single-use confirmation.
+#: ``refused``    the plan is not confirmable, and the card says why. Terminal.
+#: ``confirmed``  the owner's decision is recorded and the runtime has not acted
+#:                on it yet. An order or memo approval is created *here*: the
+#:                tool call is itself the owner's informed yes, taken after it
+#:                verified the proposal's own signed reference.
+#: ``executed``   the runtime ran it. Terminal, whatever `outcome_code` says —
+#:                a refusal from the execution service is an outcome, not a
+#:                reason to leave the row claimable.
+#: ``cancelled``  the owner dropped it. Terminal.
+#: ``expired``    the confirmation's TTL passed unconfirmed. Terminal.
+OWNER_ACTION_STATUSES: tuple[str, ...] = (
+    "requested",
+    "prepared",
+    "refused",
+    "confirmed",
+    "executed",
+    "cancelled",
+    "expired",
+)
+
+#: Statuses the poller still has work to do on.
+OWNER_ACTION_PENDING_STATUSES: tuple[str, ...] = ("requested", "confirmed")
+
+#: Statuses that are done. A second decision on the same subject is refused
+#: while one that is *not* in this set exists.
+OWNER_ACTION_TERMINAL_STATUSES: tuple[str, ...] = (
+    "refused",
+    "executed",
+    "cancelled",
+    "expired",
+)
+
+
+class OwnerAction(Base):
+    """One decision the owner recorded through an MCP owner tool.
+
+    The tier changes are the reason this is a queue rather than a call. A
+    promotion cannot be planned inside the workspace process: the deployment
+    gates live in ``orchestrator/strategy_lab_promotion.py``, which imports
+    ``execution.lifecycle`` for Phase 6's live gates, and the workspace's import
+    closure may never reach either (``tests/test_no_execute_scope.py``). Rather
+    than move that boundary, the request crosses it as a **row**: the workspace
+    writes what was asked for, the runtime computes the plan and mints the
+    confirmation, the workspace shows the card and records the owner's yes, and
+    the runtime executes it.
+
+    That costs one poll interval per step and preserves the four controls Spec Q
+    §13 requires of a promotion confirmation — owner binding, expiry, single use,
+    signature — signed by the same ``portfolio.approvals.sign`` the Telegram path
+    uses. The one property it does *not* preserve is the in-process lifetime of
+    ``PendingPromotions``: a row survives a restart where the in-memory store
+    does not. The TTL is what bounds it instead, and it is deliberately short.
+
+    An order or memo approval needs no second step — the proposal already
+    carries its own signed reference, minted at ``propose_order`` — so those
+    rows are written straight to ``confirmed`` and the ``confirm_*`` columns
+    stay empty on them.
+    """
+
+    __tablename__ = "owner_actions"
+    __table_args__ = (
+        CheckConstraint(
+            f"kind IN ({_sql_values(OWNER_ACTION_KINDS)})", name="ck_owner_actions_kind"
+        ),
+        CheckConstraint(
+            f"subject_kind IN ({_sql_values(OWNER_ACTION_SUBJECTS)})",
+            name="ck_owner_actions_subject",
+        ),
+        CheckConstraint(
+            f"status IN ({_sql_values(OWNER_ACTION_STATUSES)})",
+            name="ck_owner_actions_status",
+        ),
+        UniqueConstraint("action_uid", name="uq_owner_actions_uid"),
+        Index("ix_owner_actions_status_created", "status", "created_at"),
+        Index("ix_owner_actions_subject", "subject_kind", "subject_ref"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    #: The public identity the confirmation is signed over and the agent quotes
+    #: back. A uuid4, so one cannot be guessed from a neighbouring one.
+    action_uid = Column(String(36), nullable=False)
+
+    kind = Column(String(30), nullable=False)
+    status = Column(String(20), nullable=False, default="requested")
+
+    #: What this decision is about: ``('proposal', <proposal_uid>)``,
+    #: ``('memo', '<memo id>')`` or ``('arm', '<source arm id>')``. A string on
+    #: both halves so one index serves all three.
+    subject_kind = Column(String(20), nullable=False)
+    subject_ref = Column(String(64), nullable=False, default="")
+
+    #: What was asked for, and what the runtime computed: for a tier change the
+    #: requested tier, the target arm, the evidence snapshot, the budget and
+    #: every refusal; for an order or memo the card as the owner saw it. JSON
+    #: because none of it is queried — it is read back whole.
+    payload_json = Column(Text, nullable=False, default="{}")
+    #: The card as it was rendered, so the tool's answer and what the runtime
+    #: will act on are provably the same text.
+    card_md = Column(Text, nullable=False, default="")
+    #: The owner's own words, where the tool takes them (a rejection reason).
+    reason = Column(Text, nullable=False, default="")
+
+    requested_by = Column(String(64), nullable=False, default="")
+    requested_token_label = Column(String(100), nullable=False, default="")
+    requested_at = Column(UtcDateTime, nullable=True)
+
+    #: The signed, expiring, single-use, owner-bound confirmation (Spec Q §13).
+    #: Minted by the runtime at preparation; consumed by the workspace when the
+    #: owner confirms, in the same transaction as the move to `confirmed`.
+    confirm_nonce = Column(String(32), nullable=True)
+    confirm_signature = Column(String(64), nullable=True)
+    confirm_expires_at = Column(UtcDateTime, nullable=True)
+    confirm_owner_id = Column(String(64), nullable=False, default="")
+    confirm_consumed_at = Column(UtcDateTime, nullable=True)
+    confirmed_at = Column(UtcDateTime, nullable=True)
+
+    #: The runtime's claim on this row. Set inside the claiming transaction, so
+    #: two pollers cannot both prepare or both execute one action.
+    claimed_at = Column(UtcDateTime, nullable=True)
+    claimed_by = Column(String(64), nullable=False, default="")
+
+    executed_at = Column(UtcDateTime, nullable=True)
+    outcome_code = Column(String(60), nullable=False, default="")
+    outcome_detail = Column(Text, nullable=False, default="")
+
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(
+        UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive
+    )
+
+    @property
+    def payload(self) -> dict:
+        try:
+            loaded = json.loads(self.payload_json or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}

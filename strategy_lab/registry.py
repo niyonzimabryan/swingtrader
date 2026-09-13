@@ -337,6 +337,57 @@ def set_experiment_status(session, name: str, status):
     return row
 
 
+def experiment_by_name_or_id(session, token: str):
+    """Resolve an experiment from what an operator types.
+
+    Spec Q §13 writes the commands as ``/pause_experiment <id>``; ``/experiments``
+    prints names, which are slugs and are what a person actually has to hand.
+    Both work, and a numeric token is tried as a row id only after the name
+    lookup fails, so an experiment legitimately named ``2026`` is not shadowed by
+    a row with that id.
+    """
+    row = get_experiment(session, token)
+    if row is not None:
+        return row
+    if str(token).isdigit():
+        return session.get(models.Experiment, int(token))
+    return None
+
+
+def set_experiment_paused(session, name: str, *, paused: bool) -> dict:
+    """Pause or resume an experiment against ``session``. Owner-only at the call site.
+
+    A paused experiment is not in :data:`RUNNABLE_EXPERIMENT_STATUSES`, so every
+    arm under it refuses at the runner — pausing stops the work, not only the
+    write.
+
+    It lives here, rather than in ``orchestrator/strategy_lab_shadow.py`` where
+    it was written, because there are now two callers and they are in different
+    processes: the Telegram command in the bot, and the MCP owner tool in the
+    workspace, whose import closure may not reach ``orchestrator/``
+    (``tests/test_no_execute_scope.py``). This function touches only the
+    registry, so both may have it; the orchestrator's own
+    ``set_experiment_paused`` is a session-opening wrapper around it and the
+    behaviour is unchanged.
+
+    Returns a plain mapping rather than raising, because both callers render the
+    refusal to a human instead of handling it.
+    """
+    target = ExperimentStatus.PAUSED if paused else ExperimentStatus.RUNNING
+    row = experiment_by_name_or_id(session, name)
+    if row is None:
+        return {"ok": False, "error": f"no experiment named {name!r}"}
+    name = row.name
+    before = row.status
+    if ExperimentStatus(before) is target:
+        return {"ok": True, "name": name, "status": before, "changed": False}
+    try:
+        updated = set_experiment_status(session, name, target)
+    except StrategyLabError as exc:
+        return {"ok": False, "error": str(exc), "name": name, "status": before}
+    return {"ok": True, "name": name, "status": updated.status, "changed": True}
+
+
 # --------------------------------------------------------------------------- #
 # Arms
 # --------------------------------------------------------------------------- #

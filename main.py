@@ -193,6 +193,7 @@ async def main():
     if getattr(settings, "phase6_execution_enabled", False):
         from bot.handlers.proposals import register_bot_card_sender
         from execution.lifecycle import ExecutionService
+        from portfolio.approvals import resolve_owner_id as _resolve_owner_id
 
         from database.db import get_session as _get_session
 
@@ -254,7 +255,7 @@ async def main():
             settings=settings,
             adapters=_adapters,
             pager=_pager,
-            owner_id=str(getattr(settings, "telegram_chat_id", "") or ""),
+            owner_id=_resolve_owner_id(settings),
         )
         log.info(
             "strategy_lab_execution_wired",

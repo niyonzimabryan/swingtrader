@@ -455,7 +455,7 @@ class TradingPipeline:
                 # and `bind_adapter` refuses anything else (Spec Q §12 inv 11).
                 adapters={PAPER_VENUE: self.paper_broker},
                 run_id=run_id,
-                owner_id=str(getattr(self.settings, "telegram_chat_id", "") or ""),
+                owner_id=_resolve_owner_id(self.settings),
             )
         except Exception as e:
             log.error("strategy_lab_paper_hook_failed", error=str(e)[:300])

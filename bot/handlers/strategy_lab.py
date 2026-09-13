@@ -64,6 +64,19 @@ def _settings(context):
     return getattr(pipeline, "settings", None)
 
 
+def _owner_id(settings, chat_id) -> str:
+    """The canonical owner id a promotion confirmation binds to (Spec K §10).
+
+    One owner, named in one place, so a confirmation offered on one channel and
+    taken on another agrees about who the owner is. The chat id remains the
+    authentication — `@authorized` and `is_authorized` have already refused any
+    other chat — and is the fallback when nothing is configured.
+    """
+    from portfolio.approvals import resolve_owner_id
+
+    return (resolve_owner_id(settings) if settings is not None else "") or str(chat_id)
+
+
 async def _reply(update: Update, text: str) -> None:
     """Send a MarkdownV2 card, split at Telegram's 4096-character limit.
 
@@ -583,7 +596,7 @@ async def _tier_change(update: Update, context: ContextTypes.DEFAULT_TYPE, *, to
         await update.message.reply_text(usage, parse_mode=None)
         return
     reason = " ".join(args[2:]).strip() or f"owner {verb} via Telegram"
-    owner_id = str(update.effective_chat.id)
+    owner_id = _owner_id(settings, update.effective_chat.id)
     owner = str(getattr(settings, "strategy_lab_experiment_owner", "") or "bryan")
 
     def build():
@@ -801,7 +814,7 @@ async def handle_promotion_callback(query, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     store = _pending(context)
-    owner_id = str(query.message.chat_id)
+    owner_id = _owner_id(settings, query.message.chat_id)
     try:
         action, token, presented = store.parse(query.data or "")
     except Exception as exc:

@@ -93,6 +93,24 @@ def register_bot_card_sender(message_queue, chat_id: str, loop) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _owner_id(context, chat_id) -> str:
+    """The canonical owner id this approval must verify against (Spec K §10).
+
+    The card was minted against ``portfolio.approvals.resolve_owner_id`` —
+    ``OWNER_ID``, or ``TELEGRAM_CHAT_ID`` when it is unset — and the same value
+    has to come back here or every approval fails ``owner_mismatch``. The chat
+    id is still the *authentication*: ``is_authorized`` has already refused any
+    chat but the owner's before this is called. It is the fallback rather than
+    the source so that a deployment with no settings wired behaves as it did.
+    """
+    from portfolio.approvals import resolve_owner_id
+
+    pipeline = context.bot_data.get("pipeline")
+    settings = getattr(pipeline, "settings", None)
+    resolved = resolve_owner_id(settings) if settings is not None else ""
+    return resolved or str(chat_id)
+
+
 async def handle_proposal_callback(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Dispatch a ``p6ok:``/``p6no:`` callback. Called from the main router.
 
@@ -112,7 +130,7 @@ async def handle_proposal_callback(query, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text(f"Could not read that approval: {exc.message}", parse_mode=None)
         return
 
-    owner_id = str(query.message.chat_id)
+    owner_id = _owner_id(context, query.message.chat_id)
 
     # Retire the buttons *before* dispatching, not after the work returns. An
     # approval can take tens of seconds (the entry, the fill poll, the stop and
