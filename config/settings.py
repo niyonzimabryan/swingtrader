@@ -518,6 +518,15 @@ class Settings(BaseSettings):
     # below this threshold, is a collapse rather than a stop.
     delisting_audit_window_sessions: int = 10
     delisting_audit_collapse_threshold: float = -0.60
+    # Refuse the audit (exit 2) below this many testable cases (Spec N §12
+    # ruling) — a case is untestable if its symbol never resolved or its
+    # delisting predates the plane's purchased history.
+    delisting_audit_min_testable_cases: int = 10
+    # ISO date (YYYY-MM-DD). The price plane's purchased history start, when
+    # known — e.g. Sharadar's 10-year tier starts 2016-09-12. Empty means
+    # "derive it from a known always-listed ticker's first bar"
+    # (`data.prices.audit.resolve_history_start`).
+    price_plane_history_start: str = ""
 
     # --- Comparable-setups engine (Spec N, Phase 3c) ---
     # Off by default. When false the `compare_setups` and `cohort_detail` MCP

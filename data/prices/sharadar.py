@@ -140,6 +140,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import zipfile
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -156,6 +157,7 @@ from data.prices.base import (
     PricePlaneConfigError,
     PricePlaneSchemaError,
     SecurityMasterRow,
+    normalize_company_name,
 )
 from data.prices.derived import with_derived_series
 
@@ -326,6 +328,20 @@ class PricePlaneAuthError(PricePlaneConfigError):
     key. Callers that only catch `PricePlaneConfigError` still catch this.
     """
 
+
+_RELATED_TICKER_SPLIT_RE = re.compile(r"[,\s]+")
+
+
+def _split_related_tickers(value: Any) -> tuple[str, ...]:
+    """`tickers.relatedtickers` as a tuple of symbols.
+
+    Unverified whether the vendor separates with commas or spaces (no
+    delisted name was in the free sample; see `docs/vendors/sharadar.md`), so
+    this splits on either.
+    """
+    if not value:
+        return ()
+    return tuple(part for part in _RELATED_TICKER_SPLIT_RE.split(str(value).strip()) if part)
 
 #: A split factor this close to 1.0 is rounding in `closeunadj / close`, not a
 #: split. `F = closeunadj / close` is a ratio of two 3-decimal quotes, so its
@@ -957,6 +973,55 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
                 delisting_reason=self.delisting_reason(ticker) if delisted else "unknown",
             ))
         return tuple(sorted(rows, key=lambda r: (r.ticker, r.security_uid)))
+
+    #: See `data/prices/audit.py`'s resolver: `find_by_company_name` below
+    #: performs a real search, so a miss there is informative (`unresolved`),
+    #: not merely "this plane cannot tell".
+    supports_company_name_search = True
+
+    def find_by_company_name(
+        self, company: str, *, original_ticker: str | None = None
+    ) -> tuple[dict[str, Any], ...]:
+        """Best-effort candidate `tickers` rows for a company under a new symbol.
+
+        Two passes, per `docs/vendors/sharadar.md` and
+        https://sharadar.com/docs/tickers:
+
+        1. If the vendor still carries a row under `original_ticker`, its
+           `relatedtickers` field is the documented path from an old symbol to
+           whatever it was renamed to — resolve each related symbol to its own
+           row.
+        2. A full-table scan of `tickers` (`table=stocks`) for an exact name
+           match under `normalize_company_name`.
+
+        Deliberately not called from the ordinary audit path except once the
+        cheaper explicit-map and exact-ticker lookups have both failed
+        (`data.prices.audit.resolve_case`) — pass 2 pages the whole market's
+        ticker table, which is the expensive branch here, not the default one.
+
+        Returns raw vendor rows (at least `ticker`, `name`), not
+        `SecurityMasterRow`: this search does not need, and should not pay
+        for, the one extra API call per delisted row that `security_master`
+        spends deriving `delisting_reason`.
+        """
+        seen: dict[str, dict[str, Any]] = {}
+
+        if original_ticker:
+            for row in self._rows(
+                TABLE_TICKERS, {"table": TABLE_STOCKS, "ticker": original_ticker}, TICKERS_COLUMNS,
+            ):
+                for related in _split_related_tickers(row.get("relatedtickers")):
+                    for candidate in self._rows(
+                        TABLE_TICKERS, {"table": TABLE_STOCKS, "ticker": related}, TICKERS_COLUMNS,
+                    ):
+                        seen[str(candidate["ticker"])] = candidate
+
+        target = normalize_company_name(company)
+        for row in self._rows(TABLE_TICKERS, {"table": TABLE_STOCKS}, TICKERS_COLUMNS):
+            if normalize_company_name(str(row.get("name") or "")) == target:
+                seen[str(row["ticker"])] = row
+
+        return tuple(seen[key] for key in sorted(seen))
 
     def delisting_reason(self, ticker: str) -> str:
         """Reason category from the ACTIONS row that marks the delisting.

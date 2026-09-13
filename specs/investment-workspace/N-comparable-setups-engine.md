@@ -851,6 +851,46 @@ Ratified 2026-09-10 from the Sharadar direct-API port:
   dynamically (the one `.csv` entry present) rather than hardcoded, since the
   real filename is unverified.
 
+Ratified 2026-09-13 from the delisting-audit symbol-resolution build:
+
+- **`unresolved` and `out_of_window` are terminal classes distinct from
+  `missing`.** §4.2's audit existed to catch a vendor silently *stopping*
+  instead of collapsing, but against Sharadar it aborted outright: the audit
+  list names cases by their pre-bankruptcy symbol, Sharadar keys many of them
+  by a post-bankruptcy `Q`-suffixed one (`RSH` → `RSHCQ`, confirmed live), and
+  `daily_bars` raised rather than returning empty for a ticker the vendor's
+  own security master has never heard of. `missing` means "the vendor has the
+  symbol and no bars"; `unresolved` means "we could not even ask", and
+  `out_of_window` means "no vendor symbol would have helped, the delisting
+  predates the purchased tier". Collapsing any of the three into `missing`
+  would make a resolution failure look like a data answer.
+- **The symbol remap is not a suffix rule and is not guessed.**
+  `JCP` → `JCPNQ` does not resolve by exact ticker or by company-name match
+  against Sharadar's `tickers` table, confirmed live, so a mechanical
+  `+ "Q"` transform would have silently produced a wrong symbol for exactly
+  the cases this audit exists to protect. `data/prices/audit.py`'s resolver
+  tries, in order, an explicit `vendor_symbols` entry, the plane's own
+  security master under the historical ticker, and — only on a plane that
+  declares `supports_company_name_search` — a best-effort name and
+  `tickers.relatedtickers` search, accepting a candidate only under a strict,
+  deterministic name comparison (`normalize_company_name`). Seven of the
+  twenty cases were verified live this way; the rest are `--resolve`'s job,
+  run by whoever holds a Sharadar key (cloud workers do not).
+- **A plane with no name-search capability falls back to its ticker as-is,
+  never to `unresolved`.** `FixturePricePlane` makes no claim it can resolve
+  anything, so a security-master miss there is not evidence the symbol is
+  wrong — treating it as `unresolved` would have flipped
+  `test_delisting_audit_classifies_collapse_vs_stop`'s pre-existing
+  `missing: 18` into `unresolved: 18` for no reason connected to the fixture's
+  actual data. Only a plane that tried a name search and found no accepted
+  candidate earns `unresolved`.
+- **The audit refuses below a testable minimum** (`delisting_audit_min_testable_cases`,
+  default 10) rather than silently reporting whatever fraction resolved: a
+  run that could ask only 4 of 20 questions before this build is not the
+  Verification §24 check, and reporting it as one point-tests less than
+  reporting nothing. `terminal_returns_must_be_synthesised` is computed over
+  testable cases only, so `unresolved`/`out_of_window` cases cannot pull that
+  ratio either way.
 Ratified 2026-09-13 from the funds/SFP build (`claude/sharadar-funds-benchmark`):
 
 - **The benchmark is a fund series from SFP, and that is now reachable.**

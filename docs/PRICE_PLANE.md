@@ -411,16 +411,28 @@ test anything: Shumway finds ~99.8% of returns missing for those versus at most
 1% for mergers. Each row carries the event, the venue, and whether the primary
 record is a Form 25 or an exchange notice.
 
-`scripts/audit_delisting_returns.py` pulls each name's final bars and classifies:
+`scripts/audit_delisting_returns.py` resolves each case to a vendor symbol
+first, then pulls its final bars and classifies:
 
 - **collapse** — the terminal return over the last 10 sessions, on the
   split-adjusted close, is below -60%. The file carries the decline.
 - **stop** — it is not. The terminal return must be synthesised at Shumway's
   **-30% NYSE/AMEX / -55% Nasdaq** (`comparables.config.DELISTING_TERMINAL_RETURN`).
-- **missing** — no bars at all. Reported separately from `stop` because the
-  remedy differs: `stop` needs a synthesised return, `missing` needs a different
-  vendor.
+- **missing** — the resolved symbol has no bars at all. Reported separately
+  from `stop` because the remedy differs: `stop` needs a synthesised return,
+  `missing` needs a different vendor.
 - **too_short** — fewer bars than the window; nothing can be concluded.
+- **unresolved** — no vendor symbol could be found for the case at all, so the
+  plane was never asked for bars. Distinct from `missing`: `missing` means
+  "the vendor has the symbol and no bars", `unresolved` means "we could not
+  even ask". Sharadar keys many performance delistings by a post-bankruptcy
+  `Q`-suffixed symbol the case's historical ticker does not name (`RSH` →
+  `RSHCQ`), and the remap is not a mechanical suffix rule (`JCP` does not
+  become `JCPNQ` this way) — see `data/prices/delisting_audit_list.py`.
+- **out_of_window** — the case's delisting date predates the plane's purchased
+  history (Sharadar's 10-year tier starts 2016-09-12), so no vendor symbol
+  would help. Also distinct from `missing`: the remedy is a longer history
+  tier, not a different vendor or a corrected symbol.
 
 The threshold is configuration rather than a constant inside a function, because
 "how far down is a collapse" is a judgement and it should be visible and
@@ -428,7 +440,37 @@ movable. -60% over 10 sessions sits well below the -55% Nasdaq correction, so a
 series that merely drifts to the correction level is not credited with having
 carried the collapse.
 
-The result is written into `price_snapshots.delisting_audit_json`.
+**Resolving a vendor's symbol before asking it for bars.** `data/prices/audit.py`'s
+resolver runs before any `daily_bars` call: `case.vendor_symbols[plane.source]`
+first, then the plane's own security master under the case's historical ticker,
+then — on a plane that declares `supports_company_name_search` (Sharadar) — a
+best-effort search by company name and by `tickers.relatedtickers`, accepting a
+candidate only under a strict, deterministic name comparison
+(`normalize_company_name`). A plane with no name-search capability (`fixture`)
+falls back to the historical ticker as-is rather than being marked
+`unresolved` — it never claimed it could resolve anything, so a lookup miss
+there is not evidence the symbol is wrong.
+
+Only `collapse`, `stop`, `missing` and `too_short` count as **testable**
+(`unresolved` and `out_of_window` never reach `daily_bars`). The audit's
+summary reports "N of 20 cases are testable under this tier" and
+**refuses to run** (exit 2, `InsufficientTestableCasesError`) below a
+configurable minimum, `delisting_audit_min_testable_cases` (default 10): a
+check that can only ask four of its twenty questions is not the check
+Verification §24 describes. `terminal_returns_must_be_synthesised` is computed
+over testable cases only.
+
+`--resolve` (no vendor key needed to invoke, but useless without one) runs no
+classification and stores nothing; it prints, for every case, how it resolved
+and — for an unresolved case with candidates — a ready-to-paste
+`vendor_symbols` line for `data/prices/delisting_audit_list.py`. Cloud worker
+sessions have no Sharadar key, so this mode is meant to be run by whoever
+holds one (`docs/OWNER_SETUP.md` §4), who then opens a follow-up PR with the
+filled-in list.
+
+The result is written into `price_snapshots.delisting_audit_json`, one
+`resolved_symbol` / `resolution` / `classification` per case plus the
+testable count (`n_testable`).
 
 ## Open items
 
@@ -510,6 +552,13 @@ These are known and unresolved, not oversights.
    hundred names; a full 5,000-name, 10-year file is ~12M rows and will need a
    windowed rebuild (one month-end at a time, bars restricted to the window).
    The rule itself is unchanged by that — only how the bars are fetched.
+6. **Nine of the twenty delisting-audit cases carry no `vendor_symbols` entry**
+   for Sharadar (`WLT, ZQK, CIE, WIN, DEAN, JCP, LK, CHK, PRTY` —
+   `data/prices/delisting_audit_list.py`). Two of those (`WLT`, `ZQK`) also
+   predate the 10-year tier and would classify `out_of_window` regardless;
+   the rest need `--resolve` run with a live key to check. `JCP`'s natural
+   guess (`JCPNQ`) was checked live and does **not** match by ticker or by
+   company name — it needs manual research, not another automated attempt.
 
 ## Tests
 
@@ -524,6 +573,7 @@ and both on either engine. The named ones:
 | `test_delisted_security_retained_with_reason` | Delisted names keep their row, date, reason and venue |
 | `test_delisting_audit_classifies_collapse_vs_stop` | Both classifications, from fixtures containing one of each |
 | `test_snapshot_records_audit` | The audit round-trips through `price_snapshots` |
+| `tests/test_delisting_audit_resolver.py` | The four-step resolver (explicit, master, name-match, asis), `unresolved` vs `out_of_window`, the testable-minimum refusal, and that `comparables.cohort.snapshot_status` tolerates both new classes |
 | `test_adapter_schema_change_fails_loudly` | A renamed vendor column raises; an added one does not |
 | `test_liquid_universe_rule_reproducible` | Same bars in, identical membership out, in any dict order |
 | `test_no_network_in_tests` | The offline surface opens no socket |
