@@ -24,10 +24,16 @@ no rendering, no plan computation, no execution.
 ``UPDATE ... WHERE claimed_at IS NULL`` whose row count decides the winner. That
 is atomic on SQLite and on Postgres alike, needs no dialect branch, and is why
 two pollers — or a poller racing the Telegram callback — cannot both act on one
-decision. On Postgres :func:`claimable` additionally selects ``FOR UPDATE SKIP
-LOCKED`` so a second poller walks past a row the first is already claiming
-rather than waiting on it; that is a throughput choice, and correctness rests on
-the conditional update either way.
+decision.
+
+A ``SELECT ... FOR UPDATE SKIP LOCKED`` in :func:`claimable` was tried and
+removed. It would have to hold its transaction open across the work to be worth
+anything, and this poller deliberately does not: it selects ids, commits, and
+then claims each row in its own short transaction, so the locks would be
+released before they ever skipped anything. One mechanism that is correct on
+both engines beats a second one that is decorative on one of them — and at a
+20-second cadence with a single owner there is no contention for it to relieve
+anyway.
 
 For an order approval the claim sits *in front of* the real single-use lock and
 does not replace it: ``proposals.approval_consumed_at`` is still consumed inside
@@ -245,12 +251,6 @@ def claimable(session, *, kinds=None, statuses=None, limit: int = 25) -> list[in
     if kinds:
         query = query.filter(OwnerAction.kind.in_(tuple(kinds)))
     query = query.order_by(OwnerAction.id.asc()).limit(max(1, int(limit)))
-    if session.bind is not None and session.bind.dialect.name == "postgresql":
-        # Throughput, not correctness: a second poller walks past a row the
-        # first is mid-claim on instead of blocking behind it. SQLite has no
-        # row-level lock to skip, and the conditional UPDATE below is what
-        # actually decides the winner on both engines.
-        query = query.with_for_update(skip_locked=True)
     return [row_id for (row_id,) in query.all()]
 
 
