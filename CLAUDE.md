@@ -49,6 +49,10 @@ Workspace tools appear as `mcp__swingtrader-workspace__<tool>`.
 - `portfolio/` — the ledger, sync, reconciliation.
 - `comparables/` — the cohort engine. Every number in an answer comes from here.
 - `filings/`, `data/` — the evidence planes and vendor adapters.
+- `notify/` — the delivery layer: channels (Resend email, Telegram), the HTML
+  card renderer, and the signed read-only card page the workspace serves. Both
+  processes import it, so like `workspace/` it may never reach `execution/`,
+  `bot/` or `orchestrator/`. `docs/NOTIFICATIONS.md`.
 - `execution/`, `bot/`, `orchestrator/` — the trading path. Off-limits to the
   workspace and to anything an agent session can reach.
 - `specs/investment-workspace/` — the K–Q specs behind all of the above.
