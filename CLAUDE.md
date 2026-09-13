@@ -30,8 +30,13 @@ Workspace tools appear as `mcp__swingtrader-workspace__<tool>`.
 
 ## Deployment
 
-- **Never run the bot locally while Railway is active.** Telegram allows one
-  polling connection; stop the Railway service from the dashboard first.
+- **Never run the bot locally while Railway is active** *while Telegram is on*.
+  Telegram allows one polling connection, so a second `python main.py` steals
+  it; stop the Railway service from the dashboard first. With
+  `TELEGRAM_ENABLED=false` there is no polling connection and that particular
+  conflict does not exist — but a second runtime still runs the scheduler, the
+  monitors and the approval poller against the same database, so stop the
+  service anyway unless you have deliberately turned those off.
 - Railway project `e556a6d9-2023-4c81-a031-e32e160a33be`, auto-deploying from
   `main` on `niyonzimabryan/swingtrader`. The workspace API/MCP is its own web
   service, so a workspace deploy never restarts the trading monitor.

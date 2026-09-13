@@ -14,17 +14,18 @@ approve it, and nothing in this package can place an order.**
 | | |
 |---|---|
 | `notify/channel.py` | `Notification` and the `Channel` protocol |
-| `notify/registry.py` | `configured_channels(settings)`, `email_channels`, `broadcast` |
+| `notify/registry.py` | `configured_channels(settings)`, `email_channels`, `non_telegram_channels`, `broadcast` |
 | `notify/resend.py` | `ResendChannel` — one `POST https://api.resend.com/emails` |
 | `notify/telegram.py` | `TelegramChannel` (HTTPS Bot API), `CallableChannel` (the bot's queue) |
 | `notify/cards/base.py` | the document model and both renderings |
 | `notify/cards/chart.py` | the PNG, matplotlib on `Agg` |
-| `notify/cards/{proposal,memo,scorecard,alert,digest}.py` | one builder per kind |
+| `notify/cards/{proposal,memo,scorecard,alert,digest}.py` | one builder per kind (`alert.py` holds two: `page` and `alert`) |
 | `notify/approval.py` | the approval card as an email, shared by both processes |
 | `notify/context.py` | the page's extra sections, read best-effort from the rows that hold them |
 | `notify/links.py` | the HMAC over a card uid |
 | `notify/store.py` | `cards` and `notifications_sent` |
 | `workspace/app.py` | `/cards/{uid}` and `/cards/{uid}/chart.png` |
+| `bot/notifications.py` | `NotificationManager` and its two sinks — the Telegram queue, or `notify/` |
 
 `notify/` imports `config`, `database`, `portfolio`, `utils`, and — from
 `context.py` only, for the page's read-only sections — `comparables` and
@@ -50,10 +51,17 @@ log line, and the `/cards` routes not registered at all.
 | `WORKSPACE_BASE_URL` | — | Where the card page lives. Unset means the email carries no link and no chart. |
 | `CARD_CHART_SESSIONS` | `60` | Daily bars captured into a card's chart. |
 
-Telegram has no flag of its own here. It is configured when
-`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set, which is the condition it
-has always been delivered under. Removing Telegram is the headless-runtime
-change's job, not this one.
+Telegram is configured when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set,
+which is the condition it has always been delivered under — **and, in the bot
+process, only while `TELEGRAM_ENABLED` is true**. That flag lives in the runtime
+rather than here (`docs/ENV_SETUP.md` §11a): with it false the bot builds no
+Telegram anything and its `NotificationManager` delivers through
+`non_telegram_channels(settings)`, which excludes Telegram *even when its
+credentials are still set*. Leaving them set is the expected way to keep the
+switch reversible, so "not configured" is the wrong test for "do not use".
+
+The **workspace** process does not read `TELEGRAM_ENABLED`; clear its Telegram
+variables if you want it to stop sending Telegram cards too.
 
 `WORKSPACE_BASE_URL` must be set on **both** Railway services if you want links
 in email sent from the bot process as well as from the workspace. It is only
@@ -65,7 +73,7 @@ read to build the URL; the workspace does not use it to decide what to serve.
 |---|---|---|
 | false | unset | Nothing is delivered. `notify_no_channel` is logged per message. |
 | false | set | Telegram only — today's behaviour, unchanged. |
-| true (fully configured) | unset | Email only. **Cards arrive and nothing can be approved**; the workspace logs `proposal_card_not_approvable` at startup saying so. |
+| true (fully configured) | unset | Email only. Nothing an email carries can approve; approval is the `approve_order` MCP owner tool (Spec K §10). The workspace logs `proposal_card_not_approvable` when *it* has no Telegram channel, which is about the card, not about whether you can decide. |
 | true (fully configured) | set | Both. Telegram carries the approvable card; email carries the designed one plus the link. |
 | true, something missing | either | `notify_email_channel_unconfigured` names the missing variable; Telegram still works if set. |
 
@@ -78,8 +86,15 @@ read to build the URL; the workspace does not use it to decide what to serve.
 | `scorecard` | `notify/cards/scorecard.py` | `scripts.strategy_lab_scoreboard.build_scorecard` |
 | `page` | `notify/cards/alert.py` | `portfolio.paging`'s `(event, detail)` |
 | `digest` | `notify/cards/digest.py` | the daily digest and weekly report's own MarkdownV2 |
+| `alert` | `notify/cards/alert.py::build_alert_payload` | `bot.notifications`, headless: a fill, a stop, a target, a regime change |
 
-Rendered examples of all five are in [`examples/cards/`](examples/cards/) —
+`alert` and `page` are deliberately separate kinds for the same renderer. A page
+means capital is exposed in a way nobody chose and somebody has to act now; an
+alert is a routine operational notice. One kind for both would make "was I paged
+last week" unanswerable from `notifications_sent`, which is the question that
+log exists for.
+
+Rendered examples of the first five are in [`examples/cards/`](examples/cards/) —
 open the `.email.html` files in a browser. Regenerate with
 `python -m scripts.render_example_cards`. `--check` compares the HTML and text
 byte for byte and the PNGs for presence only: matplotlib stamps its version into
@@ -188,10 +203,15 @@ several identical copies is the page — a choice with no right answer.
 
 ## 5. What this layer cannot do
 
-- **It cannot approve anything.** Approval is the signed, expiring, single-use,
-  owner-bound Telegram callback handled in `bot/handlers/proposals.py`, in the
-  bot process. An email has no callback and the card page is read-only. Turning
-  email on adds a way to *see* a proposal, never a way to release one.
+- **It cannot approve anything.** Approval is a signed, expiring, single-use,
+  owner-bound decision made out of band — the Telegram callback handled in
+  `bot/handlers/proposals.py`, or the `approve_order` MCP owner tool, which only
+  *records* the decision for `orchestrator/approval_poller.py` to act on. An
+  email has no callback and the card page is read-only. Turning email on adds a
+  way to *see* a proposal, never a way to release one. The proposal card's
+  `approval_route` decides which of the two the closing note names, and headless
+  it also prints the `proposal_uid` that `approve_order` takes; it changes
+  nothing about what can approve.
 - **It cannot place an order.** `tests/test_no_execute_scope.py` walks `notify/`
   as part of the workspace's import closure.
 - **It cannot lose a row.** Every channel returns a bool and never raises; a
@@ -244,6 +264,13 @@ real message, so it gets a named log line (`notify_email_channel_unconfigured`,
   with Resend's own message.
 - **Telegram's 4096-byte cap** truncates a long body, and the card says it was
   truncated and points at the page. The email has no such cap.
+- **An email attachment** (today only the deep-research PDF, headless) travels
+  in `notification.detail["attachments"]` as `[{"path", "filename"}]`, read off
+  disk at send time by `ResendChannel` and ignored by Telegram, which sends a
+  document through the bot's own queue. Over `notify.resend.MAX_ATTACHMENT_BYTES`
+  (8 MB) the attachment is dropped with `notify_email_attachment_too_large` and
+  the email still goes: losing the attachment beats losing the message, and on a
+  headless deployment email is the only channel there is.
 - **A card with no price bars** renders without a chart and says so; the chart
   route 404s. That is the normal state for a name the price plane has not
   backfilled.
