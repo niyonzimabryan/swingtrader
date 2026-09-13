@@ -91,8 +91,18 @@ relying on any cohort, then either:
 - `python -m scripts.price_backfill --source sharadar --bulk years=10` to load
   the whole purchased history from Sharadar's bulk zip in one pass — the right
   mode for a full backfill, since paging thousands of names one at a time
-  would take hours. `--tickers` still narrows a bulk run to a subset after the
-  zip is parsed.
+  would take hours. `--tickers` narrows a bulk run to a subset **during**
+  staging now, not after the zip is parsed. The zip is streamed into an
+  on-disk SQLite staging file and derived one ticker at a time rather than
+  held in memory whole (`docs/PRICE_PLANE.md`'s "Bulk backfill" section) —
+  measured locally at 46 MB peak RSS against a ~5M-row synthetic zip, versus
+  3.37 GB for the pre-streaming implementation (which is what got the bot
+  container SIGKILLed in production; see
+  `docs/investment-workspace/handoff/OWNER_SETUP_EXECUTION_2026-09-12.md` §4).
+  A run interrupted for any reason resumes with
+  `--resume /tmp/sharadar_bulk_checkpoint.json` (or wherever `--checkpoint`
+  pointed it); `--max-rss-mb` (default 1500) aborts cleanly, checkpoint saved,
+  well before that.
 
 `data/prices/sharadar.py` targets the direct API
 (`https://api.sharadar.com/v1.0`, `docs/vendors/sharadar.md`), ported against

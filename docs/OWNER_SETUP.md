@@ -275,19 +275,21 @@ actions and 10 securities for `AAPL, BBIO, CPRT, DAL, GIS, HIMS, HNGE, OSCR,
 PANW, VRTX`, back to the tier's floor of 2016-09-12, with the Spec N §4.3
 reconstruction identity check passing on every name.
 
-**Three things below do not work and are not the operator's fault.**
+**Two things below do not work and are not the operator's fault; a third,
+`--bulk years=10`'s memory use, is fixed as of 2026-09-13 — see the callout
+just below.**
 
-**`--bulk years=10` cannot run in this container.** `load_bulk_bars` →
-`_read_bulk_csv` materialises every row of the whole-market zip and then builds a
-`DailyBar` for each — two full in-memory copies. Instrumented, the child was at
-**3.4 GB RSS 15 seconds in** and the container was SIGKILLed (exit 137) shortly
-after, three times, bouncing the bot each time. It is not the cgroup's own 8 GB
-`memory.max` — `memory.events` never records an `oom_kill`, and the platform
-kills earlier; `memory.peak` readings taken afterwards are worthless because the
-counter resets when the container restarts. `--tickers` does not help:
-`backfill_bulk` filters *after* the full parse. This needs either a streaming
-parse or a much larger instance, and it is why the load above went through the
-per-ticker slice path instead:
+**`--bulk years=10` could not run in this container — RESOLVED 2026-09-13.**
+The original `load_bulk_bars` → `_read_bulk_csv` materialised every row of the
+whole-market zip and then built a `DailyBar` for each — two full in-memory
+copies. Instrumented, the child was at **3.4 GB RSS 15 seconds in** and the
+container was SIGKILLed (exit 137) shortly after, three times, bouncing the bot
+each time. It was not the cgroup's own 8 GB `memory.max` — `memory.events`
+never recorded an `oom_kill`, and the platform killed earlier; `memory.peak`
+readings taken afterwards were worthless because the counter resets when the
+container restarts. `--tickers` did not help either: `backfill_bulk` filtered
+*after* the full parse. This is why the load described further down went
+through the per-ticker slice path instead of `--bulk`:
 
 ```bash
 railway ssh --service swingtrader -- sh -c "\"cd /app && python -u -m scripts.price_backfill --source sharadar --since 2015-01-01 --tickers AAPL,BBIO,CPRT,DAL,GIS,HIMS,HNGE,OSCR,PANW,VRTX\""
@@ -295,6 +297,32 @@ railway ssh --service swingtrader -- sh -c "\"cd /app && python -u -m scripts.pr
 
 Those ten names are exactly the tickers in `historical_events` and
 `event_outcomes`, which is what the cohort roster needs prices for.
+
+**The fix**: the zip is now streamed into an on-disk SQLite staging file and
+derived one ticker at a time (`data/prices/bulk_stream.py`,
+`docs/PRICE_PLANE.md`'s "Bulk backfill" section), not held in memory whole.
+Measured locally against a synthetic 2,000-ticker × 2,500-session zip (~5M
+rows, ~265 MB — comparable in scale to the real 10-year universe): the old
+whole-file parse peaked at **3.37 GB RSS**, matching the SIGKILL number above
+almost exactly; the streaming path peaked at **46 MB**. That is comfortably
+under both the platform's earlier kill point and the cgroup's 8 GB limit, so
+**running `--bulk years=10` inside the bot container is safe now** — this is a
+local, synthetic-data measurement (this session has no production access), not
+a live run against the real vendor zip, but the mechanism is the same either
+way: peak memory is one ticker's history, not the whole market, regardless of
+which zip supplies the rows. Run it the same way as before, just without
+holding one foreground session open indefinitely — `--checkpoint` and
+`--resume` mean a `railway ssh` disconnect (see "Do not background it" below)
+no longer loses the whole run, only whatever ticker was mid-flight, since the
+checkpoint and staging file live in the container's own filesystem and (not
+verified live this session, but should) survive a disconnect that does not
+also restart the container:
+
+```bash
+railway ssh --service swingtrader -- sh -c "\"cd /app && python -m scripts.price_backfill --source sharadar --bulk years=10 --max-rss-mb 1500\"" 2>&1 | tee ./backfill.log
+# if that session drops or the RSS guard aborts, from a fresh session:
+railway ssh --service swingtrader -- sh -c "\"cd /app && python -m scripts.price_backfill --source sharadar --resume /tmp/sharadar_bulk_checkpoint.json\"" 2>&1 | tee -a ./backfill.log
+```
 
 **The benchmark cannot be loaded, so `cohort_smoke` cannot run.** Sharadar splits
 equities (`stocks`/SEP) from funds (`funds`/SFP). SPY's only row in `tickers` is
@@ -357,11 +385,16 @@ the log — the script prints its summary only at the end:
 railway ssh --service swingtrader -- sh -c "\"cd /app && python -c \\\"from sqlalchemy import create_engine,text; print(create_engine('<private psycopg URL>').connect().execute(text('select count(*) from price_bars')).scalar())\\\"\""
 ```
 
-Note the shape of the work: `backfill_bulk` downloads both zips (fast, about a
-minute), then parses **the entire `stocks.zip` into memory** before it writes
-anything, and does the whole load in one session. So `price_bars` stays at 0 for
-a long time and then moves — zero rows is not evidence of a stall until the
-parse is done.
+Note the shape of the work **as it was at the time of this run** (pre-streaming
+`backfill_bulk`): it downloaded both zips (fast, about a minute), then parsed
+**the entire `stocks.zip` into memory** before writing anything, and did the
+whole load in one session — so `price_bars` stayed at 0 for a long time and
+then moved, and zero rows was not evidence of a stall until the parse was
+done. As of 2026-09-13 this is no longer how it works: `stocks.zip` is staged
+to disk and drained one ticker at a time, so `price_bars` should start moving
+within the first batch or two rather than staying at 0 for the whole parse —
+if it is still at 0 for more than a couple of minutes now, that is worth
+treating as a real stall, not the old parse-then-write shape.
 
 **Set every variable you need on the bot service *before* you start it.** Any
 variable change redeploys the service and kills whatever is running in its
