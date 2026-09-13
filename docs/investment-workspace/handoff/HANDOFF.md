@@ -61,6 +61,24 @@ monitors, and the approval poller with no Telegram token, and
 `WORKSPACE_OWNER_TOOLS_ENABLED` (workspace), an `admin` token, attach, first
 paper trade (`docs/ENV_SETUP.md` §9a and §11, `docs/OWNER_SETUP.md` §5).
 
+## 2b. Planned next sprint — briefs written, NOT spawned (awaiting the owner's go)
+
+The three engineering blockers on the research engine, each with a brief under
+`briefs/`, none overlapping the headless-runtime worker (they touch
+`data/prices/`, `scripts/`, `comparables/` readers and their tests; not
+`main.py` or `bot/`):
+
+| Brief | Fixes | Model | Depends on |
+|---|---|---|---|
+| `briefs/sharadar-funds-benchmark.md` | SPY as the benchmark: `asset_class` on securities (`0014`), `funds`/SFP in the adapter with the §4.3 three-series contract, funds excluded from universes, backfill + uid printout, Spec N ruling | opus | nothing |
+| `briefs/bulk-backfill-streaming.md` | `--bulk years=10` without OOM: stream → SQLite staging → per-ticker derive/upsert, `--tickers` during staging, `--resume`, an RSS guard with a measured bound | sonnet | nothing (bulk for funds deferred) |
+| `briefs/delisting-audit-symbols.md` | The survivorship audit resolves Sharadar's `Q` symbols, adds `unresolved` and `out_of_window` classes, refuses below a testable minimum, `--resolve` mode for the owner's keyed agent | sonnet | nothing |
+
+Owner-side after they merge: backfill SPY as a fund and set
+`COMPARABLE_BENCHMARK_SECURITY_UID`; run `cohort_smoke`; run the bulk backfill
+from the container with the RSS guard; run the audit's `--resolve` with the
+API key and open the follow-up PR that fills the remaining symbols.
+
 ## 3. What is left, in order
 
 1. The owner summary (§7 below is the skeleton; delivered in chat by the
