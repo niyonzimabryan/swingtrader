@@ -58,14 +58,14 @@ from data.prices.base import DailyBar, MembershipInterval
 from data.prices.derived import DEFAULT_WINDOW_SESSIONS, SeriesError, median_dollar_volume
 from data.prices.fixture_plane import session_close_utc
 
-class UniverseRuleError(RuntimeError):
-    """The membership the rule produced violates the rule. Never written."""
-
-
 UNIVERSE_SLUG = "liquid_us_equity_v1"
 SOURCE = "rule:liquid_us_equity_v1"
 
 DEFAULT_TOP_N = 500
+
+
+class UniverseRuleError(RuntimeError):
+    """The membership the rule produced violates the rule. Never written."""
 
 
 def month_end_sessions(sessions: Sequence[date]) -> tuple[date, ...]:

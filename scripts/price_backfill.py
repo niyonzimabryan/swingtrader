@@ -94,7 +94,8 @@ def backfill(
     `security_uid_by_ticker` is in the summary because a fund run exists to
     produce exactly that value: `COMPARABLE_BENCHMARK_SECURITY_UID` is a uid,
     not a ticker, and it is otherwise only discoverable by querying the
-    database by hand.
+    database by hand. `main()` prints it and then drops it before recording the
+    snapshot — see the comment there.
     """
     from database.db import get_session
 
@@ -335,6 +336,14 @@ def main(argv: list[str] | None = None) -> int:
             check=not args.skip_reconstruction_check, asset_class=asset_class,
         )
 
+    # The two per-ticker maps are for the printout below, not for the stored
+    # snapshot: `coverage_summary_json` is one text column, and a 5,000-name
+    # equity backfill would put a 5,000-entry uid map in it on every run. The
+    # scalar `asset_class` stays, because "which table was this snapshot
+    # loaded from" is exactly the kind of thing a snapshot should record.
+    uids = summary.pop("security_uid_by_ticker", None) or {}
+    classes = summary.pop("asset_class_by_ticker", None) or {}
+
     snapshot = args.snapshot or settings.price_plane_snapshot
     with get_session() as session:
         store.record_snapshot(session, snapshot, plane.source, summary)
@@ -351,8 +360,6 @@ def main(argv: list[str] | None = None) -> int:
     # is a `security_uid`, and nothing else in the pipeline ever shows one to a
     # human. Printed for every non-default asset class, including `auto`, since
     # `auto` is how an operator finds out a name was a fund at all.
-    uids = summary.get("security_uid_by_ticker") or {}
-    classes = summary.get("asset_class_by_ticker") or {}
     funds = sorted(t for t, k in classes.items() if k == ASSET_CLASS_FUND)
     if funds:
         print("\nfunds loaded — these are the security_uids:")
