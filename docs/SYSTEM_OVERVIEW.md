@@ -482,7 +482,9 @@ itself. That card is sent by the **workspace** process
 `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (Railway variable references to the
 bot's values, since sending a message does not conflict with the bot's
 exclusive `getUpdates` polling) — a gap the workspace surfaced by logging
-`proposal_card_channel_unconfigured` at startup, closed in PR #78.
+`proposal_card_channel_unconfigured` at startup. PR #78 documented it; the
+variables were **not** set, because the owner decided the same day to replace
+Telegram with email and in-chat approval (§10).
 
 **Attaching a client**: issue a token
 (`python -m scripts.workspace_token --issue --label "<name>"`), export
@@ -522,8 +524,8 @@ may run, and has not been run (`docs/EXECUTION_LIFECYCLE.md` §6). Production
 today has `EXECUTION_MODE=paper`; `ALLOW_LIVE_TRADING` was left exactly as
 found by the 2026-09-12 owner-setup session; no Robinhood stop probe has been
 run; no trade of any kind — paper or live — has yet been submitted through
-`propose_order` in production, because the approval card could not be
-delivered until the Telegram-variable gap closed in PR #78.
+`propose_order` in production, because no approval channel is configured on
+the workspace service yet (§8, §10).
 
 **Strategy Lab's live tier is built and fully disabled.** All promotion,
 paper-dispatch, and live-execution code merged in PR #74 with an explicit,
@@ -646,6 +648,20 @@ Two items are explicitly future work rather than a gap in what shipped:
   tested but not the production default — the owner's stated preference is
   "a tool, not too much of a gate yet" while the evidenced budget accumulates
   real citations (Spec L §3 owner-decisions table).
+
+**In flight as of 2026-09-13 (the notifications sprint,
+`docs/investment-workspace/handoff/HANDOFF.md` §2).** By owner decision the
+same day: Telegram stops being the default surface. Human-facing messages —
+approval cards, scan memos, Strategy Lab scorecards, pages — go to the
+owner's inbox via Resend as designed HTML emails, each linking to a signed
+full-page view served by the workspace (`/cards/<uid>`); approval and the
+owner-only mutations (kill switch, promotions, pausing experiments) become
+`admin`-scoped MCP tools the owner invokes through his own coding-agent
+session, with a runtime poller executing recorded approvals; and the bot
+process gains a headless mode (`TELEGRAM_ENABLED=false`). This overrides Spec
+L §6's "never a tool an agent can call" by owner ruling, to be recorded in the
+specs' rulings logs when those PRs merge. Until they do, this document's
+descriptions of the Telegram card and `/live_kill` remain what is on `main`.
 
 Everything else in this document describes shipped, flagged, currently-off (or
 partially-on, per §9) capability — not a roadmap.
