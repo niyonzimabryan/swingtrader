@@ -267,7 +267,7 @@ export WORKSPACE_TOKEN=<printed token>
 # then docs/WORKSPACE_ACCESS.md: `claude mcp add` / Codex / Cursor; call whoami, portfolio_overview.
 ```
 
-## 4. Prices and cohorts (Sharadar 10-year Prices tier) — PARTLY DONE 2026-09-12
+## 4. Prices and cohorts (Sharadar 10-year Prices tier) — PARTLY DONE 2026-09-12, benchmark unblocked 2026-09-13
 
 `PRICE_PLANE_ENABLED=true` and `PRICE_PLANE_SOURCE=sharadar` are set on the bot,
 and there are **real vendor prices in production**: 20,411 bars, 133 corporate
@@ -296,21 +296,57 @@ railway ssh --service swingtrader -- sh -c "\"cd /app && python -u -m scripts.pr
 Those ten names are exactly the tickers in `historical_events` and
 `event_outcomes`, which is what the cohort roster needs prices for.
 
-**The benchmark cannot be loaded, so `cohort_smoke` cannot run.** Sharadar splits
-equities (`stocks`/SEP) from funds (`funds`/SFP). SPY's only row in `tickers` is
-`table=funds` (permaticker 118691); `stocks?ticker=SPY` is empty while
-`funds?ticker=SPY` returns real bars. `data/prices/sharadar.py` hardcodes
-`table=stocks` in `security_master` and reads `TABLE_STOCKS` in `daily_bars`, so
-the adapter is equities-only by construction and `--tickers SPY` fails with
-`tickers has no row for 'SPY'; refusing to invent a security id`. Consequently
-`COMPARABLE_BENCHMARK_SECURITY_UID` is **not set**, and `cohort_smoke` stops at
-`CohortContext.benchmark_security_uid is required` (Spec N §4.2, §5.2).
+**The benchmark — FIXED 2026-09-13, and now three commands.** The diagnosis on
+2026-09-12 was right: Sharadar splits equities (`stocks`/SEP) from funds
+(`funds`/SFP), SPY's only row in `tickers` is `table=funds` (permaticker
+118691), `stocks?ticker=SPY` is empty while `funds?ticker=SPY` returns real
+bars, and the adapter hardcoded `table=stocks`. So `--tickers SPY` failed with
+`tickers has no row for 'SPY'`, `COMPARABLE_BENCHMARK_SECURITY_UID` was unset,
+and `cohort_smoke` stopped at `CohortContext.benchmark_security_uid is
+required`. Substituting some equity as a stand-in was correctly refused: a
+cohort answer computed against a benchmark that is not the benchmark is a wrong
+number, and wrong numbers are the one thing this system is built to refuse.
 
-Adding `funds`/SFP support is a feature with its own price-adjustment semantics
-and tests, not a one-line fix, so it was not attempted. Substituting some equity
-as a stand-in benchmark was also not done: a cohort answer computed against a
-benchmark that is not the benchmark is a wrong number, and wrong numbers are the
-one thing this system is built to refuse.
+`funds`/SFP support now exists, with `asset_class` on `securities`
+(`0014_securities_asset_class`) and the fund entry points behind
+`PRICE_PLANE_FUNDS_ENABLED`, off by default. To load the benchmark, **inside
+the bot container** (same reasoning as the backfill below — it holds the key
+and the Postgres URL):
+
+```bash
+railway variables set PRICE_PLANE_FUNDS_ENABLED=true   # redeploys the service
+
+railway ssh --service swingtrader -- sh -c "\"cd /app && python -u -m scripts.price_backfill --source sharadar --since 2016-01-01 --tickers SPY --asset-class fund\""
+```
+
+It prints `SPY  sharadar:118691` and the line to paste. Then on the
+**workspace** service:
+
+```bash
+railway variables set COMPARABLE_BENCHMARK_SECURITY_UID=sharadar:118691
+```
+
+and `cohort_smoke` can run. `python -m scripts.benchmark_uid SPY` reprints the
+uid later without another backfill. Three things worth knowing:
+
+- **Setting a variable redeploys and kills any running work.** Set
+  `PRICE_PLANE_FUNDS_ENABLED` *before* starting the backfill, not during it —
+  the same trap the bulk run hit below.
+- **`--since` wants a session of slack.** A fund's split and dividend factors
+  are ratios against the previous session *in the slice returned*, so a
+  distribution that went ex on the window's first day is invisible in that
+  window. Re-running with an earlier `--since` corrects it; the backfill
+  overwrites by `(security_uid, session_date)`.
+- **SPY will not appear in `liquid_us_equity_v1`, and should not.** A fund is
+  never a universe member: a benchmark inside the universe it benchmarks is a
+  cohort measured against itself. If you rebuild universes after this, expect
+  the member count to be unchanged.
+
+The total-return derivation behind the benchmark is documented in
+`docs/PRICE_PLANE.md`, including what was measured live and what could not be:
+a fund's distributions are read out of `funds.closeadj`, not out of `actions`,
+because `actions?ticker=SPY` is a 403 on the public key and no fund
+distribution in that table has ever been observed from this repository.
 
 **`scripts.audit_delisting_returns` cannot complete either.** It aborts on its
 first case, `RSH`. Two independent causes, both verified against the vendor:

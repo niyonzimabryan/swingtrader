@@ -850,3 +850,98 @@ Ratified 2026-09-10 from the Sharadar direct-API port:
   transport and a synthetic zip; the zip's internal member name is read
   dynamically (the one `.csv` entry present) rather than hardcoded, since the
   real filename is unverified.
+
+Ratified 2026-09-13 from the funds/SFP build (`claude/sharadar-funds-benchmark`):
+
+- **The benchmark is a fund series from SFP, and that is now reachable.**
+  Sharadar splits its price file: `stocks` (SEP) is operating companies,
+  `funds` (SFP) is ETFs, CEFs, ETNs and ETDs, and a name is in exactly one.
+  SPY's only `tickers` row is `table=funds` (permaticker 118691, so
+  `security_uid` is `sharadar:118691`); `stocks?ticker=SPY` is empty. The
+  adapter sent `table=stocks` everywhere, so §5.2's benchmark was unreachable,
+  `COMPARABLE_BENCHMARK_SECURITY_UID` could not be set, `CohortContext` refused
+  to construct, and the engine was dark on real data. **A stand-in equity
+  benchmark stays refused** — a cohort answer computed against a benchmark that
+  is not the benchmark is a wrong number, which is the one thing §5.2 exists to
+  prevent. The fix is to read the right table, not to accept a different
+  security.
+
+- **A security's instrument class is stored, never inferred.**
+  `securities.asset_class` (`equity` | `fund`, `0014_securities_asset_class`,
+  `equity` for every pre-existing row because `stocks` was the only readable
+  table). `daily_bars` resolves which price table to read through the vendor's
+  `tickers` master and never from the symbol: `SPY`, `GLD` and `TLT` look like
+  any other three-letter ticker, and a wrong guess yields silently empty bars
+  rather than an error.
+
+- **Funds are never members of a liquidity-ranked universe.** SPY is the most
+  liquid instrument on the tape, so `liquid_us_equity_v1` computed without a
+  class filter would rank the benchmark into its own top ten every month, and a
+  cohort whose members include the security its abnormal returns are measured
+  against is a number measured against itself. `data/prices/universes.py` drops
+  known funds before ranking and `compute_membership` refuses to emit an
+  interval for an ineligible uid. The rule is phrased as an **exclusion of known
+  funds**, not an allow-list of known equities: an allow-list would silently
+  empty `universe_membership` whenever a price file had been loaded ahead of its
+  master, which is a commoner and worse failure than the one being prevented.
+  Exclusion from the universe is not exclusion from the price file — the
+  benchmark's bars are still read by uid.
+
+- **A fund's total-return factors are derived from `funds.closeadj`, not from
+  `actions`.** This is a departure from the 2026-09-09 ruling above ("the
+  vendor's own adjusted close is not stored") in *source* but not in *substance*:
+  `closeadj` is still not stored. What is stored is `split_factor` and
+  `dividend_cash` extracted from it, with the three series then derived from raw
+  closes and those factors exactly as for an equity, so the §4.3 reconstruction
+  identity still holds against the factors actually kept. The arithmetic is
+
+      F(i)            = closeunadj(i) / close(i)
+      split_factor(i) = F(i-1) / F(i)
+      div(i)          = [closeadj(i)/closeadj(i-1) - close(i)/close(i-1)]
+                        x closeunadj(i-1) / split_factor(i)
+
+  The reason it is not `actions` is verification, not preference. Sharadar
+  documents `actions` as covering "all tickers in fundamentals, stocks and funds
+  tables", but `actions?ticker=SPY` returns `403 Exceeds free tier` on the public
+  key while `funds?ticker=SPY` returns `200` — so **no fund distribution in
+  `actions` has ever been observed from this repository**, while the ones in
+  `closeadj` have been. §5.2 compares total return to total return; a benchmark
+  whose dividend factors came from a table nobody had looked in would be a
+  number nobody had checked. `corporate_actions()` still reads `actions` for a
+  fund exactly as for an equity — it is the vendor's action log and the
+  interface promises it.
+
+  The 2026-09-09 ruling asked for a cross-check against the vendor series once a
+  key existed. That is now done, for funds: over SPY's live `funds` rows for
+  2023-12-01 .. 2025-01-31 (292 sessions), the derived total-return series
+  reproduces Sharadar's own `closeadj` to within **1.9e-6 of daily return**, the
+  implied distribution is above 2 bps of price on exactly the five ex-dividend
+  dates in that window, and on the other 286 sessions it never exceeds
+  **0.019 bps** — the rounding floor of three-decimal quotes. The equivalent
+  cross-check for **equities** remains undone: `stocks` factors still come from
+  `actions`, and no paid key was available to compare them against `closeadj`.
+
+- **Below the quote-precision floor an implied distribution is zero; above it and
+  negative, it refuses.** Three-decimal quotes cannot resolve a tenth of a cent,
+  so storing the residue would write a fabricated ~$0.0007 "dividend" on 250
+  ordinary sessions a year — a made-up fact on every one of them, which §4.3 has
+  no room for. A negative implied distribution above that floor is neither zeroed
+  nor stored: the three-series model cannot express it, so the adapter raises
+  rather than storing a series that claims an identity it does not satisfy.
+  One honest imprecision remains: `closeadj` folds spinoffs in with cash, so a
+  fund that spun off value has it arrive as `dividend_cash` — correct for total
+  return, imprecise as a label, and named `closeadj_derived` in the provenance
+  for that reason.
+
+- **A fund's factors are relative to the previous session in the slice
+  returned**, so the first bar of any window carries `(1.0, 0.0)` and a
+  distribution that went ex on `--since` is invisible in that window. Give
+  `--since` a session of slack; re-running earlier corrects it, because bars
+  upsert by `(security_uid, session_date)`.
+
+- **The §11 pair now exists offline.** `tests/test_cohort_smoke_fund_benchmark.py`
+  runs the roster against a world whose benchmark is marked a fund and produces
+  one `ok` and one `insufficient` in the same run, with the benchmark excluded
+  from the universe and still present in `price_bars`. §11 still wants that pair
+  hand-verified on **real** data; that is an owner step (`docs/ENV_SETUP.md` §7),
+  not something this build could reach.
