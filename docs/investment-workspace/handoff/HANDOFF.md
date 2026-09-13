@@ -6,7 +6,9 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-13 07:40 UTC, by the orchestrating session
+**Last updated:** 2026-09-13 15:50 UTC — §7 rewritten after executing the
+owner turn-on sequence steps 1–5 against production (headless is live).
+Prior update 07:40 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 Bryan's laptop (was 2026-09-12 06:15 UTC, orchestrating session
 `session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
@@ -180,34 +182,119 @@ the brief and tell it the branch already carries N commits.
   default courtesy; the owner's standing instruction is to merge everything
   that validates.
 
-## 7. Owner actions — the turn-on sequence (2026-09-13)
+## 7. Owner actions — the turn-on sequence (2026-09-13) — STEPS 1–5 EXECUTED
 
-In this order, from the laptop with `railway` linked (`docs/OWNER_SETUP.md` §5
-has the same with commentary):
+**Executed against production on 2026-09-13, 15:50 UTC**, by a Claude Code
+session with Railway access, on Bryan's instruction. The bot is now **headless**:
+no Telegram, email as the only human channel, approvals over MCP. Steps 6 and 7
+are the owner's and are **not** done.
 
-1. `NOTIFY_EMAIL_ENABLED=true` on **both** services; `WORKSPACE_BASE_URL` on
-   the bot as a reference to the workspace's. Confirm one email arrives (the
-   workspace logs `proposal_card_channel` names at startup).
-2. `OWNER_ID=<your Telegram chat id, or any stable string>` on **both**.
-3. `OWNER_ACTION_POLLER_ENABLED=true` on the bot (after a deploy that includes
-   #85 — see the note in §2). Expect `approval_poller_wired` in the logs.
-4. `WORKSPACE_OWNER_TOOLS_ENABLED=true` on the workspace.
-5. `TELEGRAM_ENABLED=false` on the bot. Expect `runtime_mode mode=headless
-   channels=email`. Leave `TELEGRAM_BOT_TOKEN` set so it is reversible.
-6. Issue an `admin`-scoped token (`docs/WORKSPACE_ACCESS.md` §1), export
-   `WORKSPACE_BASE_URL` and `WORKSPACE_TOKEN`, open the repo, call `whoami`,
-   `portfolio_overview`, `proposals_pending`.
-7. First paper trade: `propose_order`, read the card in your inbox and in
-   chat, `approve_order(proposal_uid=...)`; the bot's poller places on Alpaca
-   paper and emails the outcome.
+| # | Change | Service | Proof in the logs |
+|---|---|---|---|
+| 1 | `NOTIFY_EMAIL_ENABLED=true` | both | workspace `workspace_starting approval_card_channel=email card_page=True`; bot `runtime_mode channels="telegram,email"` |
+| 1 | `WORKSPACE_BASE_URL=${{workspace.WORKSPACE_BASE_URL}}` | bot | resolved to `https://workspace-production-6e7b.up.railway.app` |
+| 2 | `OWNER_ID=${{swingtrader.TELEGRAM_CHAT_ID}}` | both | byte-identical on the two (sha256 compared, value never printed) |
+| 3 | `OWNER_ACTION_POLLER_ENABLED=true` | bot | `approval_poller_wired interval_seconds=20` → `approval_poller_started` → `approval_poller_ready` |
+| 4 | `WORKSPACE_OWNER_TOOLS_ENABLED=true` | workspace | `/health` `mcp.tools` went 13 → **23**; all ten owner tools registered |
+| 5 | `TELEGRAM_ENABLED=false` | bot | `runtime_mode telegram=false mode="headless" channels="email"`, `starting_headless_runtime`, `proposal_card_email_registered_headless approval_route="mcp"` |
+
+No `no_human_channel`, no `owner_id_required_headless`, no
+`notify_email_channel_unconfigured`. `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` were **left set** on the bot, so the switch reverts with one
+variable: `railway variables --service swingtrader --set TELEGRAM_ENABLED=true`.
+
+**Hard limits honoured, verified by re-reading both services afterwards:**
+`EXECUTION_MODE=paper` (never touched), `ALLOW_LIVE_TRADING=true` left exactly
+as found (it predates this build), `STRATEGY_LAB_LIVE_ENABLED`,
+`STRATEGY_LAB_LIVE_RISK_BUDGET` and `STRATEGY_LAB_PAPER_ENABLED` all still
+unset. No secret was printed to a transcript or written to the repo.
+
+### Two things the next session must know
+
+**1. The email channel is configured but has never actually delivered.** This is
+the one gap in the sequence. `docs/OWNER_SETUP.md` §5a step 1 says to prove it
+*before* flipping Telegram off; the session tried to send a test through
+`notify/` from inside the workspace container and the sandbox permission
+classifier blocked the command. Bryan chose to flip anyway, knowing it reverts
+with one variable. So **`notifications_sent` has no `sent` row on
+`channel='email'` yet**, and the first real proof will be the first proposal
+card or the 5 PM digest. If nothing arrives, that is where to look first:
+
+```sql
+SELECT kind, channel, status, provider_id, error, created_at
+FROM notifications_sent ORDER BY id DESC LIMIT 10;
+```
+
+`RESEND_API_KEY`, `PAGER_EMAIL_FROM` (`swingtrader@updates.readtop5.com`) and
+`PAGER_EMAIL_TO` (`niyonzimabryan@gmail.com`) are all set on both services and
+`email_configured()` passes, so the configuration is not the suspect — delivery
+is unverified, not known-broken.
+
+**2. `proposal_card_not_approvable` on the workspace is expected, not a fault.**
+It fires because the workspace has no `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`,
+so a card it mints cannot carry an inline approve button. That is the intended
+headless shape: the approval path is the `approve_order` MCP owner tool, which
+step 4 registered. Do **not** "fix" it by putting Telegram credentials on the
+workspace.
+
+### Step 6 — the token (owner's, not done)
+
+Deliberately left to Bryan. `docs/WORKSPACE_ACCESS.md` §1 and `AGENTS.md` §4
+both say an `admin` token is the owner's and is **never** placed in an agent's
+environment, and printing one into a chat transcript is the thing that policy
+exists to prevent. Issue it into a shell you are sitting in front of:
+
+```bash
+railway ssh --service workspace -- sh -c "\"cd /app && python -m scripts.workspace_token --issue --label bryan-admin --scopes read,research:write,propose,admin\""
+```
+
+Note the existing token inventory (`--list`, no secrets): one active token,
+`claude-code`, `read,research:write,propose`, last used 2026-09-12 15:46 UTC.
+Its secret is unrecoverable — printed once, only the digest is stored — so a
+session that needs one issues a fresh agent-scoped token, never an admin one.
+
+**All three calls in step 7 need only the `read` scope** (`whoami`,
+`portfolio_overview` and `proposals_pending` are all `READ` in
+`workspace/scopes.py::TOOL_SCOPES`), so an admin token is *not* required to
+verify the attachment. It is required only for `approve_order` and the seven
+other admin tools.
+
+### Step 7 — attach and verify (not done)
+
+No agent session can do this for you without a token in its environment. The
+exports, then a **fresh** session, because `.mcp.json` is expanded at startup:
+
+```bash
+export WORKSPACE_BASE_URL=https://workspace-production-6e7b.up.railway.app
+export WORKSPACE_TOKEN=<the token printed above>
+```
+
+Then open the repo and call `whoami`, `portfolio_overview`, `proposals_pending`.
+A session started without those two prints `swingtrader-workspace
+(INVALID_CONFIG)` and has no `mcp__swingtrader-workspace__*` tools at all —
+which is exactly the state the executing session was in, and why step 7 is open.
+
+### Step 8 — the first paper trade (Bryan's alone)
+
+`propose_order` → read the card in the inbox → `approve_order(proposal_uid=...)`.
+An agent must not both propose and approve. The poller (20 s) picks the decision
+up and the execution service places on Alpaca paper. This is also what finally
+proves the email channel.
 
 Still owner-only and untouched: the Robinhood Agentic account and the live
 `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6); the Rule 10b5-1
 element and tracked investors (Spec O); the `ALLOW_LIVE_TRADING` decision;
-rotating the Sharadar key; `SCHEDULER_ENABLED` (scans and therefore Strategy
-Lab shadow are off until it is true). Next engineering sprint: §2b.
+rotating the Sharadar key; `SCHEDULER_ENABLED` (still `false`, so scans and
+therefore Strategy Lab shadow are off). Next engineering sprint: §2b.
 
 ## 8. Change log of this file
+- 2026-09-13 15:50Z — **the notifications sprint was turned on in production.**
+  `docs/OWNER_SETUP.md` §5/§5a steps 1–5 executed: email on both services,
+  `OWNER_ID` matched across both, the approval poller wired, the ten owner tools
+  registered (13 → 23 MCP tools), and `TELEGRAM_ENABLED=false`. The bot logs
+  `runtime_mode telegram=false mode=headless channels=email`. Email delivery is
+  configured but **not yet proven** — see §7. Steps 6–8 (token, attach, first
+  paper trade) remain the owner's.
 
 - 2026-09-10 05:20Z — created, after #56–#59 merged; #60/#61 open; SL5 and
   CI-speed building.
