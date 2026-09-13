@@ -79,6 +79,7 @@ Owner action (the cloud build environment cannot reach `data.sec.gov`):
 | `PRICE_PLANE_ENABLED` | bot service (job host) | `true` |
 | `PRICE_PLANE_SOURCE` | same | `sharadar` (or `fixture` for tests) |
 | `SHARADAR_API_KEY` | same | from https://sharadar.com/account, after buying the Prices subscription. `NASDAQ_DATA_LINK_API_KEY` is still read as a fallback if a deployment has not renamed the variable yet, but `SHARADAR_API_KEY` is the name going forward. |
+| `PRICE_PLANE_FUNDS_ENABLED` | same | `true` **only when you are about to backfill the benchmark** (§7). Off by default; with it off the backfill reads `table=stocks` exactly as before funds existed. |
 | `LIQUID_UNIVERSE_TOP_N`, `DELISTING_AUDIT_*` | same | defaults per `docs/PRICE_PLANE.md` |
 
 Owner actions: buy Sharadar Prices (**10-year tier, $19/month** — see `docs/vendors/sharadar.md`) (confirm what "from $19" gates and the
@@ -108,6 +109,11 @@ relying on any cohort, then either:
 (`https://api.sharadar.com/v1.0`, `docs/vendors/sharadar.md`), ported against
 payloads recorded live under `tests/fixtures/sharadar_direct/`.
 
+Neither of those commands loads the **benchmark**. Sharadar keeps ETFs in a
+separate table and SPY is only there, so it needs `--asset-class fund` — see §7
+below, which is where that step now lives, because it is the comparable-setups
+engine that cannot start without it.
+
 ## 7. Comparable setups (Phase 3c)
 
 `COMPARABLE_SETUPS_ENABLED=true` on the workspace service. Off means
@@ -116,8 +122,10 @@ price plane and `source_observations` and needs, on the workspace service:
 
 - `COMPARABLE_BENCHMARK_SECURITY_UID` — **required**: the `security_uid` in
   `price_bars` every abnormal return is measured against (a total-return
-  benchmark, e.g. the SPY row after the backfill). Empty refuses every cohort;
-  there is no default benchmark on purpose.
+  benchmark, i.e. the SPY row). Empty refuses every cohort; there is no default
+  benchmark on purpose, and a stand-in equity is not a substitute — a cohort
+  answer against a benchmark that is not the benchmark is a wrong number
+  (Spec N §5.2). **Getting this value is four commands; they are below.**
 - `COMPARABLE_PRICE_SNAPSHOT` (default `dev`) — the named price-file vintage; its
   delisting audit (§6) must be recorded or no cohort can reach `vendor_pit`.
 - `COMPARABLE_UNIVERSE_SLUG` (default `liquid_us_equity_v1`) — must have
@@ -129,9 +137,57 @@ price plane and `source_observations` and needs, on the workspace service:
 - `COMPARABLE_CIK_MAP` (`TICKER:CIK,...`) — optional; empty refuses every name a
   market-cap decile rather than guessing one. Phase 4's entity plane replaces it.
 
-Then `python -m scripts.cohort_smoke` against the production database (Spec N
+### 7a. Loading the benchmark, concretely
+
+Sharadar splits its price file: `stocks` (SEP) is operating companies, `funds`
+(SFP) is ETFs, and **SPY is only in `funds`** — `stocks?ticker=SPY` comes back
+empty. The backfill therefore needs to be told, and the fund path is off by
+default, so:
+
+```bash
+# On the bot service (the job host), with SHARADAR_API_KEY already set.
+railway variables set PRICE_PLANE_FUNDS_ENABLED=true
+
+python -m scripts.price_backfill --source sharadar --since 2016-01-01 \
+    --tickers SPY --asset-class fund --snapshot <your snapshot slug>
+```
+
+That prints the uid you need:
+
+```
+funds loaded — these are the security_uids:
+  SPY      sharadar:118691
+
+Set the cohort benchmark to one of them, e.g.
+  COMPARABLE_BENCHMARK_SECURITY_UID=sharadar:118691
+```
+
+`python -m scripts.benchmark_uid SPY` prints the same thing later without
+re-running the backfill. Then, on the **workspace** service:
+
+```bash
+railway variables set COMPARABLE_BENCHMARK_SECURITY_UID=sharadar:118691
+```
+
+Two things to know before you run it. `--since` wants a session of slack: a
+fund's factors are ratios against the previous session *in the slice returned*,
+so a distribution that went ex on the first day of the window is not visible in
+that window (re-running with an earlier `--since` corrects it — the backfill
+overwrites by `(security_uid, session_date)`). And SPY will **not** appear in
+`liquid_us_equity_v1`: a fund is never a universe member, on purpose, because a
+benchmark inside the universe it benchmarks is a cohort measured against itself.
+`docs/PRICE_PLANE.md` has the reasoning and the live measurements behind the
+total-return derivation.
+
+### 7b. The smoke run
+
+Then `python -m scripts.cohort_smoke` against the production database. Spec N
 §11 asks for one `insufficient` and one `ok` answer hand-verified on real data;
-this was only run on fixtures). `docs/COMPARABLE_SETUPS.md` is the reference.
+against fixtures that pair is produced by
+`tests/test_cohort_smoke_fund_benchmark.py`, and on real data it is what this
+run is for. `insufficient` is a valid and frequently-correct answer at a floor
+of twenty distinct event dates — read it as a refusal, not a failure.
+`docs/COMPARABLE_SETUPS.md` is the reference.
 
 ## 8. Evidence planes (Phase 4)
 

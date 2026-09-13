@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Sequence
 
 from data.prices.base import (
+    ASSET_CLASS_EQUITY,
     CorporateActionRecord,
     DailyBar,
     MembershipInterval,
@@ -42,6 +43,12 @@ SOURCE = "fixture"
 SECURITY_COLUMNS = (
     "security_uid", "ticker", "name", "exchange", "venue", "ticker_valid_from",
     "ticker_valid_to", "listing_date", "delisting_date", "delisting_reason",
+    # Trailing, and every committed fixture row says `equity`. The fixture file
+    # has no fund in it on purpose: `liquid_us_equity_v1` is recomputed from
+    # these bars by `tests/cohortfixture.py` and by the universe tests, and
+    # adding a name to the shared fixture would move every count those tests
+    # assert. The fund cases are built in the tests that need them.
+    "asset_class",
 )
 BAR_COLUMNS = (
     "security_uid", "ticker", "session_date", "raw_open", "raw_high", "raw_low",
@@ -122,6 +129,7 @@ class FixturePricePlane(PricePlane):
                     listing_date=_date(row["listing_date"], row["ticker"]),
                     delisting_date=_date(row["delisting_date"], row["ticker"]),
                     delisting_reason=row["delisting_reason"] or "unknown",
+                    asset_class=row["asset_class"] or ASSET_CLASS_EQUITY,
                 )
                 for row in rows
             )
@@ -224,9 +232,22 @@ class FixturePricePlane(PricePlane):
         ))
 
     def security_master(
-        self, tickers: Sequence[str] | None = None
+        self,
+        tickers: Sequence[str] | None = None,
+        *,
+        asset_class: str | None = ASSET_CLASS_EQUITY,
     ) -> tuple[SecurityMasterRow, ...]:
+        """The committed rows, narrowed to one instrument class.
+
+        `asset_class=None` means "whatever class each row says", matching the
+        auto-detect path on the vendor plane. The committed fixture is all
+        equities, so the default and `None` return the same rows today; the
+        parameter exists so the two planes stay substitutable, which is the
+        whole point of this class.
+        """
         rows = self._load_securities()
+        if asset_class is not None:
+            rows = tuple(row for row in rows if row.asset_class == asset_class)
         if tickers is not None:
             wanted = set(tickers)
             rows = tuple(row for row in rows if row.ticker in wanted)

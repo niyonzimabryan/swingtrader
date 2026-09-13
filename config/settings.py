@@ -498,6 +498,16 @@ class Settings(BaseSettings):
     price_plane_source: str = "fixture"
     # Nasdaq Data Link key for the Sharadar tables. Never hardcoded, never logged.
     nasdaq_data_link_api_key: str = ""
+    # Funds (Sharadar `funds`/SFP) in the backfill. Off by default, like every
+    # new capability. Gates the *entry points* only — `--asset-class fund|auto`
+    # on `scripts/price_backfill.py` and `scripts/benchmark_uid.py` — not the
+    # adapter, on the same reasoning `price_plane_enabled` is documented with
+    # in `data/prices/config.py`: a flag that also switched off the code under
+    # test would only be testing the flag. With this false, the backfill reads
+    # `table=stocks` exactly as it did before funds existed, so merging fund
+    # support changes nothing in production until the owner turns it on
+    # (`docs/ENV_SETUP.md` §7).
+    price_plane_funds_enabled: bool = False
     # Named vintage of the price file that backfills and audits write against.
     price_plane_snapshot: str = "dev"
     # `liquid_us_equity_v1`: top N by 20-session median dollar volume at each

@@ -27,6 +27,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from data.prices.base import (
+    ASSET_CLASS_EQUITY,
     CorporateActionRecord,
     DailyBar,
     MembershipInterval,
@@ -75,6 +76,7 @@ def upsert_securities(session: Session, rows: Iterable[SecurityMasterRow]) -> in
         target.listing_date = row.listing_date
         target.delisting_date = row.delisting_date
         target.delisting_reason = row.delisting_reason
+        target.asset_class = row.asset_class
         target.source = row.source
         target.ingested_at = utcnow_naive()
         if existing is None:
@@ -290,6 +292,53 @@ def load_securities(session: Session, tickers: Sequence[str] | None = None) -> t
     return tuple(session.execute(
         statement.order_by(Security.ticker, Security.ticker_valid_from)
     ).scalars().all())
+
+
+def asset_class_by_uid(session: Session) -> dict[str, str]:
+    """`{security_uid: asset_class}` over the whole security master.
+
+    One row per uid: a ticker rename adds a `securities` row with the same uid,
+    and a rename does not change what the instrument is. If two rows for one uid
+    ever disagree, that is a real ingest defect and this refuses rather than
+    picking — a fund silently read as an equity is a benchmark inside its own
+    cohort (`data/prices/universes.py`).
+    """
+    out: dict[str, str] = {}
+    for uid, klass in session.execute(
+        select(Security.security_uid, Security.asset_class).distinct()
+    ).all():
+        resolved = klass or ASSET_CLASS_EQUITY
+        previous = out.setdefault(uid, resolved)
+        if previous != resolved:
+            raise ValueError(
+                f"securities holds both asset_class {previous!r} and {resolved!r} "
+                f"for security_uid {uid!r}; a rename does not change what an "
+                f"instrument is, so one of those rows is wrong"
+            )
+    return out
+
+
+def non_equity_security_uids(session: Session) -> frozenset[str]:
+    """Every uid the master positively calls something other than an equity.
+
+    Phrased as an exclusion list rather than an allow-list on purpose.
+    `data/prices/universes.py` documents that `rebuild` "reads `price_bars` and
+    nothing else", and `tests/test_price_plane.py::test_rebuild_reads_only_stored_bars`
+    holds it to that by storing bars with no security master at all. An
+    allow-list would turn that into an empty universe — a silent wipe of
+    `universe_membership` in exactly the case where a master had not been
+    loaded yet, which is a worse and far commoner failure than the one the
+    filter exists to stop.
+
+    The failure it does stop is complete: a fund only reaches the ranking at
+    all by being backfilled, `scripts/price_backfill.py` writes the master row
+    before any bar, and a fund with no master row has no `security_uid` to be
+    ranked under (`SharadarPricePlane._resolve` refuses to invent one).
+    """
+    return frozenset(
+        uid for uid, klass in asset_class_by_uid(session).items()
+        if klass != ASSET_CLASS_EQUITY
+    )
 
 
 def get_snapshot(session: Session, snapshot_slug: str) -> PriceSnapshot | None:

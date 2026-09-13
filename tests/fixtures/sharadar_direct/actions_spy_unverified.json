@@ -1,0 +1,4 @@
+{"unverified_live": true, "count": 2, "data": [
+  {"date": "2024-03-15", "action": "dividend", "ticker": "SPY", "name": "SPDR S&P 500 ETF TRUST", "value": 1.6, "contraticker": "", "contraname": ""},
+  {"date": "2024-06-21", "action": "dividend", "ticker": "SPY", "name": "SPDR S&P 500 ETF TRUST", "value": 1.7588, "contraticker": "", "contraname": ""}
+]}

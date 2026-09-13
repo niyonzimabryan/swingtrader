@@ -16,6 +16,18 @@ not get wrong:
 - **Prices plan, 10-year history, $19/month** is the tier this project buys
   (Spec N §5.4 regime cells and §5.5 stability need two market cycles; 5 years
   is one). Bulk `years=10` matches the purchased history.
+- **`stocks` (SEP) and `funds` (SFP) are two different tables, and a name is in
+  exactly one of them.** SEP is operating companies; SFP is ETFs, CEFs, ETNs
+  and ETDs. **SPY is in SFP and nowhere else** — `tickers?ticker=SPY` returns
+  one row whose `table` is `funds` (permaticker 118691), and
+  `stocks?ticker=SPY` is empty. Since SPY is the cohort benchmark every
+  abnormal return in Spec N §5.2 is measured against, an adapter that only
+  reads SEP cannot build a cohort at all; that was the actual state of this
+  repo until 2026-09-13. The two tables carry byte-identical column names, so
+  the difference is *which table you ask*, not how you parse the answer — and
+  it must be resolved through `tickers`, never guessed from the symbol.
+  `docs/PRICE_PLANE.md` has the fund adjustment semantics, which are the one
+  place the two paths genuinely differ.
 
 ---
 
