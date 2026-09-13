@@ -232,7 +232,23 @@ def build_cards_router(settings) -> APIRouter:
         rendered = render(payload, chart_url=chart_url, card_url=card_url)
         return HTMLResponse(
             rendered.html_page,
-            headers={"Cache-Control": "private, max-age=300", "X-Robots-Tag": "noindex"},
+            headers={
+                "Cache-Control": "private, max-age=300",
+                "X-Robots-Tag": "noindex",
+                # Defence in depth over the escaping. This page renders text
+                # from filings and news, which is attacker-writable (AGENTS.md
+                # §5); the renderer escapes all of it, and this says the browser
+                # must not execute anything even if a future block forgets to.
+                # `img-src 'self'` is the chart route; `style-src 'unsafe-inline'`
+                # is the card's own inline styles, which is what the email
+                # format forces and is not script.
+                "Content-Security-Policy": (
+                    "default-src 'none'; img-src 'self' data:; "
+                    "style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; "
+                    "frame-ancestors 'none'"
+                ),
+                "Referrer-Policy": "no-referrer",
+            },
         )
 
     @router.get("/cards/{uid}/chart.png")

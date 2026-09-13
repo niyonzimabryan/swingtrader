@@ -102,6 +102,16 @@ class CardPageTests(unittest.TestCase):
             response = client.get(f"/cards/{UID}", params={"s": self.signature})
         self.assertEqual(response.headers["x-robots-tag"], "noindex")
 
+    def test_the_page_forbids_script_at_the_browser_as_well_as_in_the_renderer(self):
+        """The page renders attacker-writable text; escaping is not the only line."""
+        with self.client() as client:
+            response = client.get(f"/cards/{UID}", params={"s": self.signature})
+        csp = response.headers["content-security-policy"]
+        self.assertIn("default-src 'none'", csp)
+        self.assertNotIn("script-src", csp)
+        self.assertIn("frame-ancestors 'none'", csp)
+        self.assertEqual(response.headers["referrer-policy"], "no-referrer")
+
     # -- the refusals ------------------------------------------------------- #
 
     def test_a_bad_signature_is_404(self):

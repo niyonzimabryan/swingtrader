@@ -158,6 +158,15 @@ unlike an approval reference: an approval is a decision about a book that moves,
 so a stale one is dangerous; a card page is a record of a moment, so a stale one
 is the point.
 
+The page is served with `Content-Security-Policy: default-src 'none'` (plus
+`img-src 'self'` for the chart and `style-src 'unsafe-inline'` for the card's own
+inline styles, which the email format forces and which is not script),
+`frame-ancestors 'none'`, `Referrer-Policy: no-referrer` and
+`X-Robots-Tag: noindex`. The renderer escapes every value it prints; the CSP is
+the second line, because this page shows filing and news text that is
+attacker-writable (AGENTS.md §5) and one forgotten `esc()` in a future block
+should not be the whole defence.
+
 A bad signature, a missing signature, an unknown uid, and an unreachable
 database all return the **same 404 with the same body**. Distinguishing them
 would make the route an oracle for enumerating uids, and the uid is half the
