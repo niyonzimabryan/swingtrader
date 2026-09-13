@@ -446,6 +446,7 @@ class TradingPipeline:
             return
         try:
             from orchestrator import strategy_lab_paper
+            from portfolio.approvals import resolve_owner_id
             from strategy_lab.execution import PAPER_VENUE
 
             strategy_lab_paper.dispatch_for_scan(
@@ -455,7 +456,7 @@ class TradingPipeline:
                 # and `bind_adapter` refuses anything else (Spec Q §12 inv 11).
                 adapters={PAPER_VENUE: self.paper_broker},
                 run_id=run_id,
-                owner_id=_resolve_owner_id(self.settings),
+                owner_id=resolve_owner_id(self.settings),
             )
         except Exception as e:
             log.error("strategy_lab_paper_hook_failed", error=str(e)[:300])

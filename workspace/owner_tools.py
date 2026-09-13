@@ -766,7 +766,6 @@ def _kill_switch(settings, verb: str, reason: str, token_label: str) -> dict:
     from database.db import get_session
     from portfolio import approvals, killswitch
 
-    now = _now()
     changed_by = f"mcp:{token_label}" if token_label else "mcp"
     with get_session() as session:
         if verb == "status":
