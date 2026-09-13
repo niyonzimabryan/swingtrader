@@ -60,8 +60,12 @@ credentials or production access, and milestone summaries. Nothing else.
   validation command, the interpreter version CI uses.
 - The PR: title, and a body with contract items ticked, what was exercised and
   what was not, migrations, deferred items with reasons, anything touched outside
-  scope. **Then stop.** No self-scheduled check-ins, no PR babysitting; the
-  orchestrator merges and drives any fix cycle.
+  scope. **Open the PR as soon as the work is pushed and locally validated —
+  never wait for CI or a background suite to finish first.** An idle session
+  cannot observe a background job, so a worker that ends its turn "waiting for
+  the suite" has stopped for good; three of six workers did exactly that and had
+  to be poked. **Then stop.** No self-scheduled check-ins, no PR babysitting;
+  the orchestrator merges and drives any fix cycle.
 
 ## Integration recipe
 
@@ -80,6 +84,19 @@ Resolve by rule, never by blind textual union:
 - Config, examples, docs, scratchpads: union.
 - Two migration heads: `alembic merge` (or the equivalent) and list it.
 - Tests that hard-code a head: make them graph-aware, not wrong.
+- **The identical-trailing-block trap.** When two branches each append a
+  block that *ends* with byte-identical lines (two classes with the same
+  `payload` property, two functions with the same epilogue), git treats the
+  shared tail as common context and keeps one copy — the second block
+  silently loses it and the file still compiles. A textual union hides this,
+  so after resolving any append-append conflict, diff each side's symbols
+  (`grep -n "def \|class "`) against the result and re-run both branches'
+  tests before trusting it.
+
+When two open PRs conflict with *each other*, stack them: integrate the second
+on top of the first's branch before the first merges, run the full suite once
+on the combined tree, and let the later `main` merge be a no-op. Merge the one
+that adds a migration first.
 
 Validate on CI's interpreter version (float `sum()` differs between Python
 3.11 and 3.12 and has flipped a test); run the full suite in the background
@@ -99,6 +116,11 @@ merge with a merge commit so the join revisions survive.
   integration commit.
 - CI time grows with the suite; treat a job cancelled at its timeout as no
   signal, raise the cap once, and fix suite speed as its own PR.
+- A worker that is idle with no PR is stuck, not thinking: poke it (a timer
+  bound to its session, fired now) with "push everything, open the PR, stop".
+- When a milestone completes, delete the orchestrator's own pending check-ins
+  before writing the summary; a late one fires into a finished build and
+  re-summarizes.
 
 ## Harness notes — Claude Code
 
@@ -109,5 +131,10 @@ merge with a merge commit so the join revisions survive.
   with `persistent_session_id` to resume a worker; `fire_trigger` to poke now.
 - Close out: `delete_trigger` for anything a worker armed; `archive_session`
   once its PR is merged.
+- CI: poll the public check-runs endpoint from a background shell loop
+  (`curl .../commits/<sha>/check-runs`, exit when none are pending or one is
+  not `success`) — the loop's completion is a notification, an MCP call is not.
+  Guard the loop on the run count too, so a re-triggered workflow (13 runs vs
+  11) does not read as "done" early.
 - Subagents (`Agent` tool) are fine for in-session research; they are not
   workers, because they die with the turn.
