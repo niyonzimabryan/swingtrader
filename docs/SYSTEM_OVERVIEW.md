@@ -475,16 +475,34 @@ pass, nightly maturation, and the `resume`/`expire`/`reconcile` execution jobs.
 The scan pipeline itself runs on `orchestrator/scheduler.py`'s cadence, gated
 separately by `SCHEDULER_ENABLED`.
 
-**Notifications** are still exclusively Telegram: weekly reports, invalidator
-pages, reconciliation alerts, and — as of Phase 6 — the order-approval card
-itself. That card is sent by the **workspace** process
-(`workspace/proposal_card.py`), so the workspace service needs its own copy of
+**Notifications** were exclusively Telegram through Phase 6: weekly reports,
+invalidator pages, reconciliation alerts, and the order-approval card itself.
+That card is sent by the **workspace** process (`workspace/proposal_card.py`),
+so the workspace service needs its own copy of
 `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (Railway variable references to the
 bot's values, since sending a message does not conflict with the bot's
 exclusive `getUpdates` polling) — a gap the workspace surfaced by logging
 `proposal_card_channel_unconfigured` at startup. PR #78 documented it; the
 variables were **not** set, because the owner decided the same day to replace
 Telegram with email and in-chat approval (§10).
+
+**Headless.** Three changes carried that decision out. `notify/` made every
+human-facing message a channel-agnostic `Notification` with an HTML card and a
+signed read-only page (`NOTIFY_EMAIL_ENABLED`); the owner tools made an approval
+something the owner records from his coding-agent chat over MCP, with
+`orchestrator/approval_poller.py` as the only thing in the runtime that acts on
+one (`WORKSPACE_OWNER_TOOLS_ENABLED`, `OWNER_ACTION_POLLER_ENABLED`); and
+`TELEGRAM_ENABLED=false` takes Telegram out of the bot process altogether — no
+token, no `Application`, no polling connection, and `bot.telegram_bot` not even
+imported, while the pipeline, the scheduler, the monitors, the digests, Phase 6
+and the poller all run exactly as before. The flag defaults **true**, so nothing
+changes until it is set. Headless there is no `/live_kill`: the `kill_switch`
+owner tool is the switch, and `OWNER_ID` becomes mandatory because its fallback
+is `TELEGRAM_CHAT_ID`. The boundary is untouched by all of this — no execute
+scope, no reachable import path from the workspace to a broker, and every
+approval still signed, single-use, expiring, owner-bound and re-risk-checked
+from fresh state at placement. `docs/NOTIFICATIONS.md`, `docs/ENV_SETUP.md` §11a
+and `docs/OWNER_SETUP.md` §5a.
 
 **Attaching a client**: issue a token
 (`python -m scripts.workspace_token --issue --label "<name>"`), export

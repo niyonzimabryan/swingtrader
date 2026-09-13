@@ -386,6 +386,49 @@ FROM notifications_sent ORDER BY id DESC LIMIT 10;
 Rendered examples of every card are committed under `docs/examples/cards/`;
 open the `.email.html` files in a browser to see what will arrive.
 
+### 11a. Headless: running with no Telegram at all (`TELEGRAM_ENABLED`)
+
+`TELEGRAM_ENABLED=false` runs the whole trading runtime with no Telegram in it.
+Default is `true`, so a deployment that sets nothing behaves exactly as it did.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `TELEGRAM_ENABLED` | `true` | `false`: no token required, no `Application`, no `MessageQueue`, no polling connection, and no Telegram API call. `bot.telegram_bot` is not even imported. |
+| `OWNER_ID` | — | **Required** with `TELEGRAM_ENABLED=false` *and* `PHASE6_EXECUTION_ENABLED=true`. Its only fallback is `TELEGRAM_CHAT_ID`, so without it every approval would be bound to the empty string; the process refuses to start and says so. |
+| `NOTIFY_EMAIL_ENABLED` | `false` | Not enforced, but headless with no email channel means nothing reaches a human. Startup logs `no_human_channel` when that is the state. |
+
+**What still runs**, unchanged: `TradingPipeline` and the startup position
+reconciliation; `PipelineScheduler`, including scans when `SCHEDULER_ENABLED`
+and the daily pre-market self-restart regardless; `OrderMonitor`,
+`PositionMonitor` and `MonitorWatchdog`; the 5 PM daily digest and the Sunday
+weekly report; Phase 6's `ExecutionService` and the Strategy Lab
+`StrategyExecutionService` with its three jobs; and the owner `ApprovalPoller`
+behind `OWNER_ACTION_POLLER_ENABLED`. The process is a plain asyncio program
+with the same SIGTERM/SIGINT shutdown and the same graceful-restart path.
+
+**What changes.**
+
+- Every notification goes out through `notify/` — every configured channel
+  *except* Telegram, whose credentials usually stay set so the switch is
+  reversible. Order fills, stop breaches, regime changes and the rest become
+  `alert` cards; the scan summary, the digest, the weekly report, the scorecard
+  and a page keep the card kinds they already had (§11).
+- Proposal cards go by email and say so: the closing note names the
+  `approve_order` MCP owner tool and prints the `proposal_uid` it takes. The
+  email still cannot approve anything — nothing in an email ever could.
+- There is no `/live_kill`. The `kill_switch` MCP owner tool is the switch
+  (§9a), so `WORKSPACE_OWNER_TOOLS_ENABLED` matters more than it did.
+- The deep-research PDF arrives as an email attachment rather than a Telegram
+  document. Over ~8 MB it is dropped with a log line and the email still
+  arrives; a signed link is not an option, because the PDF is written to the
+  bot container's filesystem and the workspace serving `/cards` cannot read it.
+
+Startup logs one line naming the mode and the channels:
+`runtime_mode telegram=false mode=headless channels=email`.
+
+The switch-over sequence is `docs/OWNER_SETUP.md` §5 — email first, then
+`OWNER_ID`, then the flag — so a channel is proven before the old one goes away.
+
 ## Order of operations to a testing state
 
 1. Merge is on `main`; Railway auto-deploys the bot service. Confirm the bot

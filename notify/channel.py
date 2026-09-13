@@ -18,8 +18,21 @@ KIND_SCAN_MEMO = "scan_memo"
 KIND_SCORECARD = "scorecard"
 KIND_PAGE = "page"
 KIND_DIGEST = "digest"
+#: A routine operational notice — an order filled, a target hit, a regime
+#: change. Distinct from ``KIND_PAGE``, which means capital is exposed in a way
+#: nobody chose and somebody has to act now. The two would be indistinguishable
+#: in `notifications_sent` if they shared a kind, and "was I paged last week"
+#: is exactly the question that log exists to answer.
+KIND_ALERT = "alert"
 
-KINDS = (KIND_PROPOSAL, KIND_SCAN_MEMO, KIND_SCORECARD, KIND_PAGE, KIND_DIGEST)
+KINDS = (
+    KIND_PROPOSAL,
+    KIND_SCAN_MEMO,
+    KIND_SCORECARD,
+    KIND_PAGE,
+    KIND_DIGEST,
+    KIND_ALERT,
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +60,12 @@ class Notification:
             generic ``text`` has no buttons, and the approval card's does.
         ``card_uid`` / ``card_url``
             the stored card this notification carries, when there is one.
+        ``attachments``
+            ``[{"path", "filename"}]``, for a channel that can carry a file.
+            The email channel base64s each one into the send; Telegram ignores
+            the key, because the bot process sends a document through its own
+            queue. Read at send time, so a channel that never sends never
+            touches the disk.
     """
 
     kind: str

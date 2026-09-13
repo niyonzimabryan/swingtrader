@@ -76,10 +76,21 @@ def _bound_caps(caps: dict) -> list[str]:
     )
 
 
+#: Where the owner actually approves, which decides the card's closing note.
+#: ``"telegram"`` is the default and is what every deployment did before the
+#: headless runtime; ``"mcp"`` is a deployment with ``TELEGRAM_ENABLED=false``,
+#: where the switch is the `approve_order` owner tool and the proposal uid is
+#: the argument it needs — so the card has to print it where it can be read,
+#: not only in the page-only identifiers block.
+ROUTE_TELEGRAM = "telegram"
+ROUTE_MCP = "mcp"
+
+
 def build_payload(
     *,
     proposal: dict,
     approvable: bool,
+    approval_route: str = ROUTE_TELEGRAM,
     uid: str = "",
     created_at_utc: str = "",
     chart: dict | None = None,
@@ -347,6 +358,41 @@ def build_payload(
                     "time in any case, so a refusal here is not a reason to work around "
                     "this card."
                 ).strip(),
+            }
+        )
+    elif str(approval_route) == ROUTE_MCP:
+        # Headless. There is no Telegram button, so the card has to say what to
+        # do instead *and* carry the argument that does it. The uid is repeated
+        # out of the page-only identifiers block on purpose: it is now the one
+        # piece of the card the owner has to read back out.
+        blocks.append(
+            {
+                "type": "rows",
+                "rows": [
+                    {
+                        "label": "approve with",
+                        "value": f"approve_order(proposal_uid=\"{proposal.get('proposal_uid') or ''}\")",
+                        "note": "the MCP owner tool, in your coding-agent chat",
+                    },
+                    {
+                        "label": "reject with",
+                        "value": f"reject_order(proposal_uid=\"{proposal.get('proposal_uid') or ''}\")",
+                    },
+                ],
+            }
+        )
+        blocks.append(
+            {
+                "type": "text",
+                "body": (
+                    "Approving places a live entry and then a `gtc` `stop_market` protective "
+                    "exit. Approval happens through the MCP owner tools, not here: this card "
+                    "is a record, and nothing on this page or in this email can approve, "
+                    "modify, or place an order. The tool only *records* your decision — the "
+                    "runtime process is what acts on it, and it re-computes risk from fresh "
+                    "state first. The approval is single-use, expiring, and bound to you."
+                ),
+                "muted": True,
             }
         )
     else:

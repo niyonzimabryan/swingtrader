@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 """
 Swing Trader — Main Entry Point
-Starts the Telegram bot + scheduled pipeline.
+Starts the trading runtime: the scheduled pipeline, the monitors, and — unless
+`TELEGRAM_ENABLED=false` — the Telegram bot.
+
+**Headless mode.** With `TELEGRAM_ENABLED=false` this is a plain asyncio program
+with no Telegram in it at all: no token is required, no `Application`,
+`MessageQueue` or `SwingTraderBot` is built, and `bot.telegram_bot` is not even
+imported. Everything else runs unchanged — the pipeline and its startup
+reconciliation, the scheduler (scans behind `SCHEDULER_ENABLED`) with the same
+daily pre-market self-restart, the order and position monitors and the watchdog,
+the daily digest and the weekly report, Phase 6's execution services, and the
+owner approval poller. Human-facing messages go out through `notify/` (email);
+the owner's controls are the MCP owner tools rather than `/live_kill`, which is
+why `OWNER_ID` stops being optional there (Spec K §10).
 """
 
 import asyncio
@@ -24,10 +36,9 @@ from config.settings import Settings
 from database.db import init_db
 from database.schema import SchemaMismatch
 from orchestrator.pipeline import TradingPipeline
+from orchestrator.runtime import RuntimeContainer
 from orchestrator.scheduler import PipelineScheduler
 from orchestrator.universe import seed_universe
-from bot.telegram_bot import SwingTraderBot
-from bot.message_queue import MessageQueue
 from bot.notifications import NotificationManager
 from execution.order_monitor import OrderMonitor
 from execution.position_monitor import PositionMonitor
@@ -110,6 +121,30 @@ def _reconcile_startup_positions(pipeline, settings, log):
             log.warning("startup_position_reconciliation_failed", broker=broker_name, error=str(e))
 
 
+def _channel_names(settings, telegram_enabled: bool) -> list[str]:
+    """Every channel a human-facing message can travel on, in this mode.
+
+    Telegram is reported from the *flag*, not from whether its credentials are
+    present: the switch-over leaves `TELEGRAM_BOT_TOKEN` set on purpose, so it
+    stays reversible, and a startup line that named a channel the process will
+    never call would be worse than no line at all.
+    """
+    try:
+        from notify.registry import configured_channels
+
+        names = [
+            str(getattr(channel, "name", "") or "")
+            for channel in configured_channels(settings)
+        ]
+    except Exception:  # pragma: no cover - a channel that cannot even be built
+        names = []
+    if telegram_enabled:
+        # The bot delivers through its own in-process queue, which is not a
+        # `notify` channel; it is a channel to a human all the same.
+        return ["telegram"] + [name for name in names if name and name != "telegram"]
+    return [name for name in names if name and name != "telegram"]
+
+
 async def main():
     # Setup logging
     setup_logging("INFO")
@@ -135,20 +170,74 @@ async def main():
     if langfuse_client:
         log.info("langfuse_initialized", host=settings.langfuse_base_url)
 
-    # Validate critical keys
+    # Which runtime this is. Default true, so a deployment that sets nothing
+    # gets exactly what it got before this flag existed.
+    telegram_enabled = bool(getattr(settings, "telegram_enabled", True))
+
+    # Validate critical keys. The Telegram pair is required only when Telegram
+    # is the channel: headless there is no polling connection to open, and
+    # demanding a token for a process that will never call the API is how a
+    # deployment ends up carrying a credential it does not use.
     missing = []
     if not settings.anthropic_api_key:
         missing.append("ANTHROPIC_API_KEY")
-    if not settings.telegram_bot_token:
-        missing.append("TELEGRAM_BOT_TOKEN")
-    if not settings.telegram_chat_id:
-        missing.append("TELEGRAM_CHAT_ID")
+    if telegram_enabled:
+        if not settings.telegram_bot_token:
+            missing.append("TELEGRAM_BOT_TOKEN")
+        if not settings.telegram_chat_id:
+            missing.append("TELEGRAM_CHAT_ID")
     if missing:
-        log.error("missing_api_keys", keys=missing)
+        log.error("missing_api_keys", keys=missing, telegram_enabled=telegram_enabled)
         print(f"\n❌ Missing required API keys: {', '.join(missing)}")
         print("Copy .env.example to .env and fill in your keys.")
         print("See .env.example for registration links.\n")
         sys.exit(1)
+
+    # Headless + Phase 6 needs an explicit owner. `resolve_owner_id` falls back
+    # to TELEGRAM_CHAT_ID (Spec K §10), so with Telegram off and OWNER_ID unset
+    # every approval would be minted against the empty string and every one of
+    # them would be bound to nobody. Refuse to start rather than run a lifecycle
+    # whose owner binding is vacuous.
+    if not telegram_enabled and getattr(settings, "phase6_execution_enabled", False):
+        from portfolio.approvals import resolve_owner_id as _check_owner_id
+
+        if not _check_owner_id(settings):
+            log.error(
+                "owner_id_required_headless",
+                detail=(
+                    "TELEGRAM_ENABLED=false with PHASE6_EXECUTION_ENABLED=true, but no "
+                    "owner id resolves: OWNER_ID is unset and its fallback, "
+                    "TELEGRAM_CHAT_ID, is unset too. Every approval is bound to an "
+                    "owner, so set OWNER_ID. See docs/ENV_SETUP.md 'Headless'."
+                ),
+            )
+            print(
+                "\n❌ OWNER_ID is required when TELEGRAM_ENABLED=false and Phase 6 is on."
+                "\n   Approvals are owner-bound and OWNER_ID's only fallback is "
+                "TELEGRAM_CHAT_ID.\n   See docs/ENV_SETUP.md 'Headless'.\n"
+            )
+            sys.exit(1)
+
+    # One line naming the mode and every channel a human-facing message can
+    # travel on. "Running, but nobody is being told anything" is the failure
+    # this exists to make visible on the first line of a deploy log.
+    channel_names = _channel_names(settings, telegram_enabled)
+    log.info(
+        "runtime_mode",
+        telegram=telegram_enabled,
+        mode="telegram" if telegram_enabled else "headless",
+        channels=",".join(channel_names) or "none",
+    )
+    if not channel_names:
+        log.warning(
+            "no_human_channel",
+            detail=(
+                "Telegram is off and no notify/ channel is configured, so nothing "
+                "reaches a human: every notification falls back to the structured "
+                "log (portfolio.paging.log_pager). Set NOTIFY_EMAIL_ENABLED=true "
+                "with RESEND_API_KEY, PAGER_EMAIL_FROM and PAGER_EMAIL_TO."
+            ),
+        )
 
     # Initialize database. Migrations run here, before any ORM session exists;
     # a schema Alembic cannot safely adopt stops the process with instructions
@@ -169,13 +258,30 @@ async def main():
     log.info("pipeline_ready")
     _reconcile_startup_positions(pipeline, settings, log)
 
-    # Initialize Telegram bot
-    bot = SwingTraderBot(settings, pipeline)
-    app = bot.build()
+    # The process-level shelf for the services more than one caller needs.
+    # `app.bot_data` was that shelf; it is a view of this now (orchestrator/runtime.py).
+    runtime = RuntimeContainer()
 
-    # Initialize message queue and notifications
-    mq = MessageQueue(app.bot)
-    notifications = NotificationManager(mq, settings.telegram_chat_id, settings)
+    # Initialize Telegram bot — or not. Headless, nothing under `bot.telegram_bot`
+    # is even imported, so no `Application`, no `Bot`, and no polling connection.
+    bot = None
+    app = None
+    mq = None
+    if telegram_enabled:
+        from bot.telegram_bot import SwingTraderBot
+        from bot.message_queue import MessageQueue
+
+        bot = SwingTraderBot(settings, pipeline)
+        app = bot.build()
+
+        # Initialize message queue and notifications
+        mq = MessageQueue(app.bot)
+        notifications = NotificationManager(mq, settings.telegram_chat_id, settings)
+    else:
+        # Same manager, a `notify/` sink instead of the queue. Everything that
+        # holds a NotificationManager — the pipeline, the monitors, the digest,
+        # the watchdog, billing_alerts, research_paging — is unchanged.
+        notifications = NotificationManager(settings=settings)
     pipeline.notification_manager = notifications
     pipeline.bot_loop = asyncio.get_running_loop()  # For deep research async scheduling
     billing_alerts.register(notifications, pipeline.bot_loop)
@@ -187,24 +293,56 @@ async def main():
     # Phase 6 (Spec L §6): the proposal -> approval -> execution lifecycle.
     # Wired only when PHASE6_EXECUTION_ENABLED; with the flag off the proposal
     # tool is not even registered on the workspace and no callback is accepted.
-    # The card sender posts through the existing message queue; the execution
-    # service is the ONLY path from an approval to a placement, and it lives in
-    # execution/ where the workspace can never import it.
+    # The card sender posts through the existing message queue, or by email when
+    # Telegram is off; the execution service is the ONLY path from an approval to
+    # a placement either way, and it lives in execution/ where the workspace can
+    # never import it.
     approval_poller = None
     if getattr(settings, "phase6_execution_enabled", False):
-        from bot.handlers.proposals import register_bot_card_sender
         from execution.lifecycle import ExecutionService
         from portfolio.approvals import resolve_owner_id as _resolve_owner_id
 
         from database.db import get_session as _get_session
 
-        register_bot_card_sender(mq, settings.telegram_chat_id, pipeline.bot_loop, settings)
+        if telegram_enabled:
+            from bot.handlers.proposals import register_bot_card_sender
+
+            register_bot_card_sender(mq, settings.telegram_chat_id, pipeline.bot_loop, settings)
+        else:
+            # The email card is the only proposal channel headless, and it says
+            # so: the closing note names the `approve_order` MCP owner tool and
+            # prints the proposal uid it takes. The card still cannot approve
+            # anything — it never could — and the owner tool only *records* the
+            # decision for the poller below to act on.
+            from notify.approval import register_email_card_sender
+
+            register_email_card_sender(settings, approval_route="mcp")
+
+        # Headless, a page is a page card on the configured channels — the same
+        # renderer `portfolio.paging` already uses, with the recovery text
+        # verbatim, rather than a system_message routed through a queue that
+        # does not exist. `pager_for` returns the log-only default when nothing
+        # is configured, which is the correct behaviour and not a failure.
+        _headless_pager = None
+        if not telegram_enabled:
+            from notify.registry import non_telegram_channels
+            from portfolio.paging import pager_for as _pager_for
+
+            _headless_pager = _pager_for(
+                settings, channels=non_telegram_channels(settings)
+            )
 
         def _pager(event, detail):
             # A protection failure or an unknown placement must reach the owner
             # on the same channel everything else pages on. The recovery text is
             # in `detail`; system_message carries it verbatim.
             detail = detail or {}
+            if _headless_pager is not None:
+                try:
+                    _headless_pager(event, detail)
+                except Exception as exc:  # pragma: no cover - channel-specific
+                    log.warning("phase6_page_failed", event=event, error=str(exc))
+                return
             recovery = detail.get("recovery", "")
             # A Strategy Lab page names its execution, a Phase 6 one its
             # proposal. Same channel, same recovery text, and the line says which
@@ -223,7 +361,7 @@ async def main():
             except Exception as exc:  # pragma: no cover - loop-specific
                 log.warning("phase6_page_failed", event=event, error=str(exc))
 
-        app.bot_data["execution_service"] = ExecutionService(
+        runtime.execution_service = ExecutionService(
             session_factory=_get_session,
             broker=pipeline.broker,
             settings=settings,
@@ -250,8 +388,8 @@ async def main():
 
         from execution.strategy_lifecycle import StrategyExecutionService
 
-        app.bot_data["strategy_lab_adapters"] = _adapters
-        app.bot_data["strategy_execution_service"] = StrategyExecutionService(
+        runtime.strategy_lab_adapters = _adapters
+        runtime.strategy_execution_service = StrategyExecutionService(
             session_factory=_get_session,
             settings=settings,
             adapters=_adapters,
@@ -290,8 +428,8 @@ async def main():
             approval_poller = ApprovalPoller(
                 session_factory=_get_session,
                 settings=settings,
-                execution_service=app.bot_data["execution_service"],
-                strategy_execution_service=app.bot_data["strategy_execution_service"],
+                execution_service=runtime.execution_service,
+                strategy_execution_service=runtime.strategy_execution_service,
                 memo_executor=_memo_executor,
                 adapters=_adapters,
                 notify=_pager,
@@ -301,6 +439,13 @@ async def main():
                 "approval_poller_wired",
                 interval_seconds=getattr(settings, "owner_action_poll_seconds", 20),
             )
+
+    # Telegram's handlers still read `context.bot_data["execution_service"]` and
+    # friends by name, so the container is copied in here — which is why not one
+    # file under `bot/handlers/` changed for this. The container itself goes in
+    # too, under "runtime", for anything that ever wants the live object.
+    if app is not None:
+        app.bot_data.update(runtime.as_bot_data())
 
     # Initialize order monitor — always bound to the Alpaca broker, never the
     # mode-sensitive router. These monitors manage Alpaca order lifecycles only;
@@ -324,7 +469,13 @@ async def main():
 
     # Initialize scheduler (skip scans if SCHEDULER_ENABLED=false to save API
     # credits — but the daily pre-market self-restart still runs regardless).
-    import os
+    #
+    # `os` is imported at module scope. A second `import os` used to sit on this
+    # line, and because a function-level import binds the name *locally for the
+    # whole function*, it made every earlier `os.environ` read in `main()` an
+    # UnboundLocalError — including the one that gives the approval poller its
+    # RAILWAY_REPLICA_ID, so OWNER_ACTION_POLLER_ENABLED=true crashed the
+    # process at startup. `tests/test_headless_runtime.py` is what caught it.
     scheduler_enabled = os.getenv("SCHEDULER_ENABLED", "true").lower() not in ("false", "0", "no")
     scheduler = PipelineScheduler(pipeline, settings)
 
@@ -345,10 +496,11 @@ async def main():
             await watchdog.stop()
         except Exception as e:
             log.warning("daily_restart_cleanup_watchdog_failed", error=str(e))
-        try:
-            await bot.stop()
-        except Exception as e:
-            log.warning("daily_restart_cleanup_bot_failed", error=str(e))
+        if bot is not None:
+            try:
+                await bot.stop()
+            except Exception as e:
+                log.warning("daily_restart_cleanup_bot_failed", error=str(e))
         if langfuse_client:
             try:
                 langfuse_client.flush()
@@ -363,9 +515,17 @@ async def main():
     log.info("scheduler_ready", scans_enabled=scheduler_enabled)
 
     # Start bot
-    log.info("starting_telegram_bot")
+    if telegram_enabled:
+        log.info("starting_telegram_bot")
+    else:
+        log.info("starting_headless_runtime", channels=",".join(channel_names) or "none")
     print("\n✅ Swing Trader is running!")
-    print(f"   Telegram bot active — send /help to your bot")
+    if telegram_enabled:
+        print(f"   Telegram bot active — send /help to your bot")
+    else:
+        print(f"   Headless (TELEGRAM_ENABLED=false) — no Telegram connection")
+        print(f"   Notifications: {', '.join(channel_names) or 'none (log only)'}")
+        print(f"   Owner controls: the MCP owner tools, not /live_kill")
     if scheduler_enabled:
         print(f"   Scheduler: 3 daily scans at {settings.pre_market_hour}:00, {settings.midday_hour}:00, {settings.post_market_hour}:00 ET")
         print(f"   Daily digest: 5:00 PM ET (weekdays)")
@@ -379,7 +539,8 @@ async def main():
     print(f"   Press Ctrl+C to stop\n")
 
     try:
-        await bot.start()
+        if bot is not None:
+            await bot.start()
 
         # Start order monitor (runs as async background task)
         await order_monitor.start()
@@ -420,7 +581,8 @@ async def main():
         await position_monitor.stop()
         await order_monitor.stop()
         scheduler.stop()
-        await bot.stop()
+        if bot is not None:
+            await bot.stop()
         log.info("swing_trader_stopped")
 
 

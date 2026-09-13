@@ -29,6 +29,7 @@ Three rules hold everywhere in here:
 """
 
 from notify.channel import (  # noqa: F401
+    KIND_ALERT,
     KIND_DIGEST,
     KIND_PAGE,
     KIND_PROPOSAL,
@@ -42,6 +43,7 @@ from notify.registry import broadcast, configured_channels  # noqa: F401
 __all__ = [
     "Channel",
     "Notification",
+    "KIND_ALERT",
     "KIND_PROPOSAL",
     "KIND_SCAN_MEMO",
     "KIND_SCORECARD",

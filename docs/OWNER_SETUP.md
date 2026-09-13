@@ -443,10 +443,75 @@ already contains. `docs/NOTIFICATIONS.md` argues that trade in full, and
 browser first.
 
 **The email cannot approve anything**, and that is deliberate: an email has no
-callback and the card page has no route that writes. So with email on and
-Telegram off, cards arrive and nothing can be released — the workspace says so
-at startup with `proposal_card_not_approvable`. Keep both on until owner
-approval over MCP lands in a later change.
+callback and the card page has no route that writes. What you approve *with* is
+either the Telegram button or the `approve_order` MCP owner tool in your
+coding-agent chat (§5a below, and `docs/ENV_SETUP.md` §9a); the email and the
+page are how you read the card, never how you release it.
+
+### 5a. Going headless: switching Telegram off
+
+Once email is proven and the owner tools are on, `TELEGRAM_ENABLED=false` takes
+Telegram out of the bot process entirely — no token required, no polling
+connection, and a plain asyncio runtime that still runs the scheduler, the
+monitors, the digests, Phase 6 and the approval poller. `docs/ENV_SETUP.md` §11a
+is the reference; this is the order to do it in, and the order matters because
+each step proves the next one has somewhere to land.
+
+**1. Prove the email channel first.** Do not skip this. Turn `NOTIFY_EMAIL_ENABLED`
+on (above), wait for the 5 PM digest or run a `propose_order`, and confirm the
+message actually arrives in your inbox. Then check the delivery log:
+
+```sql
+SELECT kind, channel, status, provider_id, error, created_at
+FROM notifications_sent ORDER BY id DESC LIMIT 10;
+```
+
+A `sent` row on `channel='email'` is the proof. Turning Telegram off before you
+have one leaves the runtime with no way to reach you at all.
+
+**2. Set `OWNER_ID` explicitly**, to the `TELEGRAM_CHAT_ID` you have been using —
+so approvals minted before the switch still verify — on **both** services:
+
+```bash
+railway variables --service swingtrader --set 'OWNER_ID=${{swingtrader.TELEGRAM_CHAT_ID}}'
+railway variables --service workspace   --set 'OWNER_ID=${{swingtrader.TELEGRAM_CHAT_ID}}'
+```
+
+It must be byte-identical on the two, or a card minted by one fails
+`owner_mismatch` on the other. With Phase 6 on and no owner id resolvable, the
+bot refuses to start and logs `owner_id_required_headless` — a refusal, not a
+silent default, because an approval bound to the empty string is bound to
+nobody.
+
+**3. Turn the owner tools on** (`WORKSPACE_OWNER_TOOLS_ENABLED=true` on the
+workspace, `OWNER_ACTION_POLLER_ENABLED=true` on the bot — `docs/ENV_SETUP.md`
+§9a) and record one decision through them while Telegram is still up, so you
+have seen the path work before it is the only one.
+
+**4. Then, and only then, switch Telegram off:**
+
+```bash
+railway variables --service swingtrader --set "TELEGRAM_ENABLED=false"
+```
+
+Leave `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` set. They cost nothing, no
+Telegram call is made while the flag is false, and leaving them is what makes
+the switch reversible with one variable.
+
+**What to check after the redeploy.** `railway logs --service swingtrader` should
+show `runtime_mode telegram=false mode=headless channels=email` and then
+`starting_headless_runtime`. A `no_human_channel` warning means step 1 was
+skipped — nothing will reach you and the structured log is the only record.
+
+**What changes for you.** There is no `/live_kill`: `kill_switch` is an MCP owner
+tool and engaging it needs no confirmation from anyone. Proposal emails name
+`approve_order(proposal_uid="…")` and print the uid. The deep-research PDF
+arrives as an attachment instead of a Telegram document.
+
+The **workspace** service keeps its `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`
+independently of this flag — that is a separate process with its own variables,
+and `TELEGRAM_ENABLED` is read by the bot. Clear them there if you want the
+workspace to stop sending Telegram cards too.
 
 
 ```bash
@@ -455,16 +520,19 @@ railway variables --service swingtrader --set "PHASE6_EXECUTION_ENABLED=true" --
 ```
 
 From an attached client: `propose_order` with `ticker`, `entry`, `stop`,
-`risk_fraction` (no quantity — the service sizes it). A card arrives in
-Telegram; approve it there. The bot places the paper entry on Alpaca, polls the
-fill, places the `gtc` `stop_market`, reads it back, and the proposal reaches
-`protected`. `docs/EXECUTION_LIFECYCLE.md` has every refusal you might see.
+`risk_fraction` (no quantity — the service sizes it). A card arrives — in
+Telegram, in your inbox, or both — and you approve it on the Telegram button or
+with the `approve_order` owner tool. The bot places the paper entry on Alpaca,
+polls the fill, places the `gtc` `stop_market`, reads it back, and the proposal
+reaches `protected`. `docs/EXECUTION_LIFECYCLE.md` has every refusal you might
+see.
 
 **Live** additionally needs, in this order: the Robinhood `gtc stop_market`
 probe from `docs/EXECUTION_LIFECYCLE.md` §6 passing on the Agentic account;
 `docs/robinhood/tool_schemas.json` committed (you generated it 2026-09-08);
-`EXECUTION_MODE=live` on the bot; the kill switch off (`/live_kill off`);
-`ALLOW_LIVE_TRADING=true` (already set — see the note at the top).
+`EXECUTION_MODE=live` on the bot; the kill switch off (`/live_kill off`, or
+`kill_switch("off")` headless); `ALLOW_LIVE_TRADING=true` (already set — see the
+note at the top).
 
 ## 6. Evidence planes and Strategy Lab shadow (no capital involved) — FLAGS DONE 2026-09-12, FIXTURES NOT RECORDED
 
@@ -517,7 +585,9 @@ railway variables --service swingtrader --set "SEC_USER_AGENT=Bryan Niyonzima ni
 # record real fixtures once from the laptop and push (docs/ENV_SETUP.md §3, §5):
 python -m scripts.record_filings_fixtures && python -m scripts.record_macro_fixtures
 railway variables --service swingtrader --set "STRATEGY_LAB_ENABLED=true" --set "STRATEGY_LAB_SHADOW_ENABLED=true"
-# /experiments in Telegram after the next scan. STRATEGY_LAB_UNIVERSE_ENABLED only after the price backfill.
+# /experiments in Telegram after the next scan — or experiments_status over MCP,
+# which is what you use once TELEGRAM_ENABLED=false (§5a).
+# STRATEGY_LAB_UNIVERSE_ENABLED only after the price backfill.
 ```
 
 ## Open items nobody can do but you

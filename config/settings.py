@@ -252,6 +252,21 @@ class Settings(BaseSettings):
     # owner-bound too, exactly like an execution approval (Spec Q §13).
     owner_action_ttl_seconds: int = 900
 
+    # --- The Telegram runtime (headless mode) ---
+    # Default **true**, which is the one place this repo's "every new capability
+    # ships behind a flag defaulting off" rule reads backwards: the new
+    # capability is running *without* Telegram, so it is the `false` setting
+    # that is new and production with no variable set behaves exactly as it did.
+    # With it false `main.py` requires no TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID,
+    # builds no `Application`, no `MessageQueue` and no `SwingTraderBot`, and
+    # never calls the Telegram API; the scheduler, the monitors, the digests,
+    # Phase 6 and the owner approval poller all still run, and every
+    # human-facing message goes out through `notify/` (email). There is then no
+    # `/live_kill` command, so the `kill_switch` MCP tool is the switch, and
+    # OWNER_ID has to be set explicitly because its default derives from
+    # TELEGRAM_CHAT_ID. See docs/ENV_SETUP.md "Headless".
+    telegram_enabled: bool = True
+
     # --- Notification channels and HTML cards (notify/) ---
     # Off by default, like every new capability. With `notify_email_enabled`
     # false no email is sent, no card row is written, and the workspace does
