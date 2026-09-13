@@ -482,18 +482,30 @@ These are known and unresolved, not oversights.
    and not of the vendor. A paid key on a fund that has split — a leveraged ETF
    is the usual case — would close this. Every other fund ticker tried (QQQ,
    IVV, TQQQ, SOXL, UVXY, DIA, IWM, VOO, GLD) returns `403 Exceeds free tier`.
-7. **Fund coverage is the slice path only.** `--bulk` parses the `stocks` zip;
+7. **The distribution floor narrows for a low-priced, heavily-adjusted fund.**
+   The rounding bound is absolute in `closeadj` units, so the floor in price
+   terms scales as `closeunadj / closeadj` and inversely with price level. For
+   SPY (near $500, ratio ~1.03) it is about 2 bps against distributions of 30+
+   bps — a 150x margin. For a long-lived bond ETF near $8 with a ratio of 2.7
+   it is nearer 30 bps, the same order as that fund's own monthly
+   distribution, so a real distribution could be zeroed. Only the benchmark is
+   loaded as a fund today, so this is a limit to know rather than a bug to fix;
+   lowering `FUND_DISTRIBUTION_SAFETY` to widen the margin would trade a missed
+   distribution for a fabricated one on every ordinary session, which is worse.
+   The real fix, if a second fund is ever needed, is `actions` — once a paid
+   key has settled item 5 above.
+8. **Fund coverage is the slice path only.** `--bulk` parses the `stocks` zip;
    a `funds` bulk zip is a separate change and `--bulk --asset-class fund`
    refuses rather than silently loading equities. For one benchmark that is the
    right trade — SPY through the slice path is a single paged request.
-8. **A fund's `volume` is stored as the vendor publishes it**, which for both
+9. **A fund's `volume` is stored as the vendor publishes it**, which for both
    `stocks` and `funds` is split-adjusted, while `raw_close` is not. So
    `DailyBar.dollar_volume` mixes an unadjusted price with an adjusted volume
    across a split. This is pre-existing on the equity path and was deliberately
    not changed here: it moves every liquidity rank and therefore every
    universe, which is not a thing to fold into a benchmark change. It does not
    reach the benchmark, which is never ranked.
-9. **`liquid_us_equity_v1` rebuilds in memory.** `universes.rebuild` loads every
+10. **`liquid_us_equity_v1` rebuilds in memory.** `universes.rebuild` loads every
    stored bar to rank month-ends. That is fine for the fixture and for a few
    hundred names; a full 5,000-name, 10-year file is ~12M rows and will need a
    windowed rebuild (one month-end at a time, bars restricted to the window).

@@ -277,17 +277,36 @@ class FundBarsTests(unittest.TestCase):
             fund_factors_from_quotes(quotes, "BAD")
         self.assertIn("negative", str(caught.exception))
 
+    @staticmethod
+    def _floor(prev_unadj: float, prev_adj: float) -> float:
+        bound = 4 * FUND_QUOTE_HALF_ULP * (prev_unadj / prev_adj)
+        return FUND_DISTRIBUTION_SAFETY * bound
+
     def test_the_noise_floor_is_far_below_a_real_distribution(self):
         """Stated as a ratio so the constants cannot drift apart unnoticed.
 
         Measured live over 292 SPY sessions: implied noise never above
         0.019 bps of price, the five real distributions all above 30 bps.
         """
-        prev_unadj = prev_adj = 476.0
-        bound = 4 * FUND_QUOTE_HALF_ULP * (prev_unadj / prev_adj)
-        floor = FUND_DISTRIBUTION_SAFETY * bound
+        floor = self._floor(476.0, 462.6)         # SPY, live values
         self.assertLess(floor, 0.10)              # far below a $1.60 distribution
         self.assertGreater(floor, 0.001)          # and above the $0.0009 noise
+
+    def test_the_floor_narrows_for_a_low_priced_heavily_adjusted_fund(self):
+        """Pins the known limit rather than leaving it to be discovered.
+
+        The rounding bound is absolute in `closeadj` units, so the floor in
+        *price* terms scales as `closeunadj/closeadj` and inversely with price
+        level. SPY has a 150x margin; an $8 bond ETF with a 2.7x cumulative
+        adjustment has one of the same order as its own monthly distribution.
+        Only the benchmark is loaded as a fund today, and `docs/PRICE_PLANE.md`
+        open item 7 records this. If this assertion ever fails, the constants
+        moved and that document needs rewriting with them.
+        """
+        spy_bps = self._floor(476.0, 462.6) / 476.0 * 1e4
+        bond_bps = self._floor(8.0, 3.0) / 8.0 * 1e4
+        self.assertLess(spy_bps, 5.0)
+        self.assertGreater(bond_bps, 20.0)
 
     def test_a_non_positive_quote_refuses(self):
         quotes = [

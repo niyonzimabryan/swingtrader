@@ -288,6 +288,19 @@ FUND_QUOTE_TERMS = 4
 #: rounding predicts. The floor this constant sets for SPY is about $0.01 —
 #: roughly ten times the largest noise ever observed and about a hundred and
 #: fifty times smaller than the smallest real distribution.
+#:
+#: **Where the margin narrows.** The rounding bound is absolute in `closeadj`
+#: units, so the floor in *price* terms scales as
+#: `closeunadj / closeadj` — a fund's cumulative distribution adjustment — and
+#: inversely with its price level. SPY, quoted near $500 with a ratio of about
+#: 1.03, gets a floor around 2 bps. A long-lived bond ETF quoted near $8 with a
+#: ratio of 2.7 gets one nearer 30 bps, which is the same order as its own
+#: monthly distribution — so for such a fund a real distribution could be
+#: zeroed. That is a known limit, recorded in `docs/PRICE_PLANE.md`, not a
+#: property anyone should discover from a wrong number: the only fund this
+#: system uses is the benchmark, and lowering the constant to widen the margin
+#: would trade a missed distribution for a fabricated one on every ordinary
+#: session, which is the worse of the two.
 FUND_DISTRIBUTION_SAFETY = 5.0
 
 DEFAULT_TIMEOUT_S = 30.0
