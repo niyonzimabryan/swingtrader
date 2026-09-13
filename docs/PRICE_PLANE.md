@@ -315,6 +315,57 @@ To read the same value back later without re-running a backfill:
 python -m scripts.benchmark_uid SPY
 ```
 
+### Bulk backfill: streamed, resumable, memory-bounded
+
+```bash
+python -m scripts.price_backfill --source sharadar --bulk years=10
+# killed, or aborted by the RSS guard? finish it:
+python -m scripts.price_backfill --source sharadar --resume /tmp/sharadar_bulk_checkpoint.json
+```
+
+`--bulk years=5|10|full` downloads Sharadar's whole-market zip instead of
+paging per ticker — the right mode for a full backfill, since paging
+thousands of names one at a time would take hours. The first implementation
+parsed that zip into a `dict[ticker, list[dict]]` before building a single
+`DailyBar`; in production that hit **3.4 GB RSS 15 seconds in** and got the
+bot container SIGKILLed three times
+(`docs/investment-workspace/handoff/OWNER_SETUP_EXECUTION_2026-09-12.md` §4).
+It is now streamed instead: the zip's CSV is read row by row into an on-disk
+SQLite staging file (`data/prices/bulk_stream.py`, ~50k rows per batch,
+indexed on `ticker`), and one ticker at a time is derived, checked, stored in
+one transaction, and dropped from staging — so peak memory is one ticker's
+history, never the whole market. Measured locally against a synthetic
+2,000-ticker × 2,500-session zip (~5M rows, ~265 MB — comparable in scale to
+the real 10-year universe): the old whole-file parse peaked at **3.37 GB**
+RSS (matching the production SIGKILL number almost exactly); the streaming
+path peaked at **98 MB**.
+
+`--tickers` now filters **during** staging, not after the parse — a filtered
+run never writes another name's rows to the staging file at all.
+
+**Resumable.** A checkpoint file (`--checkpoint PATH`, default a fixed path
+under the OS temp directory so a second invocation can find it with no note
+-taking) is rewritten after every ticker is committed. A run interrupted for
+any reason — killed, crashed, or its own `--max-rss-mb` guard tripping —
+resumes with `--resume PATH`: every bulk-shaped flag (`--bulk`, `--tickers`,
+`--since`, `--until`, `--skip-reconstruction-check`) is read back from the
+checkpoint, not from the `--resume` invocation's own flags, and a ticker
+already committed is never reprocessed. A `--resume` after a clean finish is
+a no-op.
+
+**`--max-rss-mb N`** (default 1500) samples this process's RSS
+(`utils.memory.max_rss_mb`) between tickers and aborts cleanly — checkpoint
+saved, exit code 3 — rather than waiting for the platform to SIGKILL it. Pick
+a number comfortably under the host's actual memory ceiling; the guard only
+samples between tickers, so it cannot catch a spike mid-ticker, though one
+ticker's history is small enough that this has not been a practical problem.
+
+`load_bulk_bars`/`load_bulk_actions` still exist and still return a
+whole-market dict — for the test suite, mainly — but `backfill_bulk` does not
+call them; it drives `SharadarPricePlane.open_bulk_bar_stream` directly. See
+`data/prices/sharadar.py`'s module docstring ("Bulk downloads: streamed, not
+materialised") for the adapter-level detail.
+
 ### Universes
 
 ```bash

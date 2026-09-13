@@ -133,6 +133,39 @@ Confirmed live (`tests/fixtures/sharadar_direct/error_*.json`):
 * A non-JSON body, or JSON missing the `data` list, or a row missing an
   expected key — `PricePlaneSchemaError`, unchanged in spirit from the
   pre-port adapter.
+
+Bulk downloads: streamed, not materialised
+--------------------------------------------
+`bulk_download` fetches the vendor's whole-market zip for `--bulk years=5|10|
+full` (`scripts/price_backfill.py`); the 10-year `stocks` zip is the whole US
+equity market's daily history, and parsing it with a
+`dict[ticker, list[dict]]` accumulator — this adapter's first implementation —
+held two full in-memory copies at once. Instrumented in production that hit
+3.4 GB RSS 15 seconds in and got the bot container SIGKILLed three times
+(`docs/investment-workspace/handoff/OWNER_SETUP_EXECUTION_2026-09-12.md` §4);
+`--tickers` did not help, because the old `backfill_bulk` filtered *after* that
+full parse.
+
+`open_bulk_bar_stream` (backed by `data/prices/bulk_stream.BulkStagingStore`)
+replaces the accumulator with a table on disk: the zip's CSV is streamed in
+once, in ~50k-row batches, into a SQLite file indexed on `ticker` —
+`--tickers` filters **during** this pass, so a subset run never even writes
+another name's rows to disk. A caller (`scripts/price_backfill.py`'s
+`backfill_bulk`) then drains one ticker at a time — build bars, apply that
+ticker's split/dividend factors, `with_derived_series`, remap the placeholder
+`security_uid`, store in one transaction, drop the staged rows — so peak
+memory is one ticker's history plus one staging batch, never the whole
+market. `load_bulk_bars` still exists and still returns the whole-market
+dict, for a caller that genuinely wants it (mainly the test suite); it holds
+everything in memory exactly like the pre-streaming version did, and a real
+backfill must not call it — see its docstring.
+
+The staging file is also the resumability boundary: `backfill_bulk` commits
+and drops one ticker at a time and checkpoints after each one, so a run
+killed mid-way — by `--max-rss-mb`'s own guard, or by the same SIGKILL this
+was built to survive — restarts with `--resume` from the next undone ticker,
+not from the top of the zip. See `scripts/price_backfill.py`'s module
+docstring for the full `--checkpoint`/`--resume`/`--max-rss-mb` contract.
 """
 
 from __future__ import annotations
@@ -141,6 +174,7 @@ import csv
 import io
 import os
 import re
+import tempfile
 import zipfile
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -159,6 +193,7 @@ from data.prices.base import (
     SecurityMasterRow,
     normalize_company_name,
 )
+from data.prices.bulk_stream import BulkStagingStore
 from data.prices.derived import with_derived_series
 
 SOURCE = "sharadar"
@@ -316,6 +351,10 @@ MAX_PAGES = 500
 #: `years=` values the bulk endpoint accepts (Spec N §5.4/§5.5; the owner buys
 #: the 10-year Prices tier).
 BULK_YEARS = ("5", "10", "full")
+
+#: Rows staged per batch when a bulk `stocks` zip is streamed to disk
+#: (`open_bulk_bar_stream`) — see `data/prices/bulk_stream.py`.
+DEFAULT_BULK_BATCH_SIZE = 50_000
 
 
 class PricePlaneAuthError(PricePlaneConfigError):
@@ -632,7 +671,17 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         return dest
 
     def load_bulk_bars(self, zip_path: str | Path) -> dict[str, tuple[DailyBar, ...]]:
-        """Parse a `stocks` bulk zip into bars per ticker, factors applied.
+        """Parse a `stocks` bulk zip into bars per ticker, no factors applied.
+
+        A thin wrapper over `open_bulk_bar_stream` (the streaming stager under
+        `data/prices/bulk_stream.py`) for a caller that actually wants the
+        whole-market dict back — the test suite, mainly. **This still holds
+        every ticker's bars in memory at once**, exactly like the pre-streaming
+        implementation did; a real bulk backfill must not call this (and
+        `scripts/price_backfill.py`'s `backfill_bulk` does not) — it drives
+        `open_bulk_bar_stream` directly instead, storing and dropping one
+        ticker at a time so peak memory never holds this method's return
+        value.
 
         The zip's single CSV member is read by header name rather than a
         hardcoded filename — the exact name inside the zip is unverified
@@ -640,6 +689,11 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         column headers are the same `STOCKS_COLUMNS` names the slice path
         already validates against, per the CSV slice recorded in
         `tests/fixtures/sharadar_direct/stocks_aapl.csv`.
+
+        No split/dividend factors are applied here — this method takes no
+        actions zip, so every bar gets `split_factor=1.0, dividend_cash=0.0`,
+        same as before streaming. `open_bulk_bar_stream`'s `actions_by_ticker`
+        parameter is what lets a caller (`backfill_bulk`) apply real factors.
 
         **`security_uid` is a placeholder** (`sharadar:bulk:<ticker>`): the
         bulk `stocks` CSV carries no `permaticker`, only `ticker`, so there is
@@ -651,14 +705,60 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         placeholder orphans the bar. `scripts/price_backfill.py`'s
         `backfill_bulk` does this remap before writing anything.
         """
-        rows_by_ticker = self._read_bulk_csv(zip_path, STOCKS_COLUMNS)
-        out: dict[str, tuple[DailyBar, ...]] = {}
-        for ticker, rows in rows_by_ticker.items():
-            uid = f"{SOURCE}:bulk:{ticker}"
-            bars = [self._bar_from_row(row, ticker, uid, split_factor=1.0, dividend_cash=0.0)
-                    for row in rows]
-            out[ticker] = with_derived_series(sorted(bars, key=lambda b: b.session_date))
+        with tempfile.TemporaryDirectory(prefix="sharadar_bulk_stage_") as tmp:
+            staging_db_path = Path(tmp) / "stage.sqlite"
+            with self.open_bulk_bar_stream(zip_path, staging_db_path) as stream:
+                out = {ticker: stream.bars_for(ticker) for ticker in stream.tickers()}
         return out
+
+    def open_bulk_bar_stream(
+        self,
+        zip_path: str | Path | None,
+        staging_db_path: str | Path,
+        tickers: Sequence[str] | None = None,
+        batch_size: int = DEFAULT_BULK_BATCH_SIZE,
+        actions_by_ticker: Mapping[str, Sequence[CorporateActionRecord]] | None = None,
+        resume_staging: bool = False,
+    ) -> "BulkBarStream":
+        """Open a memory-bounded, one-ticker-at-a-time view of a bulk zip.
+
+        Stages `zip_path`'s `stocks` CSV into a SQLite file at
+        `staging_db_path` (`data/prices/bulk_stream.BulkStagingStore`),
+        filtering to `tickers` **during** staging when given, then returns a
+        `BulkBarStream` a caller drains one ticker at a time —
+        `BulkBarStream.bars_for` is the only step that costs more than one
+        ticker's worth of memory, and `BulkBarStream.drop` is what a caller
+        calls once that ticker's bars are safely stored, keeping both peak
+        memory and peak staging-disk usage to one ticker's history.
+
+        `actions_by_ticker`, if given (`load_bulk_actions`'s return value),
+        is turned into per-ticker `{ex_date: (split_factor, dividend_cash)}`
+        factors applied while building each ticker's bars — the same
+        factors the per-ticker slice path (`daily_bars`) applies via
+        `_factors`, just computed from an already-parsed bulk actions zip
+        instead of a fresh `corporate_actions` call per ticker.
+
+        `resume_staging=True` skips `stage()` and reopens an existing,
+        already-staged file at `staging_db_path` instead — for `--resume`,
+        where a prior process staged the zip and this one only needs to
+        finish draining it. Raises `PricePlaneSchemaError` if that file has
+        no staged table to reopen.
+        """
+        store = BulkStagingStore(staging_db_path)
+        if resume_staging:
+            if not store.has_data():
+                store.close()
+                raise PricePlaneSchemaError(
+                    f"{staging_db_path}: --resume needs an already-staged file; "
+                    "found no staged table"
+                )
+        else:
+            store.stage(zip_path, STOCKS_COLUMNS, tickers=tickers, batch_size=batch_size)
+        factors_by_ticker = {
+            ticker: self._factors_from_actions(actions)
+            for ticker, actions in (actions_by_ticker or {}).items()
+        }
+        return BulkBarStream(self, store, factors_by_ticker)
 
     def load_bulk_actions(self, zip_path: str | Path) -> dict[str, tuple[CorporateActionRecord, ...]]:
         """Parse an `actions` bulk zip into corporate actions per ticker.
@@ -863,8 +963,21 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         self, ticker: str, start: date | None, end: date | None
     ) -> dict[date, tuple[float, float]]:
         """`{ex_date: (split_factor, dividend_cash)}` from actions."""
+        return self._factors_from_actions(self.corporate_actions(ticker, start, end))
+
+    @staticmethod
+    def _factors_from_actions(
+        actions: Sequence[CorporateActionRecord],
+    ) -> dict[date, tuple[float, float]]:
+        """`{ex_date: (split_factor, dividend_cash)}` from already-parsed actions.
+
+        The shared core of `_factors` (per-ticker slice path, one
+        `corporate_actions` call) and `open_bulk_bar_stream` (bulk path, an
+        already-parsed `load_bulk_actions` result) — same fold, different
+        source of `CorporateActionRecord`s.
+        """
         out: dict[date, tuple[float, float]] = {}
-        for action in self.corporate_actions(ticker, start, end):
+        for action in actions:
             split, dividend = out.get(action.ex_date, (1.0, 0.0))
             if action.action_type in ACTION_SPLIT_VALUES and action.value:
                 split *= action.value
@@ -1100,3 +1213,64 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
     def _uid_for(self, ticker: str) -> str:
         """Back-compat alias: the uid half of `_resolve`."""
         return self._resolve(ticker)[0]
+
+
+class BulkBarStream:
+    """One ticker's `DailyBar`s at a time from a staged bulk `stocks` zip.
+
+    Returned by `SharadarPricePlane.open_bulk_bar_stream`. The intended loop
+    (`scripts/price_backfill.py`'s `backfill_bulk`):
+
+        for ticker in stream.tickers():
+            bars = stream.bars_for(ticker)   # the only per-ticker-sized step
+            ... remap uid, store in one transaction ...
+            stream.drop(ticker)              # free the staged rows
+
+    `tickers()` is cheap (one indexed `SELECT DISTINCT`) and safe to call
+    speculatively; `bars_for` is the step that costs one ticker's worth of
+    memory, never the whole zip's.
+    """
+
+    def __init__(
+        self,
+        plane: "SharadarPricePlane",
+        store: BulkStagingStore,
+        factors_by_ticker: Mapping[str, Mapping[date, tuple[float, float]]] | None = None,
+    ):
+        self._plane = plane
+        self._store = store
+        self._factors_by_ticker = factors_by_ticker or {}
+
+    def tickers(self) -> list[str]:
+        """Every ticker still staged, ascending. Shrinks as `drop` is called."""
+        return self._store.distinct_tickers()
+
+    def bars_for(self, ticker: str) -> tuple[DailyBar, ...]:
+        """Build `ticker`'s bars from its staged rows, factors applied.
+
+        `security_uid` is still the `sharadar:bulk:<ticker>` placeholder — the
+        caller remaps it through `security_master` before storing, exactly as
+        it always has (see `load_bulk_bars`'s docstring).
+        """
+        uid = f"{SOURCE}:bulk:{ticker}"
+        factors = self._factors_by_ticker.get(ticker, {})
+        bars = []
+        for row in self._store.rows_for_ticker(ticker):
+            session = self._plane._need_date(row, "date", f"stocks {ticker}")
+            split_factor, dividend_cash = factors.get(session, (1.0, 0.0))
+            bars.append(self._plane._bar_from_row(row, ticker, uid, split_factor, dividend_cash))
+        return with_derived_series(sorted(bars, key=lambda b: b.session_date))
+
+    def drop(self, ticker: str) -> None:
+        """Free `ticker`'s staged rows. Call only after they are safely stored."""
+        self._store.drop_ticker(ticker)
+
+    def close(self) -> None:
+        self._store.close()
+
+    def __enter__(self) -> "BulkBarStream":
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        self.close()
+        return False

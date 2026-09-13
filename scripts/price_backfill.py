@@ -3,6 +3,7 @@
     python -m scripts.price_backfill --source fixture --since 2023-01-01
     python -m scripts.price_backfill --source sharadar --since 2015-01-01 --tickers AAPL,MSFT
     python -m scripts.price_backfill --source sharadar --bulk years=10
+    python -m scripts.price_backfill --source sharadar --resume /tmp/sharadar_bulk_checkpoint.json
     python -m scripts.price_backfill --source sharadar --since 2016-01-01 \
         --tickers SPY --asset-class fund
 
@@ -23,8 +24,31 @@ where paging thousands of names one at a time would take hours. Security
 master rows are still fetched through the ordinary slice path, batched to keep
 the `ticker=` query string a sane length, since `tickers` is a full-snapshot
 table either way (Sharadar re-publishes it whole regardless of `years`).
-`--tickers` still narrows a bulk run to a subset after the zip is parsed;
-omitted, every ticker in the zip is loaded.
+`--tickers` narrows a bulk run to a subset **during** staging now, not after
+parsing — a filtered run never writes another name's rows to the staging file.
+
+Memory-bounded and resumable (`data/prices/bulk_stream.py`,
+`data/prices/sharadar.py`'s "Bulk downloads" docstring section): the `stocks`
+zip is streamed into an on-disk SQLite staging file rather than held in memory,
+one ticker is derived, checked and stored (one transaction) at a time, and a
+checkpoint is written after every ticker. Two flags control this:
+
+* `--checkpoint PATH` — where to write progress (default: a fixed path under
+  the OS temp directory, printed at the end of a `--bulk` run so it can be
+  handed to `--resume`). Also names the staging SQLite file (`PATH` with a
+  `.sqlite` suffix), which persists after the process exits specifically so a
+  killed run's staged rows survive it.
+* `--resume PATH` — finish a checkpointed `--bulk` run instead of starting a
+  new one. Every parameter (`years`, `--tickers`, `--since`, `--until`,
+  `--skip-reconstruction-check`) is read back from the checkpoint, not from
+  this invocation's flags; only `--source`, `--max-rss-mb` and the enabling
+  environment variables need repeating. Tickers already committed are never
+  reprocessed — a `--resume` after a clean finish does nothing.
+* `--max-rss-mb N` (default 1500) — sampled with `utils.memory.max_rss_mb`
+  between tickers; exceeding it aborts cleanly (checkpoint saved, exit code 3)
+  rather than waiting for the platform to SIGKILL the process the way the
+  whole-zip-in-memory implementation did in production
+  (`docs/investment-workspace/handoff/OWNER_SETUP_EXECUTION_2026-09-12.md` §4).
 
 `--asset-class equity|fund|auto` says which Sharadar price table to read.
 `equity` is the default and sends `table=stocks`, exactly as this script did
@@ -50,6 +74,7 @@ Requires `PRICE_PLANE_ENABLED=true`, and for `--source sharadar`,
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tempfile
 from datetime import date, datetime
@@ -64,15 +89,125 @@ from data.prices.base import (
     PricePlaneError,
 )
 from data.prices.derived import check_reconstruction
+from utils.memory import max_rss_mb as sample_rss_mb
+from utils.timeutils import utcnow_naive
 
 #: Tickers per `security_master` call in bulk mode, so the comma-joined
 #: `ticker=` query string stays well under any sane URL-length limit even for
 #: a `years=full` run over the whole market.
 MASTER_BATCH_SIZE = 200
 
+#: `--max-rss-mb` default. Chosen well under the bot container's 8 GB cgroup
+#: limit — the platform SIGKILLed at 3.4 GB in production, so this guard is
+#: meant to abort long before either ceiling, leaving room to actually see the
+#: checkpoint and `--resume` rather than losing the process outright.
+DEFAULT_MAX_RSS_MB = 1500.0
+
+#: Rows staged per batch — see `data/prices/sharadar.DEFAULT_BULK_BATCH_SIZE`.
+DEFAULT_BULK_BATCH_SIZE = 50_000
+
+#: Where `--checkpoint` writes progress when a `--bulk` run does not name one
+#: explicitly. A fixed path under the OS temp directory, not a fresh one per
+#: run: the whole point is that a second invocation (after a kill) can find
+#: it again without the operator having had to note it down first.
+DEFAULT_CHECKPOINT_PATH = Path(tempfile.gettempdir()) / "sharadar_bulk_checkpoint.json"
+
 
 def parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+# --------------------------------------------------------------------------- #
+# Bulk checkpoint — one JSON file, read and rewritten after every ticker
+# --------------------------------------------------------------------------- #
+
+
+def _staging_db_path_for(checkpoint_path: Path) -> Path:
+    return checkpoint_path.with_suffix(".sqlite")
+
+
+def _new_bulk_checkpoint(
+    *,
+    checkpoint_path: Path,
+    staging_db_path: Path,
+    source: str,
+    years: str,
+    tickers: list[str] | None,
+    since: date | None,
+    until: date | None,
+    check: bool,
+    batch_size: int,
+) -> dict:
+    return {
+        "checkpoint_path": str(checkpoint_path),
+        "staging_db_path": str(staging_db_path),
+        "source": source,
+        "years": years,
+        "tickers": tickers,
+        "since": since.isoformat() if since else None,
+        "until": until.isoformat() if until else None,
+        "check": check,
+        "batch_size": batch_size,
+        "staging_complete": False,
+        "tickers_done": [],
+        "bars_written": 0,
+        "actions_written": 0,
+        "securities_written": 0,
+        "tickers_empty": [],
+        "tickers_without_a_security_master_row": [],
+        "aborted_reason": None,
+        "started_at": utcnow_naive().isoformat(),
+        "updated_at": None,
+    }
+
+
+def _save_bulk_checkpoint(state: dict) -> None:
+    """Write `state` to its own `checkpoint_path`, atomically.
+
+    Write-to-temp-then-`rename` so a process killed mid-write never leaves a
+    half-written checkpoint behind for the next `--resume` to choke on — the
+    exact failure mode this file exists to make survivable.
+    """
+    state["updated_at"] = utcnow_naive().isoformat()
+    path = Path(state["checkpoint_path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    tmp.replace(path)
+
+
+def _load_bulk_checkpoint(path: str | Path) -> dict:
+    path = Path(path)
+    if not path.exists():
+        raise PricePlaneError(f"--resume: no checkpoint file at {path}")
+    return json.loads(path.read_text())
+
+
+def _bulk_summary(state: dict, *, aborted: bool) -> dict:
+    tickers_done = state["tickers_done"]
+    tickers_with_bars = (
+        len(tickers_done)
+        - len(state["tickers_empty"])
+        - len(state["tickers_without_a_security_master_row"])
+    )
+    return {
+        "source": state["source"],
+        "since": state["since"],
+        "until": state["until"],
+        "bulk_years": state["years"],
+        "tickers_requested": len(state["tickers"]) if state["tickers"] else None,
+        "tickers_with_bars": tickers_with_bars,
+        "bars_written": state["bars_written"],
+        "actions_written": state["actions_written"],
+        "securities_written": state["securities_written"],
+        "tickers_empty": state["tickers_empty"],
+        "tickers_without_a_security_master_row": state["tickers_without_a_security_master_row"],
+        "reconstruction_checked": state["check"],
+        "checkpoint_path": state["checkpoint_path"],
+        "staging_db_path": state["staging_db_path"],
+        "aborted": aborted,
+        "aborted_reason": state.get("aborted_reason"),
+    }
 
 
 def backfill(
@@ -147,22 +282,43 @@ def backfill_bulk(
     since: date | None,
     until: date | None = None,
     check: bool = True,
+    checkpoint_path: str | Path | None = None,
+    resume: bool = False,
+    max_rss_mb: float | None = DEFAULT_MAX_RSS_MB,
+    batch_size: int = DEFAULT_BULK_BATCH_SIZE,
 ) -> dict:
-    """Bulk-load `stocks` + `actions` from Sharadar's zip download.
+    """Bulk-load `stocks` + `actions` from Sharadar's zip download, streaming.
 
     `plane` must be a `SharadarPricePlane` (bulk is not part of the generic
     `PricePlane` interface — `FixturePricePlane` has no vendor zip to fetch).
-    `tickers`, if given, narrows the parsed zip to a subset; otherwise every
-    ticker in the zip is loaded.
+    Does **not** call `load_bulk_bars`: the `stocks` zip is streamed into an
+    on-disk staging file (`plane.open_bulk_bar_stream`,
+    `data/prices/bulk_stream.py`) and drained one ticker at a time, so peak
+    memory is one ticker's history plus one staging batch, never the whole
+    market (`data/prices/sharadar.py`'s "Bulk downloads" docstring section).
+    `tickers`, if given, narrows the staged rows to a subset **during**
+    staging; otherwise every ticker in the zip is staged.
 
     The bulk `stocks`/`actions` CSVs carry no `permaticker` (only `ticker`),
-    so `load_bulk_bars`/`load_bulk_actions` hand back a placeholder
-    `security_uid`. That placeholder is replaced here with the real
-    permaticker-derived uid from `security_master` before anything is stored
-    — `price_bars` and `securities` are joined on `security_uid`
-    (`data/prices/store.py`), so storing the placeholder would silently orphan
-    every bulk-loaded bar from its security-master row.
+    so the streamed bars carry a placeholder `security_uid`. That placeholder
+    is replaced here with the real permaticker-derived uid from
+    `security_master` before anything is stored — `price_bars` and
+    `securities` are joined on `security_uid` (`data/prices/store.py`), so
+    storing the placeholder would silently orphan every bulk-loaded bar from
+    its security-master row.
+
+    Each ticker is stored in **one transaction** and checkpointed immediately
+    after (`checkpoint_path`, default a fixed path under the OS temp
+    directory) — a run killed at any point resumes with `resume=True` (or the
+    CLI's `--resume`) from the next ticker that was not yet committed, not
+    from the top of the zip. `max_rss_mb`, sampled between tickers, aborts the
+    run the same clean way (checkpoint saved, `summary["aborted"]` set)
+    instead of leaving it to the platform to SIGKILL the process.
+
+    Returns a summary dict; on a `max_rss_mb` abort it reflects everything
+    committed so far, with `"aborted": True` and `"aborted_reason"` set.
     """
+    from contextlib import ExitStack
     from dataclasses import replace as _replace
 
     from database.db import get_session
@@ -170,68 +326,149 @@ def backfill_bulk(
     if not hasattr(plane, "bulk_download"):
         raise PricePlaneError(f"{plane.source} has no bulk download path")
 
-    summary = {
-        "source": plane.source,
-        "since": since.isoformat() if since else None,
-        "until": until.isoformat() if until else None,
-        "bulk_years": years,
-        "tickers_requested": len(tickers) if tickers else None,
-        "tickers_with_bars": 0,
-        "bars_written": 0,
-        "actions_written": 0,
-        "securities_written": 0,
-        "tickers_empty": [],
-        "tickers_without_a_security_master_row": [],
-        "reconstruction_checked": check,
-    }
-
-    with tempfile.TemporaryDirectory(prefix="sharadar_bulk_") as tmp:
-        stocks_zip = plane.bulk_download("stocks", years, Path(tmp) / "stocks.zip")
-        actions_zip = plane.bulk_download("actions", years, Path(tmp) / "actions.zip")
-        bars_by_ticker = plane.load_bulk_bars(stocks_zip)
-        actions_by_ticker = plane.load_bulk_actions(actions_zip)
-
-    wanted = set(tickers) if tickers else set(bars_by_ticker)
-
-    with get_session() as session:
-        ticker_list = sorted(wanted)
-        uid_by_ticker: dict[str, str] = {}
-        for start in range(0, len(ticker_list), MASTER_BATCH_SIZE):
-            batch = ticker_list[start:start + MASTER_BATCH_SIZE]
-            master_rows = plane.security_master(batch)
-            summary["securities_written"] += store.upsert_securities(session, master_rows)
-            uid_by_ticker.update({row.ticker: row.security_uid for row in master_rows})
-
-        for ticker in ticker_list:
-            uid = uid_by_ticker.get(ticker)
-            if uid is None:
-                # `tickers` has no row for this name — refuse to store bars
-                # under the bulk parser's placeholder uid, same principle as
-                # `_uid_for` refusing to invent one on the slice path.
-                summary["tickers_without_a_security_master_row"].append(ticker)
-                continue
-            bars = tuple(
-                _replace(bar, security_uid=uid)
-                for bar in bars_by_ticker.get(ticker, ())
-                if (since is None or bar.session_date >= since)
-                and (until is None or bar.session_date <= until)
+    with ExitStack() as stack:
+        if resume:
+            if checkpoint_path is None:
+                raise PricePlaneError(
+                    "--resume needs --checkpoint naming the file from the run being resumed"
+                )
+            state = _load_bulk_checkpoint(checkpoint_path)
+        elif checkpoint_path is not None:
+            checkpoint_path = Path(checkpoint_path)
+            state = _new_bulk_checkpoint(
+                checkpoint_path=checkpoint_path,
+                staging_db_path=_staging_db_path_for(checkpoint_path),
+                source=plane.source, years=years, tickers=list(tickers) if tickers else None,
+                since=since, until=until, check=check, batch_size=batch_size,
             )
-            if not bars:
-                summary["tickers_empty"].append(ticker)
-                continue
-            if check:
-                check_reconstruction(bars)
-            summary["bars_written"] += store.upsert_bars(session, bars)
-            actions = tuple(
-                _replace(action, security_uid=uid)
-                for action in actions_by_ticker.get(ticker, ())
-                if (since is None or action.ex_date >= since)
-                and (until is None or action.ex_date <= until)
+            _save_bulk_checkpoint(state)
+        else:
+            # No persistence requested: an ephemeral checkpoint/staging file
+            # for the life of this call only, exactly like the pre-streaming
+            # implementation's `tempfile.TemporaryDirectory()` for its zip
+            # downloads — a fresh path per call, never shared across
+            # concurrent callers or leaked into a fixed location.
+            tmp_dir = stack.enter_context(tempfile.TemporaryDirectory(prefix="sharadar_bulk_ckpt_"))
+            checkpoint_path = Path(tmp_dir) / "checkpoint.json"
+            state = _new_bulk_checkpoint(
+                checkpoint_path=checkpoint_path,
+                staging_db_path=_staging_db_path_for(checkpoint_path),
+                source=plane.source, years=years, tickers=list(tickers) if tickers else None,
+                since=since, until=until, check=check, batch_size=batch_size,
             )
-            summary["actions_written"] += store.upsert_corporate_actions(session, actions)
-            summary["tickers_with_bars"] += 1
+            _save_bulk_checkpoint(state)
 
-    return summary
+        years = state["years"]
+        tickers = state["tickers"]
+        since = date.fromisoformat(state["since"]) if state["since"] else None
+        until = date.fromisoformat(state["until"]) if state["until"] else None
+        check = state["check"]
+        staging_db_path = Path(state["staging_db_path"])
+
+        if not state["staging_complete"]:
+            # First attempt at staging, or a prior attempt died mid-stage
+            # (`staging_complete` only ever flips once staging finishes) —
+            # either way, (re)download and (re)stage from scratch. Staging is
+            # cheap to redo (bounded by network/disk I/O, not memory), which
+            # is what makes a mid-staging kill safe to `--resume` from at all.
+            with tempfile.TemporaryDirectory(prefix="sharadar_bulk_dl_") as tmp:
+                stocks_zip = plane.bulk_download("stocks", years, Path(tmp) / "stocks.zip")
+                actions_zip = plane.bulk_download("actions", years, Path(tmp) / "actions.zip")
+                actions_by_ticker = plane.load_bulk_actions(actions_zip)
+                stream = plane.open_bulk_bar_stream(
+                    stocks_zip, staging_db_path, tickers=tickers,
+                    batch_size=state["batch_size"], actions_by_ticker=actions_by_ticker,
+                )
+            state["staging_complete"] = True
+            _save_bulk_checkpoint(state)
+        else:
+            # Staging already finished on a prior run: never re-download or
+            # re-parse the (potentially whole-market) stocks zip again. The
+            # actions zip is small (~5 MB) and re-fetched either way, since it
+            # was never staged to disk in the first place.
+            with tempfile.TemporaryDirectory(prefix="sharadar_bulk_dl_") as tmp:
+                actions_zip = plane.bulk_download("actions", years, Path(tmp) / "actions.zip")
+                actions_by_ticker = plane.load_bulk_actions(actions_zip)
+            stream = plane.open_bulk_bar_stream(
+                None, staging_db_path, actions_by_ticker=actions_by_ticker, resume_staging=True,
+            )
+
+        try:
+            with get_session() as session:
+                ticker_list = stream.tickers()
+                uid_by_ticker: dict[str, str] = {}
+                securities_written = 0
+                for start in range(0, len(ticker_list), MASTER_BATCH_SIZE):
+                    batch = ticker_list[start:start + MASTER_BATCH_SIZE]
+                    master_rows = plane.security_master(batch)
+                    securities_written += store.upsert_securities(session, master_rows)
+                    uid_by_ticker.update({row.ticker: row.security_uid for row in master_rows})
+                session.commit()
+                state["securities_written"] += securities_written
+                _save_bulk_checkpoint(state)
+
+                done = set(state["tickers_done"])
+                for ticker in ticker_list:
+                    if ticker in done:
+                        continue  # belt-and-suspenders; `drop` already removes it from `ticker_list`
+
+                    uid = uid_by_ticker.get(ticker)
+                    if uid is None:
+                        # `tickers` has no row for this name — refuse to store
+                        # bars under the bulk parser's placeholder uid, same
+                        # principle as `_uid_for` refusing to invent one on
+                        # the slice path.
+                        state["tickers_without_a_security_master_row"].append(ticker)
+                        state["tickers_done"].append(ticker)
+                        stream.drop(ticker)
+                        _save_bulk_checkpoint(state)
+                        continue
+
+                    bars = tuple(
+                        _replace(bar, security_uid=uid)
+                        for bar in stream.bars_for(ticker)
+                        if (since is None or bar.session_date >= since)
+                        and (until is None or bar.session_date <= until)
+                    )
+                    if not bars:
+                        state["tickers_empty"].append(ticker)
+                        state["tickers_done"].append(ticker)
+                        stream.drop(ticker)
+                        _save_bulk_checkpoint(state)
+                        continue
+
+                    if check:
+                        check_reconstruction(bars)
+
+                    actions = tuple(
+                        _replace(action, security_uid=uid)
+                        for action in actions_by_ticker.get(ticker, ())
+                        if (since is None or action.ex_date >= since)
+                        and (until is None or action.ex_date <= until)
+                    )
+                    bars_written = store.upsert_bars(session, bars)
+                    actions_written = store.upsert_corporate_actions(session, actions)
+                    session.commit()  # one transaction per ticker
+
+                    state["bars_written"] += bars_written
+                    state["actions_written"] += actions_written
+                    state["tickers_done"].append(ticker)
+                    stream.drop(ticker)
+                    _save_bulk_checkpoint(state)
+
+                    if max_rss_mb is not None:
+                        rss = sample_rss_mb()
+                        if rss > max_rss_mb:
+                            state["aborted_reason"] = (
+                                f"RSS {rss:.0f}MB exceeded --max-rss-mb {max_rss_mb:.0f} "
+                                f"after {ticker}"
+                            )
+                            _save_bulk_checkpoint(state)
+                            return _bulk_summary(state, aborted=True)
+        finally:
+            stream.close()
+
+    return _bulk_summary(state, aborted=False)
 
 
 def parse_bulk_years(value: str) -> str:
@@ -261,6 +498,25 @@ def main(argv: list[str] | None = None) -> int:
         "instead of paging per ticker",
     )
     parser.add_argument(
+        "--checkpoint", default=None, metavar="PATH",
+        help="--bulk only: where to write progress (default: a fixed path under "
+        f"the OS temp directory, {DEFAULT_CHECKPOINT_PATH}). Also names the "
+        "staging SQLite file, which persists after this process exits so a "
+        "killed run can --resume from it.",
+    )
+    parser.add_argument(
+        "--resume", default=None, metavar="PATH",
+        help="finish a checkpointed --bulk run from PATH instead of starting a new "
+        "one; --bulk, --tickers, --since, --until and --skip-reconstruction-check "
+        "are read back from the checkpoint and this invocation's own values are "
+        "ignored",
+    )
+    parser.add_argument(
+        "--max-rss-mb", type=float, default=DEFAULT_MAX_RSS_MB, metavar="MB",
+        help="--bulk/--resume only: abort cleanly, with a checkpoint, if this "
+        f"process's RSS exceeds MB, sampled between tickers (default {DEFAULT_MAX_RSS_MB:.0f})",
+    )
+    parser.add_argument(
         "--asset-class", default=ASSET_CLASS_EQUITY,
         choices=(ASSET_CLASS_EQUITY, ASSET_CLASS_FUND, "auto"),
         help="which Sharadar price table to read: equity -> stocks (default, "
@@ -271,6 +527,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--snapshot", default=None, help="snapshot slug to record coverage on")
     parser.add_argument("--skip-reconstruction-check", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.bulk and args.resume:
+        print("--bulk and --resume are mutually exclusive: --resume replays "
+              "the checkpointed run's own --bulk/--tickers/--since/--until", file=sys.stderr)
+        return 2
 
     settings = plane_config.get_settings()
     try:
@@ -304,7 +565,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    if not tickers and not args.bulk:
+    if not tickers and not args.bulk and not args.resume:
         listed = getattr(plane, "tickers", None)
         if listed is None:
             print(
@@ -325,11 +586,19 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    if args.bulk:
-        summary = backfill_bulk(
-            plane, args.bulk, tickers or None, args.since, args.until,
-            check=not args.skip_reconstruction_check,
-        )
+    if args.bulk or args.resume:
+        checkpoint_path = args.resume or args.checkpoint or DEFAULT_CHECKPOINT_PATH
+        try:
+            summary = backfill_bulk(
+                plane, args.bulk, tickers or None, args.since, args.until,
+                check=not args.skip_reconstruction_check,
+                checkpoint_path=checkpoint_path,
+                resume=bool(args.resume),
+                max_rss_mb=args.max_rss_mb,
+            )
+        except PricePlaneError as exc:
+            print(f"price backfill refused: {exc}", file=sys.stderr)
+            return 2
     else:
         summary = backfill(
             plane, tickers, args.since, args.until,
@@ -355,6 +624,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     if summary["tickers_empty"]:
         print(f"no bars for: {', '.join(summary['tickers_empty'])}")
+
+    if "checkpoint_path" in summary:
+        print(f"checkpoint: {summary['checkpoint_path']}")
+
+    if summary.get("aborted"):
+        print(
+            f"bulk backfill aborted: {summary['aborted_reason']}; "
+            f"resume with --resume {summary['checkpoint_path']}",
+            file=sys.stderr,
+        )
+        return 3
 
     # The uid printout. A fund run exists to produce it: the benchmark variable
     # is a `security_uid`, and nothing else in the pipeline ever shows one to a
