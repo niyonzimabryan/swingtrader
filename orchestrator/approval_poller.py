@@ -36,6 +36,18 @@ differently:
    Telegram button — still places once;
 3. ``on_approval`` refuses anything not still ``proposed``.
 
+**A claim is never reaped, and that is deliberate.** If this process dies
+between claiming a decision and finishing it, the row stays claimed and no
+poller picks it up again — the decision is stuck, not retried. A stale-claim
+reaper would re-run an action whose outcome is *unknown*, which is precisely the
+case the rest of the system treats as ``reconciliation_required`` rather than
+retrying (Spec L §5.1): the entry may already be at the broker. So the failure
+direction is stuck, which is visible, over double-placed, which is not. A
+claimed row with no outcome shows up in ``proposals_pending``'s
+``recorded_decisions`` with its ``claimed_at`` set and nothing else, and the
+recovery is the owner's: check the broker, then reject the proposal or let the
+reconciliation pass resolve it.
+
 **Both flags, and both default off.** ``PHASE6_EXECUTION_ENABLED`` *and*
 ``OWNER_ACTION_POLLER_ENABLED``. Turning Phase 6 on must not silently start a
 second path to placement in a deployment that never asked for one, and Phase 6
