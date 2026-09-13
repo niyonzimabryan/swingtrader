@@ -43,16 +43,20 @@ def build_broker(settings, *, fake: bool = False):
 
 
 def build_pager(settings):
-    """The out-of-band page. Structured log today (Spec K §7 keeps Telegram).
+    """The out-of-band page: the structured log line, plus any configured channel.
 
-    Deliberately not wired to the Telegram bot from here: the bot is a separate
-    process and importing it to page would start a second one. The log line is
-    what Railway alerts on; a Telegram-backed pager is a one-line substitution
-    when the alert path is moved.
+    Still not wired to the *bot* from here — the bot is a separate process and
+    importing it to page would start a second one. What changed is that
+    ``notify/`` reaches Telegram over its HTTP API and Resend over its own, so
+    this process can page without importing either process.
+
+    ``portfolio.paging.pager_for`` returns the plain log pager when nothing is
+    configured, so a deployment with no new variable set pages exactly as it
+    did before.
     """
-    from portfolio.paging import log_pager
+    from portfolio.paging import pager_for
 
-    return log_pager
+    return pager_for(settings)
 
 
 def run_once(

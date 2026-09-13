@@ -94,6 +94,21 @@ def configured_channels(settings, *, session_factory=None) -> list:
     return channels
 
 
+def email_channels(settings, *, session_factory=None) -> list:
+    """Only the email channel(s), for a caller that already sent to Telegram.
+
+    The bot delivers the digest, the weekly report and the scan summary through
+    its own message queue and must keep doing so (removing Telegram is the
+    headless-runtime change's job). Handing those callers
+    :func:`configured_channels` would send every one of them to Telegram twice.
+    """
+    return [
+        channel
+        for channel in configured_channels(settings, session_factory=session_factory)
+        if getattr(channel, "name", "") == "email"
+    ]
+
+
 def broadcast(notification: Notification, *, settings=None, channels=None) -> dict:
     """Send to every channel. Returns ``{channel_name: delivered}``.
 
