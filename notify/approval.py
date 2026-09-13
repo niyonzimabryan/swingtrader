@@ -112,6 +112,7 @@ class EmailCardSender:
         try:
             from notify.cards import deliver
             from notify.cards.proposal import build_payload
+            from notify.context import proposal_context
 
             proposal = dict(getattr(card, "detail", None) or {})
             chart = chart_for(
@@ -124,6 +125,12 @@ class EmailCardSender:
                 approvable=bool(getattr(card, "approvable", False)),
                 created_at_utc=utcnow_naive().isoformat(),
                 chart=chart,
+                # Best-effort, and absent rather than invented when it is not
+                # there: the cited cohort answer with its warnings, the active
+                # thesis with its invalidators, and the stored bear case.
+                **proposal_context(
+                    proposal, settings=self.settings, session_factory=self.session_factory
+                ),
             )
             deliver(
                 payload,

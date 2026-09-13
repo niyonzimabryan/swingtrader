@@ -164,6 +164,145 @@ class EmailCardSenderTests(unittest.TestCase):
         self.assertEqual(levels_from({"entry": "n/a"}), {})
 
 
+class ProposalContextTests(unittest.TestCase):
+    """The page's extra sections, read from the rows that actually hold them.
+
+    These are the sections `notify/context.py` gathers best-effort: the cited
+    cohort answer, the active thesis with its invalidators, and the stored bear
+    case. Every one of them is optional, and "absent" has to be a first-class
+    outcome rather than an error — a proposal may legitimately precede a written
+    thesis, and a citation may point at an answer this database never stored.
+
+    **Not covered here:** a citation that *does* resolve. Storing one needs a
+    `SetupSpec`, a price snapshot and a cohort build, which is
+    `tests/test_comparables_registry.py`'s subject; what this file owns is that
+    a card degrades correctly when the answer is not there. The resolving path
+    is one `comparables.citations.resolve` call and is exercised wherever that
+    function is.
+    """
+
+    def setUp(self):
+        self.db = TestDatabase("notify_context")
+        self.addCleanup(self.db.cleanup)
+        init_db(self.db.url)
+
+    def test_no_thesis_and_no_citation_yields_no_sections(self):
+        from notify.context import proposal_context
+
+        # The citation lives under `evidence`, so blank it there; a top-level
+        # override would leave the nested one in place and this would pass for
+        # the wrong reason.
+        row = nf.proposal_row()
+        row["evidence"] = dict(row["evidence"], cohort_answer_id="")
+        self.assertEqual(proposal_context(row), {})
+
+    def test_an_unresolvable_citation_is_absent_rather_than_an_error(self):
+        from notify.context import cohort_context
+
+        self.assertIsNone(cohort_context("cohort:999999"))
+        self.assertIsNone(cohort_context("not-a-citation"))
+        self.assertIsNone(cohort_context(""))
+
+    def test_an_active_thesis_brings_its_invalidators_and_bear_case(self):
+        from datetime import timedelta
+
+        from research_workspace import store as research_store
+        from utils.timeutils import utcnow_naive
+
+        from notify.context import thesis_context
+
+        with get_session() as session:
+            thesis = research_store.create_thesis(
+                session,
+                ticker="AMD",
+                title="MI400 ramp re-rates the datacenter segment",
+                claim="Datacenter revenue doubles by FY27 on MI400 volume.",
+                bear_case="Supply is allocated to one hyperscaler that can walk.",
+                bear_case_author="thesis-critic",
+            )
+            research_store.add_invalidator(
+                session,
+                thesis,
+                description="closes below $82 for three sessions",
+                type="price_level",
+                params={"operator": "below", "price": 82.0, "consecutive_sessions": 3},
+            )
+            research_store.set_probability(
+                session,
+                thesis,
+                0.6,
+                resolution_at=utcnow_naive().date() + timedelta(days=200),
+                observable="FY27 datacenter revenue in the 10-K",
+            )
+            research_store.activate(session, thesis)
+            session.commit()
+
+        context = thesis_context("AMD")
+        self.assertIsNotNone(context)
+        self.assertEqual(context["thesis"]["state"], "active")
+        self.assertEqual(context["thesis"]["conviction"], "p=0.6")
+        self.assertFalse(context["thesis"]["stale"])
+        self.assertIn("Datacenter revenue doubles", context["thesis"]["summary"])
+        self.assertEqual(len(context["invalidators"]), 1)
+        self.assertIn("closes below $82", context["invalidators"][0])
+        # Attributed, never merged into the bull case (Spec M §7).
+        self.assertEqual(context["bear_case"]["source"], "thesis-critic")
+        self.assertIn("one hyperscaler", context["bear_case"]["body"])
+
+    def test_a_draft_thesis_is_not_shown(self):
+        """A draft is not a position's reasoning and must not read like one."""
+        from research_workspace import store as research_store
+
+        from notify.context import thesis_context
+
+        with get_session() as session:
+            research_store.create_thesis(
+                session, ticker="HNGE", title="draft", claim="c", bear_case="b"
+            )
+            session.commit()
+        self.assertIsNone(thesis_context("HNGE"))
+
+    def test_the_sections_reach_the_rendered_card(self):
+        from datetime import timedelta
+
+        from research_workspace import store as research_store
+        from utils.timeutils import utcnow_naive
+
+        with get_session() as session:
+            thesis = research_store.create_thesis(
+                session,
+                ticker="AMD",
+                title="t",
+                claim="Datacenter revenue doubles by FY27.",
+                bear_case="Single-customer concentration.",
+                bear_case_author="thesis-critic",
+            )
+            research_store.add_invalidator(
+                session,
+                thesis,
+                description="closes below $82 for three sessions",
+                type="price_level",
+                params={"operator": "below", "price": 82.0, "consecutive_sessions": 3},
+            )
+            research_store.set_probability(
+                session,
+                thesis,
+                0.6,
+                resolution_at=utcnow_naive().date() + timedelta(days=200),
+                observable="FY27 datacenter revenue",
+            )
+            research_store.activate(session, thesis)
+            session.commit()
+
+        channel = nf.RecordingChannel("email")
+        EmailCardSender(nf.email_settings(), channels=[channel])(a_card())
+        page = store.load_card(channel.last.card_uid)
+        titles = [block.get("title") for block in page["blocks"]]
+        self.assertIn("linked thesis", titles)
+        self.assertIn("invalidators", titles)
+        self.assertIn("bear case (thesis-critic, stored)", titles)
+
+
 class PagerTests(unittest.TestCase):
     def setUp(self):
         self.db = TestDatabase("notify_pager")

@@ -21,6 +21,7 @@ approve it, and nothing in this package can place an order.**
 | `notify/cards/chart.py` | the PNG, matplotlib on `Agg` |
 | `notify/cards/{proposal,memo,scorecard,alert,digest}.py` | one builder per kind |
 | `notify/approval.py` | the approval card as an email, shared by both processes |
+| `notify/context.py` | the page's extra sections, read best-effort from the rows that hold them |
 | `notify/links.py` | the HMAC over a card uid |
 | `notify/store.py` | `cards` and `notifications_sent` |
 | `workspace/app.py` | `/cards/{uid}` and `/cards/{uid}/chart.png` |
@@ -99,6 +100,25 @@ and the link, and the page is the full record.
 3. **Untrusted text stays visibly distinct.** A `quote` block with
    `trust: "untrusted"` renders on its own plate with a banner, in every
    rendering, and its HTML is escaped (§5).
+
+### What the page adds, and what it does not
+
+`notify/context.py` reads three things the proposal row does not carry, for the
+page: the **cited cohort answer** with its `status`, `depth`, subject verdict and
+its own `warnings` verbatim; the **active thesis** with its invalidators; and the
+**stored bear case**, attributed (Spec M §7). Every one is best-effort — a
+missing thesis, an unresolvable citation or a database that blinked produces a
+card with one fewer section, never a lost card and never an invented one. Only an
+`active` thesis is shown; a draft is not a position's reasoning.
+
+**Exposure impact is not wired.** The renderer prints an `exposure` section when
+it is given one, and nothing gives it one yet. The combined-book concentration
+and sector figures are computed by `portfolio.proposals.read_context` when the
+proposal is sized and are not carried on the row, so filling the section here
+would mean a second implementation of the same arithmetic that could disagree
+with the one that actually bound the size — exactly the failure a single stored
+payload exists to prevent. Carrying those figures on the proposal row is its own
+change.
 
 ### Email constraints
 
