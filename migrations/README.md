@@ -24,6 +24,8 @@ migrations/
     0010_merge_execution_lifecycle.py joins Phase 6 to 0009_merge_comparables (the head)
     0011_comparable_subject_ticker.py  the Spec L §6.6 subject ticker on a query and its answer
     0012_owner_control_surface.py    owner_actions: decisions recorded over MCP (spec K §10)
+    0012_notify_email_cards.py       the notification delivery log and the stored card (notify/)
+    0013_merge_notify_owner.py       merge point: 0012_notify_email_cards + 0012_owner_control_surface (no schema change)
 ```
 
 `0009_execution_lifecycle` branches from the single head `0008_merge_strategy_lab`
@@ -32,6 +34,18 @@ foreign keys of its own: `cohort_answer_id` (Spec N), `execution_id`
 (`strategy_trades`, Spec Q) and `account_id` (`brokerage_accounts`, Phase 1) are
 recorded as plain values, so the revision joins the integrated head as a clean
 add with nothing cross-phase to reconcile.
+
+`0012_notify_email_cards` branches from the single head
+`0011_comparable_subject_ticker` and adds two tables, `cards` and
+`notifications_sent`. They are two rather than one because a card is a resource
+and a delivery is an event: the same card goes out on email and on Telegram, and
+a re-send is another delivery of the same card, so folding the payload into the
+delivery row would store it once per channel per attempt. No foreign keys, in
+keeping with every revision below it; `notifications_sent.card_uid` is an
+ordinary string, empty for a notification that carried no card. `downgrade()`
+drops both, which is lossless in the sense that matters — neither table is read
+by anything that decides an order, a size, or a number — at the cost of every
+already-minted card link ceasing to resolve.
 
 `0011_comparable_subject_ticker` branches from the single head
 `0010_merge_execution_lifecycle` and is the first revision to **change an

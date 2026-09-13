@@ -396,13 +396,20 @@ to approve, and an agent must not both propose and approve. From an attached
 client, `propose_order` with `ticker`, `entry`, `stop`, `risk_fraction` — and no
 quantity, because the execution service sizes it.
 
-**One more variable, still missing as of 2026-09-12 18:00Z.** The card is sent
-by the **workspace** process (`workspace/proposal_card.py`), so the workspace
-service needs `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` too. Without them the
-workspace logs `proposal_card_channel_unconfigured` at startup and every
-`propose_order` creates a `proposed` row that nobody can approve. Sending
-messages does not conflict with the bot's polling (only `getUpdates` is
-exclusive). Use Railway variable references so the values are not copied:
+### Where the card goes
+
+The card is sent by the **workspace** process, which is a separate process from
+the bot, so the workspace needs its own delivery credentials. There are two
+channels and they are not interchangeable.
+
+**Telegram is the only channel that can carry an approvable card**, because the
+callback you tap arrives in the *bot* process, which is the one polling
+Telegram. The workspace service therefore needs `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` too. Without them the workspace logs
+`proposal_card_channel_unconfigured` at startup and every `propose_order`
+creates a `proposed` row that nobody can approve. Sending messages does not
+conflict with the bot's polling (only `getUpdates` is exclusive). Use Railway
+variable references so the values are not copied:
 
 ```bash
 railway variables --service workspace --set 'TELEGRAM_BOT_TOKEN=${{swingtrader.TELEGRAM_BOT_TOKEN}}' --set 'TELEGRAM_CHAT_ID=${{swingtrader.TELEGRAM_CHAT_ID}}'
@@ -410,6 +417,36 @@ railway variables --service workspace --set 'TELEGRAM_BOT_TOKEN=${{swingtrader.T
 
 Then confirm the warning is gone from `railway logs --service workspace` after
 the redeploy.
+
+**Email is how you read it.** Since you do not use Telegram day to day, turn the
+email channel on and the same card arrives in your inbox as designed HTML, with
+a link to the full page on the workspace — the chart, the complete risk math,
+the cohort evidence with its warnings verbatim, the thesis and its invalidators,
+the exposure impact, and the provenance of every number. Railway already carries
+`RESEND_API_KEY`, `PAGER_EMAIL_FROM` and `PAGER_EMAIL_TO` on both services, so
+this is one flag:
+
+```bash
+railway variables --service workspace --set "NOTIFY_EMAIL_ENABLED=true"
+railway variables --service swingtrader --set "NOTIFY_EMAIL_ENABLED=true" --set 'WORKSPACE_BASE_URL=${{workspace.WORKSPACE_BASE_URL}}'
+```
+
+`WORKSPACE_BASE_URL` on the bot service is what makes the links in email sent
+*from the bot* (the digest, the weekly report, the scan summary) work. Without
+it those emails still arrive; they just carry no link and no chart.
+
+The card link is signed with `CARD_LINK_SECRET`, falling back to the
+`EXECUTION_APPROVAL_SECRET` you already set, so nothing else is needed. The page
+is read-only and the link is its credential — it exposes only what the email
+already contains. `docs/NOTIFICATIONS.md` argues that trade in full, and
+`docs/examples/cards/` has a rendered example of every card to open in a
+browser first.
+
+**The email cannot approve anything**, and that is deliberate: an email has no
+callback and the card page has no route that writes. So with email on and
+Telegram off, cards arrive and nothing can be released — the workspace says so
+at startup with `proposal_card_not_approvable`. Keep both on until owner
+approval over MCP lands in a later change.
 
 
 ```bash

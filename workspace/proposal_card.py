@@ -3,28 +3,34 @@
 ``propose_order`` runs in the workspace service, which is a separate process
 from the bot and — by the rule that makes the whole safety argument hold — may
 not import ``bot`` (Spec L §6.1). So when the workspace mints a card it cannot
-call the bot's message queue; it posts to the Telegram Bot API over HTTPS
-directly, with nothing but the bot token and the owner chat id, both of which
-are already in settings.
+call the bot's message queue; it reaches the channels over HTTPS directly, with
+nothing but the credentials that are already in settings.
 
-This is not a second approval channel. It is the *same* channel — the same bot,
-the same chat, the same signed single-use callback data — reached over its HTTP
-API instead of through the in-process queue, because the two live in different
-processes. The **callback** the owner taps still arrives at the bot process,
-which is the one polling Telegram, and is handled there
-(``bot/handlers/proposals.py``). The signature the card carries is what ties the
-two processes together without either importing the other.
+Two channels now, both optional and independently configured:
 
-Registered in :func:`workspace.app` lifespan when ``PHASE6_EXECUTION_ENABLED``
-is on and a bot token and chat id are configured. When they are not, the
-default log-only sender stays in place and a proposal simply cannot be
-approved, which is the safe direction.
+**Telegram** is unchanged and is still the only *approvable* surface. The same
+bot, the same chat, the same signed single-use callback data, reached over its
+HTTP API rather than through the in-process queue. The callback the owner taps
+still arrives at the bot process, which is the one polling Telegram, and is
+handled there (``bot/handlers/proposals.py``).
+
+**Email** (``NOTIFY_EMAIL_ENABLED``) sends the same card as designed HTML with a
+link to the full page on this service. It carries **no** approval affordance and
+cannot carry one: an email has no callback, the page under ``/cards`` is
+read-only, and approval stays where it is signed, expiring, single-use and
+owner-bound. Turning email on therefore adds a way to *see* a proposal, never a
+way to release one.
+
+Registered in :func:`workspace.app` lifespan. With nothing configured the
+default log-only sender stays in place and a proposal simply cannot be approved,
+which is the safe direction.
 """
 
 from __future__ import annotations
 
 import httpx
 
+from notify.approval import EmailCardSender, FanOutCardSender
 from portfolio.approvals import ApprovalCard
 from utils.logger import get_logger
 
@@ -102,27 +108,67 @@ class TelegramCardSender:
             log.error("proposal_card_send_error", proposal_id=card.proposal_id, error=str(exc))
 
 
-def register_if_configured(settings) -> bool:
-    """Wire the Telegram sender into the approval registry. Returns whether it did.
+def register_if_configured(settings, *, session_factory=None) -> list[str]:
+    """Wire the configured card channels in. Returns their names, in order.
 
-    Idempotent and safe to call at every workspace startup. With the flag off,
-    or a token or chat id missing, it leaves the log-only default in place.
+    Idempotent and safe to call at every workspace startup. With the Phase 6
+    flag off, or nothing configured, it leaves the log-only default in place and
+    returns ``[]`` — and a proposal then cannot be approved, which is the safe
+    direction.
     """
     from portfolio import approvals
 
     if not bool(getattr(settings, "phase6_execution_enabled", False)):
-        return False
+        return []
+
+    senders = []
+    names: list[str] = []
+
     token = (getattr(settings, "telegram_bot_token", "") or "").strip()
     chat_id = (getattr(settings, "telegram_chat_id", "") or "").strip()
-    if not (token and chat_id):
+    if token and chat_id:
+        senders.append(TelegramCardSender(bot_token=token, chat_id=chat_id))
+        names.append("telegram")
+
+    from notify.registry import email_configured
+
+    email_usable, email_missing = email_configured(settings)
+    if email_usable:
+        senders.append(EmailCardSender(settings, session_factory=session_factory))
+        names.append("email")
+
+    if not senders:
+        missing = []
+        if not token:
+            missing.append("TELEGRAM_BOT_TOKEN")
+        if not chat_id:
+            missing.append("TELEGRAM_CHAT_ID")
+        missing.extend(email_missing)
         log.warning(
             "proposal_card_channel_unconfigured",
+            missing=",".join(missing),
             note=(
-                "PHASE6_EXECUTION_ENABLED is on but TELEGRAM_BOT_TOKEN or "
-                "TELEGRAM_CHAT_ID is unset; approval cards will only be logged "
-                "and no proposal can be approved."
+                "PHASE6_EXECUTION_ENABLED is on but no approval-card channel is "
+                "configured, so cards will only be logged and no proposal can be "
+                "approved. Unset: " + ", ".join(missing) + ". Telegram is the only "
+                "channel that can carry an approvable card; email is a second way "
+                "to see one, never a second way to release one."
             ),
         )
-        return False
-    approvals.register_card_sender(TelegramCardSender(bot_token=token, chat_id=chat_id))
-    return True
+        return []
+
+    if not (token and chat_id):
+        log.warning(
+            "proposal_card_not_approvable",
+            note=(
+                "email is configured but Telegram is not, so cards are delivered "
+                "and nothing can be approved: the approval callback arrives on "
+                "Telegram, in the bot process. Set TELEGRAM_BOT_TOKEN and "
+                "TELEGRAM_CHAT_ID to make a proposal approvable."
+            ),
+        )
+
+    approvals.register_card_sender(
+        senders[0] if len(senders) == 1 else FanOutCardSender(senders)
+    )
+    return names

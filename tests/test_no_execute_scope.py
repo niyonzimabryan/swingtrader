@@ -40,6 +40,11 @@ FIRST_PARTY = {
     "macro",
     "memo",
     "news",
+    # `notify/` is the delivery layer (channels, HTML cards, the signed card
+    # page). Both the workspace and the bot import it, so it is inside the
+    # boundary and its own imports are walked: a renderer that could reach a
+    # broker adapter would be exactly the hole this test exists to close.
+    "notify",
     "orchestrator",
     "research_workspace",
     "portfolio",

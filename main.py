@@ -175,7 +175,7 @@ async def main():
 
     # Initialize message queue and notifications
     mq = MessageQueue(app.bot)
-    notifications = NotificationManager(mq, settings.telegram_chat_id)
+    notifications = NotificationManager(mq, settings.telegram_chat_id, settings)
     pipeline.notification_manager = notifications
     pipeline.bot_loop = asyncio.get_running_loop()  # For deep research async scheduling
     billing_alerts.register(notifications, pipeline.bot_loop)
@@ -198,7 +198,7 @@ async def main():
 
         from database.db import get_session as _get_session
 
-        register_bot_card_sender(mq, settings.telegram_chat_id, pipeline.bot_loop)
+        register_bot_card_sender(mq, settings.telegram_chat_id, pipeline.bot_loop, settings)
 
         def _pager(event, detail):
             # A protection failure or an unknown placement must reach the owner

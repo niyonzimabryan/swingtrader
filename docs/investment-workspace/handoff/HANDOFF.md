@@ -6,8 +6,10 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-13, by the `claude/owner-tools-mcp` worker session
-(was 2026-09-12 16:30 UTC, a local Claude Code session on Bryan's laptop).
+**Last updated:** 2026-09-13 04:05 UTC, by the orchestrating session
+(`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
+Bryan's laptop (was 2026-09-12 06:15 UTC, orchestrating session
+`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 
 > **Read this first:**
 > [`OWNER_SETUP_EXECUTION_2026-09-12.md`](OWNER_SETUP_EXECUTION_2026-09-12.md) —
@@ -24,7 +26,7 @@ open-PR list over this file.
 | | |
 |---|---|
 | `main` head | #74 (Strategy Lab 6) merged on top of `816e499`; this docs PR next |
-| Alembic head | `0011_comparable_subject_ticker` (single) |
+| Alembic head | `0011_comparable_subject_ticker` (single); `0012_notify_email_cards` on `claude/notify-email-cards` |
 | Tests | 1,793 on SQLite (3 Postgres-only skips); CI: 4 shards per engine, ~8 min |
 | CI | `.github/workflows/ci.yml` — sqlite + postgres matrix, Python **3.12** |
 
@@ -32,19 +34,31 @@ Merged, in order: Phase 0a/0b, 3a, 3b-core, 3p, 1, 2, 4, P, Strategy Lab 1 (#54)
 ENV_SETUP (#52), rulings (#55), **Phase 3c (#56), Phase 6 (#57), Strategy Lab 2
 (#58), rulings (#59), handoff (#62), Strategy Lab 3 (#60), Sharadar reference (#63), evidenced-budget closure (#61), Strategy Lab 4 (#64), orchestrated-build skill (#67), OWNER_SETUP (#69), mirror-test fix (#71), CI sharding (#66), Sharadar direct-API port (#70), Strategy Lab 5 (#65), service-role guard (#68), rulings PRs 2–5 (#73), Strategy Lab 6 (#74)**.
 
-## 2. What is in flight
+## 2. What is in flight (the notifications sprint, spawned 2026-09-13 02:15Z)
 
-| PR / branch | What | Session | State |
-|---|---|---|---|
-| `claude/owner-tools-mcp` | The owner control surface over MCP + the runtime poller (Spec K §10, Spec L §10) | worker | opening |
+Owner decisions that started it (2026-09-13): Bryan does not use Telegram and
+will not adopt it; every human-facing message goes to email (Resend, from
+`swingtrader@updates.readtop5.com`, keys already on both Railway services);
+approval happens **in his coding-agent chat** through an `admin`-scoped MCP
+tool, with no confirmation code (he declined one; single user, private
+deployment; the specs' "never a tool an agent can call" is overridden by owner
+ruling, recorded in Spec L §10 and Spec K §10 by #82); owner mutations (kill
+switch, promotions) also go over MCP; cards are designed HTML emails with a
+signed full-page view served by the workspace.
 
-Every Strategy Lab and Investment Workspace build PR before this one is on
-`main`. `claude/owner-tools-mcp` is the first PR to act on an **owner ruling**
-rather than a spec: Bryan approves in his coding-agent chat. Read the two
-rulings logs (Spec K §10, Spec L §10) before reviewing it — they state the
-trade-off, and the shape that makes it safe (a tool records; the runtime acts).
+| PR / branch | What | Session | Model | State |
+|---|---|---|---|---|
+| #80 `claude/system-overview-doc` | `docs/SYSTEM_OVERVIEW.md`; published to Google Drive: https://docs.google.com/document/d/1_dy3kIiaM3VwkivuIPjbnH1p1OKdI6w5ohXJ3CxpJL0/edit | `session_01D8jUpshohWT44o1L6gLPHd` | sonnet | **merged** |
+| #81 `claude/notify-email-cards` | `notify/` package, Resend channel behind `NOTIFY_EMAIL_ENABLED`, HTML card renderer + PNG chart, signed `/cards/<uid>` page, `cards` + `notifications_sent` tables (`0012_notify_email_cards`) | `session_01NSbbAvFecNAkxaZSQ6v8P9` | opus | **merged** |
+| #82 `claude/owner-tools-mcp` | `OWNER_ID`; ten `admin`/`read` owner tools behind `WORKSPACE_OWNER_TOOLS_ENABLED`; `orchestrator/approval_poller.py` behind `OWNER_ACTION_POLLER_ENABLED`; `owner_actions` table (`0012_owner_control_surface`); Spec K §10 + L §10 rulings; merge revision `0013_merge_notify_owner` added by the orchestrator | `session_01A4B5sYhhr8ZDnRFHkVq4xY` | opus | integrated; CI |
 
-Alembic head after it merges: `0012_owner_control_surface` (single).
+Alembic head after #82: `0013_merge_notify_owner` (single). Next, **after #82
+merges**: the headless runtime — `TELEGRAM_ENABLED=false` runs scheduler,
+monitors, and the approval poller with no Telegram token, and
+`NotificationManager` routes through `notify/`. Then Bryan's final steps:
+`NOTIFY_EMAIL_ENABLED`, `OWNER_ACTION_POLLER_ENABLED` (bot), then
+`WORKSPACE_OWNER_TOOLS_ENABLED` (workspace), an `admin` token, attach, first
+paper trade (`docs/ENV_SETUP.md` §9a and §11, `docs/OWNER_SETUP.md` §5).
 
 ## 3. What is left, in order
 
@@ -244,22 +258,6 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   `ALLOW_LIVE_TRADING` was left as found, and `STRATEGY_LAB_LIVE_*` was not
   touched. The proposal is the owner's to make — an agent must not both propose
   and approve — and it needs the MCP fix deployed first.
-- 2026-09-13 — **The owner control surface built on `claude/owner-tools-mcp`.**
-  Ten MCP tools behind `WORKSPACE_OWNER_TOOLS_ENABLED` (default off) and a
-  runtime poller behind `OWNER_ACTION_POLLER_ENABLED` (default off, and
-  additionally gated on `PHASE6_EXECUTION_ENABLED`). With neither variable set,
-  production behaves exactly as it did. The division that makes it safe: a tool
-  **records** a decision into the new `owner_actions` table and places nothing;
-  `orchestrator/approval_poller.py`, in the bot container, is the only thing
-  that acts on one, by calling the same `on_approval` the Telegram callback
-  calls. `tests/test_no_execute_scope.py`, `tests/test_portfolio_import_graph.py`
-  and the lifecycle-isolation tests are all still green; two assertions in the
-  last of those were **widened and simultaneously strengthened** (the caller
-  allowlist gained the poller, and gained a per-caller check that each name on it
-  is absent from the workspace closure). Owner-side to turn it on:
-  `docs/ENV_SETUP.md` §9a, and `docs/WORKSPACE_ACCESS.md` §1 on issuing the
-  `admin` token — which is the weakest link in the ruling and is labelled as
-  such.
 - 2026-09-12 18:05Z — **#77 merged by the orchestrator; the MCP fix is live.**
   The workspace redeployed from `main` and an unauthenticated `initialize` on
   `/mcp` now returns `401`, not `421`; `/health` still reports `postgresql` at
@@ -271,3 +269,34 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   support in `data/prices/sharadar.py` so SPY can be the benchmark and
   `cohort_smoke` can run; the delisting audit list keyed by Sharadar's `Q`
   symbols; macro fixture tests rewritten against real vintages.
+- 2026-09-13 02:20Z — Notifications sprint spawned (three workers above) after
+  Bryan's decisions: no Telegram, email via Resend, approval and owner
+  mutations over MCP without codes, HTML cards. Headless runtime PR follows
+  the first two merges. After the overview doc merges the orchestrator
+  publishes it to Google Drive from its own connector (workers have none).
+  Owner-side, still open before the first paper trade: nothing until these
+  merge; then `NOTIFY_EMAIL_ENABLED=true` and `WORKSPACE_OWNER_TOOLS_ENABLED=true`
+  on the services, an `admin`-scoped token re-issued, and the client attached.
+- 2026-09-13 — **`notify/` built on `claude/notify-email-cards` (not yet merged).**
+  A delivery layer both processes can import: a Resend email channel behind
+  `NOTIFY_EMAIL_ENABLED` (default off), the existing Telegram senders wrapped as
+  a channel, one HTML card renderer with five card kinds, and a signed read-only
+  page at `/cards/{uid}` on the workspace (HMAC over the uid under
+  `CARD_LINK_SECRET`, falling back to `EXECUTION_APPROVAL_SECRET`; non-expiring;
+  one 404 for every failure so it is not an enumeration oracle). Alembic
+  `0012_notify_email_cards` adds `cards` and `notifications_sent` off `0011`.
+  Telegram delivery is **unchanged and still the only approvable channel** — an
+  email has no callback and the card page has no route that writes; removing
+  Telegram belongs to the headless-runtime change. `docs/NOTIFICATIONS.md` is
+  the reference and `docs/examples/cards/` has a rendered example of each card.
+  Owner action once merged: `NOTIFY_EMAIL_ENABLED=true` on both services, and
+  `WORKSPACE_BASE_URL` on the **bot** service so links in email from the bot
+  work (`docs/OWNER_SETUP.md` §5). Not verified: any real Resend send, and the
+  page against a real Postgres — both need production credentials.
+- 2026-09-13 04:05Z — #80 merged and published to Google Drive; #81 merged
+  (CI green on its head; 156 targeted tests re-run on the merged tree). #82
+  integrated by the orchestrator: union-resolved `config/settings.py`,
+  `database/models.py`, `migrations/README.md` (both branches appended blocks
+  at the same spot), HANDOFF taken from `main`, and `0013_merge_notify_owner`
+  added over the two `0012_*` heads. Full 3.12 suite run on the merged tree
+  before pushing.

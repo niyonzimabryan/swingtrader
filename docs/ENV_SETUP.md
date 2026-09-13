@@ -346,6 +346,46 @@ a confirmation; nothing auto-promotes.
 what a failure looks like, how to stop, and the draft production rollout
 checklist. Do not turn the paper flag on from this page; turn it on from there.
 
+## 11. Email notifications and HTML cards (`notify/`)
+
+Every human-facing message — approval cards, scan memos, Strategy Lab
+scorecards, pages, the daily digest and the weekly report — can also arrive as a
+designed HTML email linking to a full page on the workspace.
+**`docs/NOTIFICATIONS.md` is the reference**; this is the variable list.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `NOTIFY_EMAIL_ENABLED` | `false` | The master flag. Off: no email, no card row, and the `/cards` routes are not registered. |
+| `RESEND_API_KEY` | — | Resend key (`re_…`). Already on both Railway services. |
+| `PAGER_EMAIL_FROM` | — | Sender; must be on a domain verified in Resend. Already set to `swingtrader@updates.readtop5.com`. |
+| `PAGER_EMAIL_TO` | — | Recipient, or a comma-separated list. Already set. |
+| `CARD_LINK_SECRET` | — | HMAC key for the card link. **Falls back to `EXECUTION_APPROVAL_SECRET`**, which production already carries, so the feature works the moment the flag goes on. Set it separately when you want the two to rotate independently — a card link does not expire and an approval reference lives thirty minutes. |
+| `CARD_CHART_SESSIONS` | `60` | Daily bars captured into a card's chart. |
+
+`WORKSPACE_BASE_URL` (§2) is what builds the link. It is already set on the
+workspace service; **set it on the bot service too**, or email sent from the bot
+(the digest, the weekly report, the scan summary) carries no link and no chart.
+That degrades rather than breaks: the email still has everything the Telegram
+message had.
+
+Turning this on adds a channel. It removes nothing: Telegram still gets every
+message it got before, and Telegram remains the **only** channel that can carry
+an approvable card, because the approval callback arrives in the bot process.
+An email has no callback and the card page is read-only, so with email on and
+Telegram off, cards arrive and nothing can be approved — the workspace logs
+`proposal_card_not_approvable` at startup when that is the state it is in.
+
+To check it end to end: set the flag, redeploy, and run a proposal (§9) or wait
+for the 5 PM digest. Then
+
+```sql
+SELECT kind, channel, status, provider_id, error, created_at
+FROM notifications_sent ORDER BY id DESC LIMIT 10;
+```
+
+Rendered examples of every card are committed under `docs/examples/cards/`;
+open the `.email.html` files in a browser to see what will arrive.
+
 ## Order of operations to a testing state
 
 1. Merge is on `main`; Railway auto-deploys the bot service. Confirm the bot
@@ -366,17 +406,20 @@ checklist. Do not turn the paper flag on from this page; turn it on from there.
    `propose` scope; call `propose_order`, approve the card in Telegram, and
    watch the paper lifecycle reach `protected` (§9). Live stays off until the
    Robinhood stop probe passes.
-8. Strategy Lab shadow: `STRATEGY_LAB_ENABLED=true` and
+8. Email cards: `NOTIFY_EMAIL_ENABLED=true` on both services, with
+   `WORKSPACE_BASE_URL` set on the **bot** service too so the links work (§11).
+   Telegram keeps working; this adds a channel rather than moving one.
+9. Strategy Lab shadow: `STRATEGY_LAB_ENABLED=true` and
    `STRATEGY_LAB_SHADOW_ENABLED=true` on the bot service, then `/experiments`
    after the next scan (§10). Turn on `STRATEGY_LAB_UNIVERSE_ENABLED` only once
    the price plane and `universe_membership` are backfilled. No broker, no
    capital and no order is involved at this tier.
-9. Strategy Lab paper: only after the shadow observation window (60 days / 100
+10. Strategy Lab paper: only after the shadow observation window (60 days / 100
    matured decisions, Spec Q §10). Paper dispatches through the Phase 6 lifecycle
    to Alpaca paper and nothing else. Promote **one** arm with `/promote_arm`, then
    `STRATEGY_LAB_PAPER_ENABLED=true`, and approve the first card by hand. Follow
    `docs/STRATEGY_LAB_RUNBOOK.md` §5 rather than this list.
-10. Strategy Lab live: owner-promoted, one global champion, and gated by
+11. Strategy Lab live: owner-promoted, one global champion, and gated by
     everything in §9 plus the promotion audit, the paper flag, and a non-zero
     `STRATEGY_LAB_LIVE_RISK_BUDGET`. Not reachable until the real `gtc
     stop_market` probe passes against the live Robinhood account

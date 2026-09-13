@@ -1,0 +1,14 @@
+PAGE
+position_unprotected  [action needed]
+AMD
+
+  ticker: AMD
+  proposal_id: 42
+  account: robinhood-agentic
+  as_of_utc: 2026-09-13T14:02:11
+
+RECOVERY
+  The entry filled and the protective stop was not read back inside the 120-second window. Open the broker app, confirm whether a stop exists at $99.00, and place one by hand if it does not. Further entries are blocked until this position reads back as protected.
+
+SwingTrader paged. Nothing in this message can place, cancel, or modify an order — acting on it is a human step at the broker or in the bot.
+Full card: https://workspace.example.invalid/cards/EXAMPLE?s=EXAMPLE

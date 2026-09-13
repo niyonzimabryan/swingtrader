@@ -6,14 +6,44 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.message_queue import MessageQueue
 from bot.formatters import escape_md
 from utils.logger import get_logger
+from utils.timeutils import utcnow_naive
 
 log = get_logger("notifications")
 
 
 class NotificationManager:
-    def __init__(self, message_queue: MessageQueue, chat_id: str):
+    def __init__(self, message_queue: MessageQueue, chat_id: str, settings=None):
         self.mq = message_queue
         self.chat_id = chat_id
+        self.settings = settings
+
+    # -- the email card, alongside Telegram ------------------------------- #
+
+    def email_card(self, payload: dict) -> dict:
+        """Deliver ``payload`` as an HTML email card. Telegram is untouched.
+
+        Every caller of this has *already* sent its Telegram message through the
+        queue, so this sends to the email channel only — handing it every
+        configured channel would post the same digest to Telegram twice. With
+        ``NOTIFY_EMAIL_ENABLED`` off there is no email channel and this is a
+        no-op, which is why every call site can make it unconditionally.
+
+        Never raises. A notification is a report about work that already
+        happened; failing to send it must not fail the work.
+        """
+        if self.settings is None:
+            return {}
+        try:
+            from notify.cards import deliver
+            from notify.registry import email_channels
+
+            channels = email_channels(self.settings)
+            if not channels:
+                return {}
+            return deliver(payload, settings=self.settings, channels=channels)
+        except Exception as exc:  # pragma: no cover - channel-specific
+            log.error("notification_email_card_failed", kind=payload.get("kind"), error=str(exc))
+            return {}
 
     async def order_filled(self, ticker: str, shares: int, price: float, side: str, stop_loss: float, position_pct: float):
         """Notify operator of order fill."""
@@ -140,6 +170,23 @@ class NotificationManager:
         if memos_generated == 0:
             text += "\nNo opportunities met the memo threshold\\."
         await self.mq.send(self.chat_id, text, reply_markup=keyboard)
+        # ...and the same summary as an HTML email card, when the flag is on.
+        # Telegram above is untouched: this PR adds a channel, it does not move
+        # one. The card is built from `memo_details` — the scan's own scores and
+        # classifications — and re-ranks nothing.
+        from notify.cards.memo import build_scan_payload
+
+        self.email_card(
+            build_scan_payload(
+                scan_type=scan_type,
+                duration_text=f"{mins}m {secs}s",
+                total_scanned=total_scanned,
+                escalated=escalated,
+                memos_generated=memos_generated,
+                memos=memo_details or [],
+                as_of_utc=utcnow_naive().isoformat(),
+            )
+        )
 
     async def system_message(self, message: str):
         """Send a generic system notification."""

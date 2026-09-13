@@ -83,9 +83,39 @@ class BotCardSender:
             log.error("proposal_card_schedule_failed", proposal_id=card.proposal_id, error=str(exc))
 
 
-def register_bot_card_sender(message_queue, chat_id: str, loop) -> None:
-    """Wire :class:`BotCardSender` into the approval registry. ``main.py`` calls this."""
-    approvals_mod.register_card_sender(BotCardSender(message_queue, chat_id, loop))
+def register_bot_card_sender(message_queue, chat_id: str, loop, settings=None) -> None:
+    """Wire the card channels into the approval registry. ``main.py`` calls this.
+
+    Telegram is always wired here and its behaviour is unchanged: the same
+    message, through the same queue, with the same signed single-use callback
+    buttons. When ``NOTIFY_EMAIL_ENABLED`` is on and Resend is configured, the
+    HTML email card is sent **in addition** — not instead. Removing Telegram
+    delivery is the headless-runtime change's job, not this one.
+
+    The email carries no approval affordance and cannot: an email has no
+    callback and the card page is read-only. It is a second way to see a
+    proposal, never a second way to release one.
+    """
+    senders = [BotCardSender(message_queue, chat_id, loop)]
+    if settings is not None:
+        try:
+            from notify.approval import EmailCardSender
+            from notify.registry import email_configured
+        except Exception as exc:  # pragma: no cover - import-environment specific
+            log.warning("proposal_card_email_unavailable", error=str(exc))
+        else:
+            usable, missing = email_configured(settings)
+            if usable:
+                senders.append(EmailCardSender(settings))
+                log.info("proposal_card_email_registered")
+            elif bool(getattr(settings, "notify_email_enabled", False)):
+                log.warning("proposal_card_email_unconfigured", missing=",".join(missing))
+    if len(senders) == 1:
+        approvals_mod.register_card_sender(senders[0])
+        return
+    from notify.approval import FanOutCardSender
+
+    approvals_mod.register_card_sender(FanOutCardSender(senders))
 
 
 # --------------------------------------------------------------------------- #
