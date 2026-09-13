@@ -22,6 +22,21 @@ convention is keyed on the venue, not the exchange. `delisting_date` plus
 `unknown`. **Delisted names are kept.** Dropping them is survivorship bias by
 construction (Spec N §4.2).
 
+Also carries `asset_class` — `equity` or `fund` — added by
+`0014_securities_asset_class`. It is stored rather than inferred because
+"SPY is an ETF" is not something a three-letter string tells you, and because
+one rule depends on it: **a fund is never a member of a liquidity-ranked
+universe.** SPY is the most liquid instrument on the tape, so a rule that
+ranked ETFs by dollar volume would put the *benchmark* in the top ten every
+month, and a cohort whose members include the security its abnormal returns
+are measured against is a number measured against itself (Spec N §5.2).
+`data/prices/universes.py` drops known funds before ranking, and
+`compute_membership` refuses outright to emit an interval for one.
+
+Every row written before that revision reads `equity`, which is not a
+convenient default but the true value: the only price table the adapter could
+reach was `stocks`.
+
 ### `price_bars`
 One row per (security, session). Unique on `(security_uid, session_date)`,
 indexed on the same pair for the range scans a cohort does.
@@ -150,6 +165,89 @@ rename must.
 **Not exercised against a live key. No key exists.** Everything above was
 tested against stub payloads.
 
+#### Equities and funds are two tables, and SPY is only in the second
+
+Sharadar splits the price file. `stocks` (legacy `SEP`) carries operating
+companies; `funds` (legacy `SFP`) carries ETFs, CEFs, ETNs and ETDs — roughly
+10,000 tickers. The adapter sent `table=stocks` everywhere until
+2026-09-13, which meant the benchmark every abnormal return in Spec N §5.2 is
+measured against was unreachable, `COMPARABLE_BENCHMARK_SECURITY_UID` could
+not be set, `CohortContext` refused to construct, and the comparable-setups
+engine was dark on real data.
+
+Confirmed **live** on 2026-09-13 with the public `test-api-key`, and recorded
+under `tests/fixtures/sharadar_direct/` (that directory's README is the
+authority on what was and was not observed):
+
+| Request | Result |
+|---|---|
+| `tickers?ticker=SPY` (no filter) | exactly **one** row, `table: "funds"`, permaticker `118691` |
+| `tickers?ticker=AAPL` (no filter) | three rows: `stocks`, `fundamentals`, `insiders` |
+| `funds?ticker=SPY` | `200`, bars |
+| `stocks?ticker=SPY` | `403 Exceeds free tier` |
+| `actions?ticker=SPY` | `403 Exceeds free tier` |
+| `schema/funds` | column names **byte-identical to `stocks`** |
+
+So the fund path differs from the equity path in exactly two places.
+
+**Which table.** `security_master(tickers, asset_class=...)` sends
+`table=stocks` for `equity` (the default, so nothing written before funds
+existed changes), `table=funds` for `fund`, and no filter at all for `None` —
+the auto-detect path, which narrows the rows itself to the two price tables.
+`daily_bars` resolves the table through that master and **never from the
+symbol**: a wrong guess there is silently empty bars, not an error.
+
+**Where the factors come from.** A fund's `split_factor` and `dividend_cash`
+are derived from the `funds` table's own columns, not from `actions`:
+
+```
+F(i)            = closeunadj(i) / close(i)          # cumulative forward splits
+split_factor(i) = F(i-1) / F(i)
+div(i)          = [closeadj(i)/closeadj(i-1) - close(i)/close(i-1)]
+                  x closeunadj(i-1) / split_factor(i)
+```
+
+The reason is not preference, it is verification. Sharadar documents `actions`
+as covering "all tickers in fundamentals, stocks and funds tables", but the
+public key returns 403 for a fund's rows there, so **this repository has never
+observed a single fund distribution in `actions`.** It has observed them in
+`closeadj`. Spec N §5.2 measures abnormal return against the benchmark's
+*total* return; a benchmark whose dividend factors came from a table nobody had
+looked in would be a number nobody had checked. `corporate_actions()` still
+reads `actions` for a fund exactly as for an equity — it is the vendor's action
+log and the interface promises it — but the **bars** carry factors derived as
+above, and the provenance name for that is `closeadj_derived`.
+
+What was actually measured, against SPY's live `funds` rows for
+2023-12-01 .. 2025-01-31 (292 sessions):
+
+- the implied distribution exceeded 2 bps of price on **exactly five** sessions
+  — 2023-12-15, 2024-03-15, 2024-06-21, 2024-09-20, 2024-12-20, SPY's
+  ex-dividend dates in that window — at 1.9063 / 1.6000 / 1.7588 / 1.7453 /
+  1.9699 dollars a share;
+- on the other 286 sessions it never exceeded **0.019 bps** (stdev 0.0074 bps),
+  about $0.0009 a share, which is exactly what three-decimal quotes predict;
+- the derived total-return series reproduces Sharadar's own `closeadj` to
+  within **1.9e-6 of daily return** across all 291 return observations;
+- the §4.3 reconstruction identity passes on the whole series.
+
+`FUND_DISTRIBUTION_SAFETY` sets the floor below which an implied value is
+zeroed rather than stored — about $0.01 at SPY's price level, ten times the
+largest noise ever observed and a hundred and fifty times below the smallest
+real distribution. Storing the residue instead would put a fabricated $0.0007
+"dividend" on 250 ordinary sessions a year. A **negative** implied distribution
+above that floor is neither zeroed nor stored: it raises, because the
+three-series model cannot express it and a plane that degrades quietly is worse
+than one that is down.
+
+Two caveats, stated where they will be read. `closeadj` folds spinoffs in
+alongside cash, so a fund that spun off value would have it arrive as
+`dividend_cash` — right for total return, imprecise as a label. And every
+factor is a ratio against the previous session **in the slice returned**, so
+the first bar of any window carries `(1.0, 0.0)`; give `--since` a session of
+slack, and re-running with an earlier `--since` corrects it, since
+`store.upsert_bars` overwrites by `(security_uid, session_date)`.
+
 ## Running it
 
 ### Environment
@@ -159,6 +257,7 @@ tested against stub payloads.
 | `PRICE_PLANE_ENABLED` | `false` | Master flag. Every script refuses while it is false. |
 | `PRICE_PLANE_SOURCE` | `fixture` | `fixture` or `sharadar`. |
 | `NASDAQ_DATA_LINK_API_KEY` | *(empty)* | Sharadar key. Never hardcoded, never logged; the Sharadar plane refuses to construct without it rather than calling anonymously. |
+| `PRICE_PLANE_FUNDS_ENABLED` | `false` | Funds (`funds`/SFP) in the backfill. Needed to load SPY as the cohort benchmark. Gates the entry points only; the adapter is unchanged either way. |
 | `PRICE_PLANE_SNAPSHOT` | `dev` | Snapshot slug backfills and audits write to. |
 | `LIQUID_UNIVERSE_TOP_N` | `500` | Names in `liquid_us_equity_v1` per month-end. |
 | `LIQUID_UNIVERSE_WINDOW_SESSIONS` | `20` | Sessions in the median-dollar-volume window. |
@@ -180,6 +279,11 @@ python -m scripts.price_backfill --source fixture --since 2023-01-01
 export NASDAQ_DATA_LINK_API_KEY=...
 python -m scripts.price_backfill --source sharadar --since 2015-01-01 \
     --tickers AAPL,MSFT,BBBY --snapshot 2026-09
+
+# The benchmark. SPY is in `funds`, not `stocks`, so this needs the fund flag.
+export PRICE_PLANE_FUNDS_ENABLED=true
+python -m scripts.price_backfill --source sharadar --since 2016-01-01 \
+    --tickers SPY --asset-class fund --snapshot 2026-09
 ```
 
 Idempotent by natural key: the same `--since` rewrites the same rows rather than
@@ -190,6 +294,26 @@ summary lands on the snapshot.
 
 `--skip-reconstruction-check` exists for triage only and prints a warning saying
 the stored bars may not reproduce from their own factors.
+
+`--asset-class` is `equity` by default, which is what this script did before
+funds existed; `fund` reads `funds`/SFP and `auto` asks the vendor master per
+ticker. A run that loaded a fund prints the `security_uid` it produced, because
+that is the value `COMPARABLE_BENCHMARK_SECURITY_UID` wants and nothing else in
+the pipeline ever shows a uid to a human:
+
+```
+funds loaded — these are the security_uids:
+  SPY      sharadar:118691
+
+Set the cohort benchmark to one of them, e.g.
+  COMPARABLE_BENCHMARK_SECURITY_UID=sharadar:118691
+```
+
+To read the same value back later without re-running a backfill:
+
+```bash
+python -m scripts.benchmark_uid SPY
+```
 
 ### Universes
 
@@ -203,6 +327,14 @@ python -m scripts.build_universes --universe liquid_us_equity_v1 --top-n 500
 
 Both rewrite their own slug wholesale, so re-running is how you update. Rows for
 other slugs are untouched.
+
+`liquid_us_equity_v1` ranks **equities only**: a security the master calls a
+fund is dropped before the ranking, and `compute_membership` refuses to emit an
+interval for one even if the filter were bypassed. The filter is an exclusion of
+known funds rather than an allow-list of known equities, deliberately — an
+allow-list would silently empty `universe_membership` whenever a price file had
+been loaded ahead of its security master, which is a commoner and worse failure
+than the one the rule exists to stop.
 
 ### The delisting audit
 
@@ -310,18 +442,70 @@ These are known and unresolved, not oversights.
    terminal behaviour against a known collapse — and it is **not** enough to
    publish as a delisting-date reference. The audit blob carries
    `sources_verified_against_primary_filing: false` and the script says so.
-2. **No Sharadar run has happened.** No key exists. Everything in
-   `SharadarPricePlane` was exercised against stub payloads, and its column list
-   is verified from search extracts only (above).
-3. **Cross-check `closeadj` once a key exists.** Comparing our derived
-   total-return series against Sharadar's own is cheap and would either confirm
-   the conventions or surface a real disagreement.
+2. **Partly stale: a Sharadar run has now happened, for funds.** This item was
+   written before any key existed. The direct-API port (2026-09-10) and the
+   fund path (2026-09-13) were both exercised against live payloads with the
+   public `test-api-key`, recorded under `tests/fixtures/sharadar_direct/`, and
+   `funds` column names come from the vendor's own DDL rather than a search
+   extract. What is still true: nothing has been run against a **paid** key, so
+   the bulk redirect, the delisting `action` values, and anything outside the
+   free sample universe remain unexercised.
+3. **Cross-check `closeadj` once a key exists — done for funds, still open for
+   equities.** For a fund the derived total-return series now *is* checked
+   against `closeadj`, because the factors come from it: over 292 live SPY
+   sessions the two agree to 1.9e-6 of daily return. For an **equity** the
+   factors still come from `actions` and no such comparison has been run — the
+   free key covers AAPL's `stocks` and `actions` rows, so the comparison is
+   cheap and worth doing; it just was not part of this change.
 4. **Sharadar's SP500 reconstruction is unverified** and is not what this repo
    loads. `sp500_wikipedia_v1` is. The adapter method exists so the interface is
    complete, and it deliberately ignores the quarterly snapshot rows: treating a
    snapshot as a join would date every current constituent's membership to the
    snapshot.
-5. **`liquid_us_equity_v1` rebuilds in memory.** `universes.rebuild` loads every
+5. **Whether `actions` carries fund distributions is still an open question,
+   and a paid key settles it in one request.** The vendor documents that it
+   does; the public key 403s, so this repo has never seen one. It changes
+   nothing today — the bars take their factors from `closeadj` either way — but
+   it is worth knowing, and the check is
+   `GET /data/actions?ticker=SPY&from=2024-03-01&to=2024-03-31`: a `dividend`
+   row on 2024-03-15 with a value near `1.60` means the log covers funds, and
+   an empty result means the design note above was not paranoia. Either answer
+   is worth appending to Spec N §12.
+6. **No fund split has been observed.** The free sample carries exactly one
+   fund, SPY, and SPY has never split: `closeunadj == close` on every session
+   observed, so live coverage of the fund path exercises the split arithmetic
+   only at a ratio of 1.0, and the raw-OHLC reconstruction
+   `field x (closeunadj / close)` only at a scale of 1.0. The split derivation
+   `F(i-1)/F(i)` and the snap-to-1.0 threshold are covered by a synthetic
+   two-session case in `tests/test_price_plane_funds.py`
+   (`test_a_real_split_survives_the_snap`), which is a test of the arithmetic
+   and not of the vendor. A paid key on a fund that has split — a leveraged ETF
+   is the usual case — would close this. Every other fund ticker tried (QQQ,
+   IVV, TQQQ, SOXL, UVXY, DIA, IWM, VOO, GLD) returns `403 Exceeds free tier`.
+7. **The distribution floor narrows for a low-priced, heavily-adjusted fund.**
+   The rounding bound is absolute in `closeadj` units, so the floor in price
+   terms scales as `closeunadj / closeadj` and inversely with price level. For
+   SPY (near $500, ratio ~1.03) it is about 2 bps against distributions of 30+
+   bps — a 150x margin. For a long-lived bond ETF near $8 with a ratio of 2.7
+   it is nearer 30 bps, the same order as that fund's own monthly
+   distribution, so a real distribution could be zeroed. Only the benchmark is
+   loaded as a fund today, so this is a limit to know rather than a bug to fix;
+   lowering `FUND_DISTRIBUTION_SAFETY` to widen the margin would trade a missed
+   distribution for a fabricated one on every ordinary session, which is worse.
+   The real fix, if a second fund is ever needed, is `actions` — once a paid
+   key has settled item 5 above.
+8. **Fund coverage is the slice path only.** `--bulk` parses the `stocks` zip;
+   a `funds` bulk zip is a separate change and `--bulk --asset-class fund`
+   refuses rather than silently loading equities. For one benchmark that is the
+   right trade — SPY through the slice path is a single paged request.
+9. **A fund's `volume` is stored as the vendor publishes it**, which for both
+   `stocks` and `funds` is split-adjusted, while `raw_close` is not. So
+   `DailyBar.dollar_volume` mixes an unadjusted price with an adjusted volume
+   across a split. This is pre-existing on the equity path and was deliberately
+   not changed here: it moves every liquidity rank and therefore every
+   universe, which is not a thing to fold into a benchmark change. It does not
+   reach the benchmark, which is never ranked.
+10. **`liquid_us_equity_v1` rebuilds in memory.** `universes.rebuild` loads every
    stored bar to rank month-ends. That is fine for the fixture and for a few
    hundred names; a full 5,000-name, 10-year file is ~12M rows and will need a
    windowed rebuild (one month-end at a time, bars restricted to the window).
@@ -344,3 +528,24 @@ and both on either engine. The named ones:
 | `test_liquid_universe_rule_reproducible` | Same bars in, identical membership out, in any dict order |
 | `test_no_network_in_tests` | The offline surface opens no socket |
 | `tests/test_schema_discipline.py` | Single head, single base, every revision descends from the baseline |
+
+`tests/test_price_plane_funds.py` covers the fund path, against the live
+payloads recorded on 2026-09-13:
+
+| Test | What it holds down |
+|---|---|
+| `test_spy_is_a_fund_and_bbby_is_an_equity` | The class comes from the vendor's `tickers.table`, per name |
+| `test_the_default_is_equities_and_excludes_the_fund` | A caller written before funds existed keeps exactly what it had |
+| `test_daily_bars_for_a_fund_reads_funds_not_stocks` | The table is resolved through the master, never guessed |
+| `test_the_three_series_reconstruct_for_a_fund_with_a_distribution` | §4.3 across a real ex-dividend date |
+| `test_no_fictional_dividend_on_an_ordinary_session` | 287 of 292 live sessions carry exactly 0.0, not rounding residue |
+| `test_a_negative_distribution_above_the_noise_floor_refuses` | The model cannot express it, so it raises rather than storing it |
+| `test_rebuild_ranks_the_equity_and_not_the_fund` | A fund never enters `liquid_us_equity_v1` |
+| `test_an_uncatalogued_uid_is_still_ranked` | The filter did not turn `rebuild` into an allow-list |
+| `test_asking_for_funds_refuses_while_the_flag_is_off` | New capability ships off |
+
+`tests/test_securities_asset_class_migration.py` runs `0014` forward from
+`0013_merge_notify_owner` and back, on both engines, and asserts a row written
+before the column existed reads `equity` afterwards.
+`tests/test_cohort_smoke_fund_benchmark.py` is Spec N §11 with a fund benchmark:
+one `ok` and one `insufficient` in one roster run.

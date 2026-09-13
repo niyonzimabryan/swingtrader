@@ -37,6 +37,27 @@ def require_enabled(settings=None) -> None:
         )
 
 
+def funds_enabled(settings=None) -> bool:
+    return bool(getattr(settings or get_settings(), "price_plane_funds_enabled", False))
+
+
+def require_funds_enabled(settings=None) -> None:
+    """Gate the fund *entry points*, on the same terms as `require_enabled`.
+
+    Funds are new capability, so they ship off (README §3). The adapter itself
+    is not gated: `SharadarPricePlane` reads `funds` whenever it is asked to,
+    which is what lets the tests exercise the fund path without the flag, and
+    what means turning the flag on cannot change how the code behaves — only
+    whether an operator is allowed to reach it.
+    """
+    if not funds_enabled(settings):
+        raise PricePlaneConfigError(
+            "PRICE_PLANE_FUNDS_ENABLED is false. Fund (ETF) support is new and "
+            "off by default; set PRICE_PLANE_FUNDS_ENABLED=true to backfill a "
+            "fund such as SPY as the cohort benchmark (docs/ENV_SETUP.md §7)."
+        )
+
+
 def build_plane(source: str | None = None, settings=None, fixture_root: Path | str | None = None) -> PricePlane:
     """The one place a `PricePlane` implementation is chosen."""
     settings = settings or get_settings()
