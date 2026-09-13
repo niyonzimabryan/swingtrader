@@ -249,6 +249,53 @@ class PollerTests(unittest.TestCase):
             "placed a second time",
         )
 
+    def test_the_owner_passed_to_the_service_comes_from_configuration(self):
+        """Not from the card, or the owner check would be a tautology.
+
+        `on_approval` compares what it is handed against the proposal's own
+        `approval_owner_id`. Handing it that same column back would always
+        match. Taking it from settings instead means a card minted under a
+        different `OWNER_ID` than the bot runs with is refused at placement —
+        which is what makes "OWNER_ID must match on both services" a checked
+        rule rather than an instruction.
+        """
+        _proposal_id, uid = self._proposal()
+        self._record_approval(uid)
+        service = _CountingService(result=_Result())
+
+        poller = self._poller(execution_service=service)
+        poller.settings = pf.settings(owner_id="a-different-owner")
+        poller.run_once()
+
+        self.assertEqual(len(service.calls), 1)
+        self.assertEqual(
+            service.calls[0]["owner_id"],
+            "a-different-owner",
+            "the poller must hand the service the configured owner, not the "
+            "value it would be compared against",
+        )
+
+    def test_a_card_minted_for_another_owner_is_refused_at_placement(self):
+        """The end the row above only sets up: the real service refuses it."""
+        proposal_id, uid = self._proposal()
+        action_uid = self._record_approval(uid)
+
+        poller = self._poller(execution_service=self._real_service())
+        poller.settings = pf.settings(
+            owner_id="a-different-owner",
+            execution_approval_secret="test-approval-secret",
+        )
+        poller.run_once()
+
+        self.assertEqual(
+            self._status(proposal_id),
+            "proposed",
+            "a card bound to another owner must not reach a placement",
+        )
+        status, outcome, _by = self._action(action_uid)
+        self.assertEqual(status, "executed")
+        self.assertEqual(outcome, "owner_mismatch")
+
     def test_routing_is_read_from_the_row(self):
         _plain_id, plain_uid = self._proposal()
         _lab_id, lab_uid = self._proposal(ticker="NVDA", execution_id="exec-abc123")

@@ -271,7 +271,7 @@ class ApprovalPoller:
     # -- handlers -----------------------------------------------------------
 
     def _proposal_of(self, action_id: int):
-        """``(proposal_id, proposal_uid, execution_id, signature, owner_id)``.
+        """``(proposal_id, proposal_uid, execution_id, signature, status)``.
 
         Every routing key is read from the **proposal row**, never from the
         action: the action says which proposal the owner decided about, and the
@@ -279,6 +279,8 @@ class ApprovalPoller:
         ``bot/handlers/proposals.py::_lab_execution_id`` follows, for the same
         reason — a crafted input must not be able to change which service places
         an order.
+
+        Notably absent from this tuple: the owner id. See :meth:`_owner_id`.
         """
         from database.models import OwnerAction, Proposal
 
@@ -296,9 +298,24 @@ class ApprovalPoller:
                 row.proposal_uid,
                 row.execution_id or "",
                 row.approval_signature or "",
-                row.approval_owner_id or "",
                 row.status,
             )
+
+    def _owner_id(self) -> str:
+        """The owner this deployment is configured for — not the card's own value.
+
+        ``on_approval`` compares what it is handed against the proposal's
+        ``approval_owner_id``. Handing it that same column back would make the
+        owner check a tautology at the one point where it still costs nothing to
+        mean something, so the value comes from configuration instead. A card
+        minted under a different ``OWNER_ID`` than the one this bot runs with is
+        then refused at placement, which is what makes "``OWNER_ID`` must match
+        on both services" (``docs/ENV_SETUP.md`` §9a) a checked rule rather than
+        an instruction.
+        """
+        from portfolio.approvals import resolve_owner_id
+
+        return resolve_owner_id(self.settings)
 
     def _approve_order(self, action_id: int) -> dict:
         from execution.lifecycle import ExecutionRefused
@@ -313,7 +330,8 @@ class ApprovalPoller:
                 outcome_code="unknown_proposal",
                 outcome_detail="the proposal this decision names no longer exists.",
             )
-        proposal_id, uid, execution_id, signature, owner_id, _status = found
+        proposal_id, uid, execution_id, signature, _status = found
+        owner_id = self._owner_id()
 
         service = (
             self.strategy_execution_service if execution_id else self.execution_service
@@ -411,7 +429,7 @@ class ApprovalPoller:
                 outcome_code="unknown_proposal",
                 outcome_detail="the proposal this decision names no longer exists.",
             )
-        proposal_id, uid, execution_id, _sig, _owner, _status = found
+        proposal_id, uid, execution_id, _sig, _status = found
         if not execution_id:  # pragma: no cover - the tool applies these itself
             return self._finish(
                 action_id,
