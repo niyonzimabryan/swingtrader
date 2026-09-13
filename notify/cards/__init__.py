@@ -47,6 +47,7 @@ def deliver(
     settings,
     channels=None,
     telegram=None,
+    detail=None,
     session_factory=None,
     store_card: bool = True,
 ) -> dict:
@@ -56,6 +57,12 @@ def deliver(
     ``parse_mode``, ``reply_markup``). It is how an approval card keeps its
     inline keyboard and its existing Markdown body while travelling this path:
     Telegram's message is unchanged, and the email is the new thing.
+
+    ``detail`` is merged into the notification's ``detail`` under the card's own
+    keys, for anything else a channel reads there — today that is
+    ``attachments``, which the email channel base64s and Telegram ignores. The
+    card's own keys win: ``card_uid`` and ``card_url`` are this function's to
+    set, and a caller overwriting them would break the link it just signed.
 
     Never raises. A failure to sign, store, or render logs and falls through to
     delivering what it can — a page with no link still has to reach the owner.
@@ -84,9 +91,10 @@ def deliver(
         )
 
     rendered = render(payload, chart_url=chart_url, card_url=card_url)
-    detail = {"card_uid": uid, "card_url": card_url}
+    notification_detail = dict(detail or {})
+    notification_detail.update({"card_uid": uid, "card_url": card_url})
     if telegram:
-        detail["telegram"] = dict(telegram)
+        notification_detail["telegram"] = dict(telegram)
 
     return broadcast(
         Notification(
@@ -95,7 +103,7 @@ def deliver(
             text=rendered.text,
             html=rendered.html_email,
             ref=str(payload.get("ref") or ""),
-            detail=detail,
+            detail=notification_detail,
         ),
         settings=settings,
         channels=channels,

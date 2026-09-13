@@ -7,9 +7,13 @@ path) — and both want the same HTML email. Neither may import the other
 sender lives here, where both can reach it.
 
 What it deliberately does **not** do: carry an approval. The email has no
-callback, and the card page it links to is read-only. Approval stays the signed,
-expiring, single-use, owner-bound Telegram callback handled in the bot process
-(Spec L §6.3). Email adds a way to *see* a proposal, never a way to release one.
+callback, and the card page it links to is read-only. Approval stays a signed,
+expiring, single-use, owner-bound decision made out of band — the Telegram
+callback handled in the bot process (Spec L §6.3), or, in a headless deployment,
+the `approve_order` MCP owner tool, which *records* the decision for the runtime
+poller to act on (Spec K §10). Email adds a way to *see* a proposal, never a way
+to release one, and ``approval_route`` only decides which of the two the card
+tells the reader to use.
 """
 
 from __future__ import annotations
@@ -103,10 +107,22 @@ class EmailCardSender:
     failure must not lose the row, and this is a channel.
     """
 
-    def __init__(self, settings, *, session_factory=None, channels=None):
+    def __init__(
+        self,
+        settings,
+        *,
+        session_factory=None,
+        channels=None,
+        approval_route: str = "telegram",
+    ):
         self.settings = settings
         self.session_factory = session_factory
         self.channels = channels
+        #: ``"telegram"`` or ``"mcp"`` — see ``notify.cards.proposal``. It
+        #: changes the card's closing note and, headless, prints the owner-tool
+        #: call with this proposal's uid in it. It changes nothing about what
+        #: can approve: this sender delivers, and delivering is all it does.
+        self.approval_route = str(approval_route or "telegram")
 
     def __call__(self, card) -> None:
         try:
@@ -123,6 +139,7 @@ class EmailCardSender:
             payload = build_payload(
                 proposal=proposal,
                 approvable=bool(getattr(card, "approvable", False)),
+                approval_route=self.approval_route,
                 created_at_utc=utcnow_naive().isoformat(),
                 chart=chart,
                 # Best-effort, and absent rather than invented when it is not
@@ -169,3 +186,46 @@ class FanOutCardSender:
                     sender=type(sender).__name__,
                     error=str(exc),
                 )
+
+
+def register_email_card_sender(
+    settings, *, session_factory=None, channels=None, approval_route: str = "mcp"
+) -> bool:
+    """Make the email card the *only* proposal channel. Returns whether it was.
+
+    The headless counterpart to ``bot.handlers.proposals.register_bot_card_sender``,
+    and it lives here rather than there because ``bot/handlers/proposals.py``
+    imports ``telegram`` at module scope — importing it to register a channel
+    that has nothing to do with Telegram would be the one import a headless
+    process most obviously should not make.
+
+    Returns ``False`` and registers nothing when no channel is configured. A
+    proposal whose card could not be delivered stays ``proposed`` and simply
+    cannot be approved, which is the safe direction (``portfolio.approvals``);
+    registering a sender that silently drops every card would hide that.
+    """
+    from notify.registry import email_configured
+    from portfolio import approvals as approvals_mod
+
+    usable, missing = email_configured(settings)
+    if not usable:
+        log.warning(
+            "proposal_card_email_unavailable_headless",
+            missing=",".join(missing),
+            note=(
+                "Telegram is off and the email channel is not configured, so a "
+                "proposal card has nowhere to go; proposals will be logged only "
+                "and cannot be approved. See docs/NOTIFICATIONS.md."
+            ),
+        )
+        return False
+    approvals_mod.register_card_sender(
+        EmailCardSender(
+            settings,
+            session_factory=session_factory,
+            channels=channels,
+            approval_route=approval_route,
+        )
+    )
+    log.info("proposal_card_email_registered_headless", approval_route=approval_route)
+    return True

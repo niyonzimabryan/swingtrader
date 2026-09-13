@@ -27,7 +27,9 @@ class DailyDigest:
         try:
             text = self._build_digest()
             if text and self.nm:
-                await self.nm.mq.send(self.nm.chat_id, text)
+                # `send_report` is the Telegram half and is a no-op headless,
+                # where the card below is the whole delivery.
+                await self.nm.send_report(text)
                 log.info("daily_digest_sent")
                 self._email_card(text)
         except Exception as e:

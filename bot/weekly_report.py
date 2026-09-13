@@ -40,7 +40,9 @@ class WeeklyReport:
             narrative = self._generate_narrative(data)
             text = self._format_message(data, narrative)
             if text and self.nm:
-                await self.nm.mq.send(self.nm.chat_id, text)
+                # `send_report` is the Telegram half and is a no-op headless,
+                # where the cards below are the whole delivery.
+                await self.nm.send_report(text)
                 log.info("weekly_report_sent")
                 self._email_cards(text, data)
         except Exception as e:

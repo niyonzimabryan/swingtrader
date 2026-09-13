@@ -109,6 +109,27 @@ def email_channels(settings, *, session_factory=None) -> list:
     ]
 
 
+def non_telegram_channels(settings, *, session_factory=None) -> list:
+    """Every configured channel except Telegram — the headless runtime's set.
+
+    Not the same question as :func:`email_channels`, which asks "which channels
+    are email". This asks "which channels may a process that has switched
+    Telegram off use", and the difference matters the moment a third channel
+    exists: a new channel should be delivered to headless without anyone
+    remembering to add it here, and Telegram must not be, *even when its
+    credentials are still set*. Leaving ``TELEGRAM_BOT_TOKEN`` in the
+    environment after flipping ``TELEGRAM_ENABLED=false`` is the expected way to
+    switch over — the variables stay so the switch is reversible — so
+    :func:`configured_channels` would happily keep posting to a chat nobody
+    reads, from a process that is meant to be making no Telegram calls at all.
+    """
+    return [
+        channel
+        for channel in configured_channels(settings, session_factory=session_factory)
+        if getattr(channel, "name", "") != "telegram"
+    ]
+
+
 def broadcast(notification: Notification, *, settings=None, channels=None) -> dict:
     """Send to every channel. Returns ``{channel_name: delivered}``.
 

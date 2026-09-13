@@ -21,6 +21,9 @@ proposal, page, or report it was delivering.
 
 from __future__ import annotations
 
+import base64
+import os
+
 from notify import store
 from notify.channel import Notification
 from utils.logger import get_logger
@@ -30,6 +33,14 @@ log = get_logger("notify_resend")
 RESEND_API_URL = "https://api.resend.com/emails"
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
+
+#: The largest file this channel will base64 into a send, in bytes. Resend's own
+#: documented ceiling is 40 MB for the whole request, and base64 costs a third
+#: on top — but the real reason for a much smaller number is that this is the
+#: *only* channel a headless deployment has. A 30 MB attachment that 413s takes
+#: the message down with it, so an oversized file is dropped and the body says
+#: where it is instead. Losing the attachment beats losing the email.
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 
 
 def parse_recipients(value) -> list[str]:
@@ -114,7 +125,60 @@ class ResendChannel:
         }
         if notification.html:
             payload["html"] = notification.html
+        attachments = self.build_attachments(notification)
+        if attachments:
+            payload["attachments"] = attachments
         return payload
+
+    def build_attachments(self, notification: Notification) -> list[dict]:
+        """``detail["attachments"]`` — ``[{"path", "filename"}]`` — read off disk.
+
+        Added by the headless runtime: with Telegram off there is no
+        ``send_document``, so the deep-research PDF has to travel as an email
+        attachment or not at all. It is a ``detail`` key rather than a field on
+        :class:`~notify.channel.Notification` because it is channel-specific in
+        exactly the way ``detail["telegram"]`` is — Telegram ignores it and
+        sends the document through its own queue.
+
+        A file that is missing, unreadable, or over
+        :data:`MAX_ATTACHMENT_BYTES` is **skipped with a log line**, never
+        raised: the message it was attached to is worth sending without it.
+        """
+        requested = (notification.detail or {}).get("attachments")
+        if not requested:
+            return []
+        attachments: list[dict] = []
+        for entry in requested:
+            entry = entry if isinstance(entry, dict) else {"path": entry}
+            path = str(entry.get("path") or "")
+            if not path:
+                continue
+            filename = str(entry.get("filename") or "") or os.path.basename(path)
+            try:
+                size = os.path.getsize(path)
+                if size > MAX_ATTACHMENT_BYTES:
+                    log.warning(
+                        "notify_email_attachment_too_large",
+                        kind=notification.kind,
+                        ref=notification.ref,
+                        filename=filename,
+                        bytes=size,
+                        limit=MAX_ATTACHMENT_BYTES,
+                    )
+                    continue
+                with open(path, "rb") as handle:
+                    content = base64.b64encode(handle.read()).decode("ascii")
+            except Exception as exc:
+                log.warning(
+                    "notify_email_attachment_unreadable",
+                    kind=notification.kind,
+                    ref=notification.ref,
+                    filename=filename,
+                    error=str(exc),
+                )
+                continue
+            attachments.append({"filename": filename, "content": content})
+        return attachments
 
     # -- delivery ---------------------------------------------------------- #
 
