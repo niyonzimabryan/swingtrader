@@ -26,11 +26,13 @@ approve it, and nothing in this package can place an order.**
 | `notify/store.py` | `cards` and `notifications_sent` |
 | `workspace/app.py` | `/cards/{uid}` and `/cards/{uid}/chart.png` |
 
-`notify/` imports `config`, `database`, `portfolio` and `utils` and nothing
-else first-party. It may never import `bot/`, `execution/` or `orchestrator/`:
-the workspace mints cards, and the workspace's import closure is asserted never
-to reach a broker adapter (`tests/test_no_execute_scope.py`, Spec K §8,
-Spec L §6.1).
+`notify/` imports `config`, `database`, `portfolio`, `utils`, and — from
+`context.py` only, for the page's read-only sections — `comparables` and
+`research_workspace`. It may never import `bot/`, `execution/` or
+`orchestrator/`: the workspace mints cards, and the workspace's import closure is
+asserted never to reach a broker adapter (`tests/test_no_execute_scope.py`,
+Spec K §8, Spec L §6.1). That test walks `notify/` as part of the closure, so the
+rule is enforced rather than remembered.
 
 ## 2. Configuration
 
@@ -79,7 +81,10 @@ read to build the URL; the workspace does not use it to decide what to serve.
 
 Rendered examples of all five are in [`examples/cards/`](examples/cards/) —
 open the `.email.html` files in a browser. Regenerate with
-`python -m scripts.render_example_cards`; `--check` fails if they are stale.
+`python -m scripts.render_example_cards`. `--check` compares the HTML and text
+byte for byte and the PNGs for presence only: matplotlib stamps its version into
+PNG metadata, so a strict image comparison would fail on any machine whose
+matplotlib differs from the one that last committed them.
 
 ### The document model
 
