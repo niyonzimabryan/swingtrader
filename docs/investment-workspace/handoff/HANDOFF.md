@@ -6,7 +6,8 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-12 16:30 UTC, by a local Claude Code session on
+**Last updated:** 2026-09-13 02:20 UTC, by the orchestrating session
+(`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 Bryan's laptop (was 2026-09-12 06:15 UTC, orchestrating session
 `session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 
@@ -33,14 +34,29 @@ Merged, in order: Phase 0a/0b, 3a, 3b-core, 3p, 1, 2, 4, P, Strategy Lab 1 (#54)
 ENV_SETUP (#52), rulings (#55), **Phase 3c (#56), Phase 6 (#57), Strategy Lab 2
 (#58), rulings (#59), handoff (#62), Strategy Lab 3 (#60), Sharadar reference (#63), evidenced-budget closure (#61), Strategy Lab 4 (#64), orchestrated-build skill (#67), OWNER_SETUP (#69), mirror-test fix (#71), CI sharding (#66), Sharadar direct-API port (#70), Strategy Lab 5 (#65), service-role guard (#68), rulings PRs 2–5 (#73), Strategy Lab 6 (#74)**.
 
-## 2. What is in flight
+## 2. What is in flight (the notifications sprint, spawned 2026-09-13 02:15Z)
 
-| PR / branch | What | Session | State |
-|---|---|---|---|
-| `claude/spec-q-rulings-pr6` | Spec Q §21 rulings for PR 6; this handoff refresh | orchestrator | opening |
+Owner decisions that started it (2026-09-13): Bryan does not use Telegram and
+will not adopt it; every human-facing message goes to email (Resend, from
+`swingtrader@updates.readtop5.com`, keys already on both Railway services);
+approval happens **in his coding-agent chat** through an `admin`-scoped MCP
+tool, with no confirmation code (he declined one; single user, private
+deployment; the specs' "never a tool an agent can call" is overridden by owner
+ruling and must be recorded in L §10 and a new K rulings log); owner mutations
+(kill switch, promotions) also go over MCP; cards are designed HTML emails
+with a signed full-page view served by the workspace.
 
-No worker session is building. Every Strategy Lab and Investment Workspace
-build PR is on `main`.
+| PR / branch | What | Session | Model | State |
+|---|---|---|---|---|
+| `claude/notify-email-cards` | `notify/` package, Resend channel behind `NOTIFY_EMAIL_ENABLED`, HTML card renderer + PNG chart, signed `/cards/<uid>` page, `notifications_sent` table | `session_01NSbbAvFecNAkxaZSQ6v8P9` | opus | building |
+| `claude/owner-tools-mcp` | `OWNER_ID`; `admin`-scoped `approve_order`/`reject_order`/`approve_memo`/`kill_switch`/`promote_arm`/…; runtime approval poller calling `on_approval`; spec rulings | `session_01A4B5sYhhr8ZDnRFHkVq4xY` | opus | building |
+| `claude/system-overview-doc` | `docs/SYSTEM_OVERVIEW.md`, standalone, sourced; published to Google Drive by the orchestrator after merge | `session_01D8jUpshohWT44o1L6gLPHd` | sonnet | building |
+
+Briefs are verbatim in `briefs/notify-email-cards.md`, `briefs/owner-tools-mcp.md`,
+`briefs/system-overview-doc.md`. Not yet spawned, **after the first two merge**
+(they both rewire `main.py`): the headless runtime — `TELEGRAM_ENABLED=false`
+runs scheduler, monitors and the approval poller with no Telegram token, and
+`NotificationManager` routes through `notify/`.
 
 ## 3. What is left, in order
 
@@ -251,3 +267,11 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   support in `data/prices/sharadar.py` so SPY can be the benchmark and
   `cohort_smoke` can run; the delisting audit list keyed by Sharadar's `Q`
   symbols; macro fixture tests rewritten against real vintages.
+- 2026-09-13 02:20Z — Notifications sprint spawned (three workers above) after
+  Bryan's decisions: no Telegram, email via Resend, approval and owner
+  mutations over MCP without codes, HTML cards. Headless runtime PR follows
+  the first two merges. After the overview doc merges the orchestrator
+  publishes it to Google Drive from its own connector (workers have none).
+  Owner-side, still open before the first paper trade: nothing until these
+  merge; then `NOTIFY_EMAIL_ENABLED=true` and `WORKSPACE_OWNER_TOOLS_ENABLED=true`
+  on the services, an `admin`-scoped token re-issued, and the client attached.
