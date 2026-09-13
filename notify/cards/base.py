@@ -165,7 +165,7 @@ def stylesheet(*, page: bool) -> str:
         f"{root} {{\n{_vars(LIGHT)}\n    }}",
         "    @media (prefers-color-scheme: dark) {\n"
         f"      :root {{\n{_vars(DARK)}\n      }}\n"
-        "      body, .st-page { background: var(--page) !important; }\n"
+        "      body, .st-page, .st-wrap { background: var(--page) !important; }\n"
         "      .st-card { background: var(--ground) !important; }\n"
         "      .st-ink, .st-ink a { color: var(--ink) !important; }\n"
         "      .st-muted { color: var(--muted) !important; }\n"
@@ -296,9 +296,9 @@ def _table_block(block: dict) -> str:
     )
     return (
         f'<tr><td class="st-pad" style="padding:4px 28px 6px 28px;">'
-        f'<div class="st-scroll" style="overflow-x:auto;">'
-        f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
-        f'style="border-collapse:collapse;">'
+        f'<div class="st-scroll" style="overflow-x:auto;max-width:100%;">'
+        f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+        f'style="border-collapse:collapse;min-width:100%;">'
         f"<thead><tr>{head}</tr></thead><tbody>" + "".join(lines) + "</tbody></table></div>"
         f"{note_html}</td></tr>"
     )
@@ -519,8 +519,13 @@ def _shell(inner: str, *, page: bool, title: str) -> str:
 def _card_table(rows_html: str) -> str:
     return (
         f'<table role="presentation" class="st-card" cellpadding="0" cellspacing="0" '
-        f'border="0" width="100%" style="max-width:640px;margin:0 auto;'
-        f'background:{LIGHT["ground"]};border-radius:14px;'
+        # `table-layout:fixed` is load-bearing, not cosmetic: without it a wide
+        # table (the scorecard's arm rows) auto-sizes its containing cell and
+        # drags the whole card past 640px, so the *page* scrolls sideways
+        # instead of the one table that is too wide. Fixed layout pins the
+        # column, and the `.st-scroll` wrapper inside it takes the overflow.
+        f'border="0" width="100%" style="table-layout:fixed;max-width:640px;'
+        f'margin:0 auto;background:{LIGHT["ground"]};border-radius:14px;'
         f'border:1px solid {LIGHT["hairline"]};">' + rows_html + "</table>"
     )
 

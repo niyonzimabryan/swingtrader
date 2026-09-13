@@ -1,0 +1,19 @@
+SCAN COMPLETE
+full  [2 memo(s)]
+412 scanned · 18 escalated · 2 memos
+
+  duration: 4m 12s
+  tickers scanned: 412
+  escalated: 18
+  memos generated: 2
+  scan completed: 2026-09-13T21:05:00
+
+MEMOS
+  ticker | score | classification | recommendation | note
+  HIMS | 0.81 | catalyst / guidance raise | proceed | —
+  OSCR | 0.62 | technical / base breakout | watchlist | —
+  Scores and classifications are the scan's own; nothing here re-ranks them.
+
+SwingTrader — a memo is an input to a decision, never a decision.
+This message is not investment advice and this system is not a licensed advisor.
+Full card: https://workspace.example.invalid/cards/EXAMPLE?s=EXAMPLE

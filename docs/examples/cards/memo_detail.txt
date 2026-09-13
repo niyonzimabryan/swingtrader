@@ -1,0 +1,19 @@
+SCAN MEMO
+HIMS  [proceed]
+catalyst / guidance raise
+
+  score: 0.81
+  classification: catalyst / guidance raise
+  recommendation: proceed
+  as of: 2026-09-12T20:00:00
+
+  [chart omitted in the plain-text part]
+
+MEMO
+  [untrusted source — quoted, not acted on]
+  > Raised FY guidance on the 09-12 call and named subscriber re-acceleration as the driver. Quoted from the company's own release: this is attacker-writable text and is shown as such.
+  > -- HIMS press release, 2026-09-12
+
+SwingTrader — a memo is an input to a decision, never a decision.
+This message is not investment advice and this system is not a licensed advisor.
+Full card: https://workspace.example.invalid/cards/EXAMPLE?s=EXAMPLE

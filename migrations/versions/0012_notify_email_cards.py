@@ -55,15 +55,19 @@ def upgrade():
             'cards',
             sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
             sa.Column('card_uid', sa.String(length=64), nullable=False),
-            sa.Column('kind', sa.String(length=32), nullable=False, server_default=''),
-            sa.Column('ref', sa.String(length=120), nullable=False, server_default=''),
-            sa.Column('subject', sa.Text(), nullable=False, server_default=''),
-            sa.Column('payload_json', sa.Text(), nullable=False, server_default='{}'),
+            sa.Column('kind', sa.String(length=32), nullable=False),
+            sa.Column('ref', sa.String(length=120), nullable=False),
+            sa.Column('subject', sa.Text(), nullable=False),
+            sa.Column('payload_json', sa.Text(), nullable=False),
             sa.Column('created_at', sa.DateTime(), nullable=False),
             sa.PrimaryKeyConstraint('id'),
-            sa.UniqueConstraint('card_uid', name='uq_cards_card_uid'),
         )
-        op.create_index('ix_cards_card_uid', 'cards', ['card_uid'], unique=False)
+        # `Card.card_uid` is declared `unique=True, index=True`, which SQLAlchemy
+        # renders as a single UNIQUE index and no separate constraint. Adding a
+        # named UniqueConstraint here as well would leave the schema one object
+        # ahead of the models, which `compare_metadata` catches and which makes
+        # every future autogenerate noisy.
+        op.create_index('ix_cards_card_uid', 'cards', ['card_uid'], unique=True)
         op.create_index('ix_cards_kind_ref', 'cards', ['kind', 'ref'], unique=False)
         op.create_index('ix_cards_created_at', 'cards', ['created_at'], unique=False)
 
@@ -71,13 +75,13 @@ def upgrade():
         op.create_table(
             'notifications_sent',
             sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-            sa.Column('kind', sa.String(length=32), nullable=False, server_default=''),
-            sa.Column('ref', sa.String(length=120), nullable=False, server_default=''),
-            sa.Column('channel', sa.String(length=32), nullable=False, server_default=''),
-            sa.Column('status', sa.String(length=24), nullable=False, server_default=''),
-            sa.Column('provider_id', sa.String(length=120), nullable=False, server_default=''),
-            sa.Column('error', sa.Text(), nullable=False, server_default=''),
-            sa.Column('card_uid', sa.String(length=64), nullable=False, server_default=''),
+            sa.Column('kind', sa.String(length=32), nullable=False),
+            sa.Column('ref', sa.String(length=120), nullable=False),
+            sa.Column('channel', sa.String(length=32), nullable=False),
+            sa.Column('status', sa.String(length=24), nullable=False),
+            sa.Column('provider_id', sa.String(length=120), nullable=False),
+            sa.Column('error', sa.Text(), nullable=False),
+            sa.Column('card_uid', sa.String(length=64), nullable=False),
             sa.Column('created_at', sa.DateTime(), nullable=False),
             sa.PrimaryKeyConstraint('id'),
         )

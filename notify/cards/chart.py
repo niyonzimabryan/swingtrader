@@ -97,15 +97,18 @@ def render_png(chart: dict) -> bytes:
 
     for name, value, colour in _levels(chart):
         axes.axhline(value, color=colour, linewidth=1.2, linestyle=(0, (5, 4)))
+        # Labelled at the *left* edge. The right edge is where the most recent
+        # bars are, and a label there sits on top of the price action that the
+        # reader came to look at.
         axes.annotate(
             f"{name} {value:,.2f}",
-            xy=(positions[-1], value),
-            xytext=(4, 3),
+            xy=(positions[0], value),
+            xytext=(10, 4),
             textcoords="offset points",
             color=colour,
             fontsize=8,
             fontweight="bold",
-            ha="right",
+            ha="left",
             va="bottom",
         )
 
