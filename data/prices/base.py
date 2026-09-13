@@ -26,6 +26,7 @@ proves for the vendor one:
 from __future__ import annotations
 
 import math
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -252,6 +253,50 @@ class PricePlane(ABC):
 
     def known_universes(self) -> tuple[str, ...]:
         return ()
+
+    #: True on a plane whose `find_by_company_name` performs a real search.
+    #: The delisting audit's resolver (`data/prices/audit.py`) needs to tell
+    #: "this plane cannot search by name" from "it searched and found
+    #: nothing" — the two are different facts and only one of them means the
+    #: audit should give up on a case (Spec N §12 ruling).
+    supports_company_name_search: bool = False
+
+    def find_by_company_name(
+        self, company: str, *, original_ticker: str | None = None
+    ) -> tuple[dict, ...]:
+        """Best-effort candidate vendor rows for a company under an unknown symbol.
+
+        The default implementation performs no search and returns `()`; a
+        plane that overrides `supports_company_name_search = True` must also
+        override this. Returns raw vendor-shaped dicts (at least `ticker` and
+        `name`) rather than `SecurityMasterRow` — candidate search does not
+        need, and should not pay for, whatever a plane's `security_master`
+        derives per row (Sharadar's delisting reason costs one extra call per
+        delisted name).
+        """
+        return ()
+
+
+_CORP_SUFFIX_RE = re.compile(
+    r"\b(INCORPORATED|INC|CORPORATION|CORP|COMPANY|CO|LIMITED|LTD|"
+    r"HOLDINGS?|HOLDCO|GROUP|TRUST|LLC|LP|PLC)\b\.?"
+)
+_NON_ALNUM_RE = re.compile(r"[^A-Z0-9 ]")
+
+
+def normalize_company_name(name: str) -> str:
+    """A strict, deterministic key for comparing two company names.
+
+    Uppercases, drops punctuation, and strips the common corporate-suffix
+    words (`Inc`, `Corp`, `Holdings`, ...) so that "RadioShack Corporation"
+    and "RADIOSHACK CORP" collapse to the same key. It is deliberately strict
+    rather than fuzzy: the delisting audit's resolver (`data/prices/audit.py`)
+    uses this as the sole acceptance test for a name-matched candidate, and a
+    fuzzy match would accept the wrong company silently (Spec N §12 ruling).
+    """
+    upper = _NON_ALNUM_RE.sub(" ", name.upper())
+    upper = _CORP_SUFFIX_RE.sub(" ", upper)
+    return " ".join(upper.split())
 
 
 def members_as_of(

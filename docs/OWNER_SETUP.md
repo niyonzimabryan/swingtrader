@@ -312,24 +312,54 @@ as a stand-in benchmark was also not done: a cohort answer computed against a
 benchmark that is not the benchmark is a wrong number, and wrong numbers are the
 one thing this system is built to refuse.
 
-**`scripts.audit_delisting_returns` cannot complete either.** It aborts on its
-first case, `RSH`. Two independent causes, both verified against the vendor:
+**`scripts.audit_delisting_returns` used to abort on its first case, `RSH`.**
+Fixed (`docs/investment-workspace/handoff/briefs/delisting-audit-symbols.md`):
+the audit now resolves each case's vendor symbol before asking for bars —
+`case.vendor_symbols["sharadar"]` for the seven confirmed remaps and the four
+that resolve under their original ticker, and a best-effort name/`relatedtickers`
+search otherwise — and reports `unresolved` (no symbol found) and
+`out_of_window` (delisting predates the tier) as their own classes, distinct
+from `missing`. It refuses to run (exit 2) below
+`delisting_audit_min_testable_cases` (default 10) testable cases, so a run
+that can only ask a handful of its twenty questions fails loudly instead of
+silently passing. **Run `--resolve` before the audit itself:**
+
+```bash
+DATABASE_URL="$POSTGRES_URL" SHARADAR_API_KEY=... \
+  python -m scripts.audit_delisting_returns --source sharadar --resolve
+```
+
+It prints, for every case, how it resolved (or a ready-to-paste
+`vendor_symbols` line when it found a name-matched candidate), and needs a
+live key — a cloud worker session normally has none, so this step is the
+owner's to run, followed by a PR filling in whatever `--resolve` found. Then
+run the audit itself the same way as before:
+
+```bash
+DATABASE_URL="$POSTGRES_URL" python -m scripts.audit_delisting_returns --source sharadar
+```
+
+Two independent causes remain, both verified live against the vendor on
+2026-09-12 (`docs/investment-workspace/handoff/OWNER_SETUP_EXECUTION_2026-09-12.md`):
 
 - *Symbol.* `data/prices/delisting_audit_list.py` names companies by their
-  pre-bankruptcy symbol; Sharadar keys them by the post-bankruptcy `Q` symbol.
-  `RSH` → `RSHCQ` ("RADIOSHACK CORP"), and `SHLDQ`, `BBBYQ`, `SIVBQ`, `FTRCQ`,
-  `RADCQ`, `BIGGQ` all exist. `JCP` → `JCPNQ` does **not** resolve, so the remap
-  needs per-case judgement rather than a suffix rule — `tickers.relatedtickers`
-  is the likely path. Only 4 of the 20 cases (`ACI, SUNE, WLL, CBL`) resolve as
-  written.
+  pre-bankruptcy symbol; Sharadar keys many of them by a post-bankruptcy `Q`
+  symbol. `RSH` → `RSHCQ` ("RADIOSHACK CORP"), and `SHLDQ`, `BBBYQ`, `SIVBQ`,
+  `FTRCQ`, `RADCQ`, `BIGGQ` all exist and are already filled in. `JCP` →
+  `JCPNQ` does **not** resolve by ticker or by company name, so the remap
+  needs per-case judgement rather than a suffix rule; nine cases
+  (`WLT, ZQK, CIE, WIN, DEAN, JCP, LK, CHK, PRTY`) still carry no
+  `vendor_symbols` entry — `--resolve` is where to start on the rest.
 - *Window.* Even with the right symbol, `stocks?ticker=RSHCQ` returns no rows:
   the 10-year tier starts 2016-09-12, so the 2015 cases (`RSH`, `WLT`, `ZQK`)
-  need the `full` tier. The 2023–2024 cases do have prices — `SIVBQ` and `BBBYQ`
+  need the `full` tier and now classify `out_of_window` by construction under
+  the 10-year one. The 2023–2024 cases do have prices — `SIVBQ` and `BBBYQ`
   both return real bars.
 
 This matters beyond the script: the audit list is the survivorship-bias check,
 so a symbol that silently resolves to nothing is the failure mode it exists to
-catch.
+catch — which is exactly why an unresolved symbol is now its own class rather
+than indistinguishable from "the vendor has it and it's empty".
 
 Run the backfill **inside the bot container** — it already holds
 `SHARADAR_API_KEY` and, after §2, the Postgres `DATABASE_URL`, and there is no
@@ -378,7 +408,8 @@ is the vendor reference. Then:
 railway variables --service swingtrader --set "PRICE_PLANE_ENABLED=true" --set "PRICE_PLANE_SOURCE=sharadar"
 # from the laptop, against Postgres:
 DATABASE_URL="$POSTGRES_URL" SHARADAR_API_KEY=... python -m scripts.price_backfill --source sharadar --bulk years=10
-DATABASE_URL="$POSTGRES_URL" python -m scripts.audit_delisting_returns
+DATABASE_URL="$POSTGRES_URL" SHARADAR_API_KEY=... python -m scripts.audit_delisting_returns --source sharadar --resolve
+DATABASE_URL="$POSTGRES_URL" python -m scripts.audit_delisting_returns --source sharadar
 # pick the benchmark row (SPY's security_uid in price_bars), then on the workspace:
 railway variables --service workspace --set "COMPARABLE_SETUPS_ENABLED=true" --set "COMPARABLE_BENCHMARK_SECURITY_UID=<uid>"
 DATABASE_URL="$POSTGRES_URL" python -m scripts.cohort_smoke     # Spec N §11: one insufficient, one ok, hand-checked
