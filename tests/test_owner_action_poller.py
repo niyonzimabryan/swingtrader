@@ -373,6 +373,247 @@ class PollerTests(unittest.TestCase):
         self.assertEqual(status, "expired")
         self.assertEqual(outcome, "confirmation_expired")
 
+    # -- tier changes -------------------------------------------------------
+    #
+    # The promotion gates themselves are `tests/test_strategy_lab_promotion.py`'s
+    # subject and are not re-tested here. What is under test is the two-pass
+    # shape this PR adds around them: the runtime plans and mints, the tool
+    # confirms, the runtime re-plans and refuses if the plan moved. So the
+    # wiring is injected — a recorder, not the real module — and the assertions
+    # are about the confirmation and the drift check, which is where the new
+    # code is.
+
+    def _request(self, *, target_arm_id=99, evidence=7, budget=1000.0, mode="paper"):
+        from types import SimpleNamespace
+
+        from strategy_lab.domain import ExecutionMode
+
+        return SimpleNamespace(
+            source_arm_id=42,
+            target_arm_id=target_arm_id,
+            evidence_metric_snapshot_id=evidence,
+            requested_mode=ExecutionMode(mode),
+            requested_risk_budget=budget,
+            owner="bryan",
+            reason="evidence is in",
+        )
+
+    def _wiring(self, *, confirmable=True, refusals=(), request=None, confirm_result=None):
+        from types import SimpleNamespace
+
+        plan = SimpleNamespace(
+            confirmable=confirmable,
+            refusals=tuple(refusals),
+            external_refusals=(),
+            notes=("a note",),
+            recommendation="owner decides",
+        )
+        wiring = SimpleNamespace(confirmed=[])
+
+        def build_request(session, settings, **kwargs):
+            return request() if callable(request) else (request or self._request())
+
+        def confirm(settings, req, *, adapters=None):
+            wiring.confirmed.append(req)
+            return confirm_result or {
+                "kind": "promotion",
+                "promotion_id": 5,
+                "source_arm_id": 42,
+                "target_arm_id": 99,
+                "from_mode": "shadow",
+                "to_mode": "paper",
+                "new_risk_budget": 1000.0,
+            }
+
+        wiring.build_request = build_request
+        wiring.plan = lambda settings, req, adapters=None: plan
+        wiring.confirm = confirm
+        return wiring
+
+    def _request_tier_change(self, to_mode="paper"):
+        with get_session() as session:
+            action = owner_actions.record(
+                session,
+                kind="promote_arm",
+                subject_kind="arm",
+                subject_ref="42",
+                status="requested",
+                owner_id=OWNER,
+                payload={"source_arm_id": 42, "to_mode": to_mode, "reason": "evidence is in"},
+            )
+            uid = action.action_uid
+            session.commit()
+        return uid
+
+    def _poller_with(self, wiring, instance="tier"):
+        poller = self._poller(instance=instance)
+        poller.promotion_wiring = wiring
+        return poller
+
+    def test_a_tier_change_prepares_a_signed_confirmation_and_promotes_nothing(self):
+        from database.models import PromotionEvent
+
+        uid = self._request_tier_change()
+        wiring = self._wiring()
+        self._poller_with(wiring).run_once()
+
+        with get_session() as session:
+            row = owner_actions.get_by_uid(session, uid)
+            self.assertEqual(row.status, "prepared")
+            self.assertTrue(row.confirm_signature)
+            self.assertTrue(row.confirm_expires_at)
+            self.assertEqual(row.confirm_owner_id, OWNER)
+            self.assertIsNone(row.confirm_consumed_at)
+            self.assertIn("TIER CHANGE", row.card_md)
+            self.assertIsNone(
+                row.claimed_at,
+                "a prepared action must be claimable again for its second pass",
+            )
+            self.assertEqual(session.query(PromotionEvent).count(), 0)
+        self.assertEqual(wiring.confirmed, [], "preparing must not confirm")
+
+    def test_a_not_confirmable_plan_is_refused_with_both_lists(self):
+        uid = self._request_tier_change()
+        wiring = self._wiring(confirmable=False, refusals=("evidence incomplete",))
+        self._poller_with(wiring).run_once()
+
+        with get_session() as session:
+            row = owner_actions.get_by_uid(session, uid)
+            self.assertEqual(row.status, "refused")
+            self.assertEqual(row.outcome_code, "not_confirmable")
+            self.assertIn("evidence incomplete", row.card_md)
+            self.assertIn("NOT CONFIRMABLE", row.card_md)
+
+    def test_confirming_then_executing_runs_the_plan_that_was_signed(self):
+        uid = self._request_tier_change()
+        wiring = self._wiring()
+        self._poller_with(wiring).run_once()
+
+        # The tool's half: verify the signature the runtime minted, and consume.
+        with get_session() as session:
+            row = owner_actions.get_by_uid(session, uid)
+            presented = row.confirm_signature[:18]
+            owner_actions.consume_confirmation(
+                session,
+                row,
+                presented_signature=presented,
+                owner_id=OWNER,
+                settings=self.settings,
+            )
+            session.commit()
+
+        self._poller_with(wiring, instance="tier2").run_once()
+
+        with get_session() as session:
+            row = owner_actions.get_by_uid(session, uid)
+            self.assertEqual(row.status, "executed")
+            self.assertEqual(row.outcome_code, "promotion")
+            self.assertIn("approved no entry", row.outcome_detail)
+        self.assertEqual(len(wiring.confirmed), 1)
+
+    def test_a_plan_that_drifted_after_confirmation_is_refused(self):
+        """An evaluator run between the two passes moves the evidence snapshot.
+
+        Executing then would run a plan the owner never saw, which is the one
+        way this two-pass shape could go wrong. So the second pass re-plans and
+        compares against what the signature bound.
+        """
+        uid = self._request_tier_change()
+        seen = {"n": 0}
+
+        def drifting():
+            seen["n"] += 1
+            # Same plan on the preparing pass; a newer evidence snapshot on the
+            # confirming one.
+            return self._request(evidence=7 if seen["n"] == 1 else 8)
+
+        wiring = self._wiring(request=drifting)
+        self._poller_with(wiring).run_once()
+        with get_session() as session:
+            row = owner_actions.get_by_uid(session, uid)
+            owner_actions.consume_confirmation(
+                session,
+                row,
+                presented_signature=row.confirm_signature[:18],
+                owner_id=OWNER,
+                settings=self.settings,
+            )
+            session.commit()
+
+        self._poller_with(wiring, instance="tier2").run_once()
+
+        with get_session() as session:
+            row = owner_actions.get_by_uid(session, uid)
+            self.assertEqual(row.status, "executed")
+            self.assertEqual(row.outcome_code, "plan_changed")
+            self.assertIn("evidence_metric_snapshot_id", row.outcome_detail)
+        self.assertEqual(
+            wiring.confirmed, [], "a drifted plan must not be confirmed"
+        )
+
+    def test_a_confirmation_is_single_use_owner_bound_and_expiring(self):
+        from datetime import timedelta
+
+        uid = self._request_tier_change()
+        self._poller_with(self._wiring()).run_once()
+
+        with get_session() as session:
+            row = owner_actions.get_by_uid(session, uid)
+            good = row.confirm_signature[:18]
+
+            with self.assertRaises(owner_actions.OwnerActionRefused) as ctx:
+                owner_actions.verify_confirmation(
+                    row,
+                    presented_signature=good,
+                    owner_id="someone-else",
+                    settings=self.settings,
+                )
+            self.assertEqual(ctx.exception.code, "owner_mismatch")
+
+            with self.assertRaises(owner_actions.OwnerActionRefused) as ctx:
+                owner_actions.verify_confirmation(
+                    row,
+                    presented_signature="f" * 18,
+                    owner_id=OWNER,
+                    settings=self.settings,
+                )
+            self.assertEqual(ctx.exception.code, "signature_mismatch")
+
+            with self.assertRaises(owner_actions.OwnerActionRefused) as ctx:
+                owner_actions.verify_confirmation(
+                    row,
+                    presented_signature=good[:4],
+                    owner_id=OWNER,
+                    settings=self.settings,
+                )
+            self.assertEqual(ctx.exception.code, "signature_too_short")
+
+            with self.assertRaises(owner_actions.OwnerActionRefused) as ctx:
+                owner_actions.verify_confirmation(
+                    row,
+                    presented_signature=good,
+                    owner_id=OWNER,
+                    settings=self.settings,
+                    now=row.confirm_expires_at + timedelta(seconds=1),
+                )
+            self.assertEqual(ctx.exception.code, "confirmation_expired")
+
+            owner_actions.consume_confirmation(
+                session,
+                row,
+                presented_signature=good,
+                owner_id=OWNER,
+                settings=self.settings,
+            )
+            with self.assertRaises(owner_actions.OwnerActionRefused) as ctx:
+                owner_actions.verify_confirmation(
+                    row,
+                    presented_signature=good,
+                    owner_id=OWNER,
+                    settings=self.settings,
+                )
+            self.assertEqual(ctx.exception.code, "confirmation_already_used")
+
     def test_an_unclaimed_queue_is_a_no_op(self):
         """The common case: nothing recorded, nothing done, nothing logged as done."""
         self.assertEqual(self._poller(execution_service=self._real_service()).run_once(), [])
