@@ -9,6 +9,7 @@ $108.00 entry, $99.00 stop, 34 shares — evidenced budget
   budget: evidenced
       Evidenced: a qualifying cohort answer for this ticker sized it.
   expected hold: 15 sessions
+  ledger as of: 2026-09-13T13:45:00
 
   [chart omitted in the plain-text part]
 
@@ -24,58 +25,6 @@ RISK MATH
   caps that bound the size: evidenced_risk_cap
 
   cited_ok: the cited answer is full/ok for AMD, computed 2 sessions ago.
-
-EVERY CAP, BOUND OR NOT
-  cap | state | limit | shares allowed
-  concentration | ok | 10000.0 | 92
-  evidenced_risk_cap | BOUND | 0.01 | 34
-  settled_cash | ok | 8400.0 | 77
-  Size is the minimum over every cap. `BOUND` is the one that decided it.
-
-COHORT EVIDENCE
-  cohort_answer_id: cohort:3182
-  status: ok
-  depth: full
-  n: 61
-  subject qualified: yes
-      AMD met every condition at its 2026-09-11 candidate.
-  computed: 2026-09-11T00:00:00
-
-COHORT WARNINGS (VERBATIM)
-  - overlapping_events: 14 of 61 events overlap another event's holding window.
-  - thin_sector_coverage: 3 sectors contribute fewer than 5 events each.
-
-LINKED THESIS
-  state: active
-  conviction: medium
-  written: 2026-08-30T00:00:00 [STALE]
-
-  Datacentre GPU share gain is under-modelled; the 2026 ramp is contracted, not speculative.
-
-INVALIDATORS
-  - A quarter where datacentre revenue grows less than 15% sequentially.
-  - A hyperscaler publicly re-committing capex to a competing accelerator.
-
-BEAR CASE (THESIS-CRITIC, STORED)
-  > The contracted ramp is a backlog figure, not a delivery figure, and the supply constraint that makes it credible is the same one that makes the 2027 comparison impossible to beat.
-  > -- thesis-critic, 2026-09-02
-
-EXPOSURE IMPACT
-  semis exposure after this entry: 18.4% of equity
-  largest single name after this entry: AMD, 6.1%
-  narrative tag overlap: ai_infrastructure — 3 other positions
-
-  Concentration and sector are measured over the combined book, read-only accounts included (Spec L §5.1).
-
-PROVENANCE
-  ledger as of: 2026-09-13T13:45:00
-      Every figure above was sized against this read of the book.
-  equity at proposal: $100,000.00
-  account: robinhood-agentic
-  execution mode: paper
-  context hash: 9f2c4b1a77e30ddc
-  proposal uid: 11111111-2222-3333-4444-555555555555
-  approval expires: 2026-09-13T14:15:00
 
   Approving places a live entry and then a `gtc` `stop_market` protective exit. Approval happens on Telegram, not here: this card is a record, and nothing on this page or in this email can approve, modify, or place an order. Risk is re-computed from fresh state first; the approval is single-use, expiring, and bound to you.
 

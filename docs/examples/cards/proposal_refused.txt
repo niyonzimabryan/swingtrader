@@ -9,6 +9,7 @@ $108.00 entry, $99.00 stop, 0 shares — discretionary budget
   budget: discretionary
       Discretionary: judgment, drawn from the separate budget with its own per-trade cap and daily notional.
   expected hold: 15 sessions
+  ledger as of: 2026-09-13T13:45:00
 
 RISK MATH
   risk_fraction requested: 0.00500
@@ -22,16 +23,6 @@ RISK MATH
   caps that bound the size: none
 
   uncited: no cohort answer was cited, so this is discretionary.
-
-PROVENANCE
-  ledger as of: 2026-09-13T13:45:00
-      Every figure above was sized against this read of the book.
-  equity at proposal: $100,000.00
-  account: robinhood-agentic
-  execution mode: paper
-  context hash: 9f2c4b1a77e30ddc
-  proposal uid: 11111111-2222-3333-4444-555555555555
-  approval expires: n/a
 
 REFUSED
   insufficient_settled_cash

@@ -571,8 +571,16 @@ def _text_rows(block: dict) -> list[str]:
     return lines
 
 
-def render_text(payload: dict, *, card_url: str = "") -> str:
-    """The plain-text part. Same numbers, same staleness marks, no markup."""
+def render_text(payload: dict, *, card_url: str = "", page: bool = False) -> str:
+    """The plain-text part. Same numbers, same staleness marks, no markup.
+
+    ``page`` defaults to ``False`` because the only consumer is the email's text
+    alternative, and an alternative that carried *more* than the HTML it stands
+    in for would not be an alternative — a reader whose client refuses HTML
+    would silently get a different message from one whose client does not. So
+    ``page_only`` blocks are dropped here on exactly the same rule as in
+    :func:`render_html`.
+    """
     lines: list[str] = []
     if payload.get("eyebrow"):
         lines.append(str(payload["eyebrow"]).upper())
@@ -584,6 +592,8 @@ def render_text(payload: dict, *, card_url: str = "") -> str:
     lines.append("")
 
     for block in payload.get("blocks") or []:
+        if not page and block.get("page_only"):
+            continue
         kind = str(block.get("type") or "")
         if kind == "divider":
             lines.append("-" * 48)

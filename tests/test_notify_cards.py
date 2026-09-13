@@ -127,6 +127,12 @@ class EmailConstraintTests(unittest.TestCase):
         self.assertIn("every cap, bound or not", rendered.html_page)
         self.assertNotIn("every cap, bound or not", rendered.html_email)
 
+    def test_the_text_part_says_the_same_thing_as_the_html_it_stands_in_for(self):
+        """A reader whose client refuses HTML must not get a different message."""
+        rendered = render(self.payloads()["proposal"])
+        self.assertNotIn("EVERY CAP, BOUND OR NOT", rendered.text)
+        self.assertIn("RISK MATH", rendered.text)
+
     def test_the_email_links_to_the_page_and_the_page_does_not_link_to_itself(self):
         rendered = render(self.payloads()["proposal"], card_url="https://x.invalid/cards/u1?s=ab")
         self.assertIn("https://x.invalid/cards/u1?s=ab", rendered.html_email)

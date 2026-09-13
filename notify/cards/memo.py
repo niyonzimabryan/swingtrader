@@ -167,6 +167,10 @@ def build_memo_payload(
             }
         )
     if body:
+        # Not `page_only`. The body is the substance of a memo card, and when it
+        # is untrusted-origin text the *mark* is the point: it has to travel
+        # with the quote into every rendering a human reads, the email included
+        # (AGENTS.md §5).
         blocks.append(
             {
                 "type": "quote",
@@ -174,7 +178,6 @@ def build_memo_payload(
                 "body": body,
                 "source": body_source,
                 "trust": body_trust,
-                "page_only": True,
             }
         )
 

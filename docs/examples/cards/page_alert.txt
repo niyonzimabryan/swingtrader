@@ -10,11 +10,5 @@ AMD
 RECOVERY
   The entry filled and the protective stop was not read back inside the 120-second window. Open the broker app, confirm whether a stop exists at $99.00, and place one by hand if it does not. Further entries are blocked until this position reads back as protected.
 
-DETAIL
-  field | value
-  average_fill_price | 108.02
-  filled_quantity | 34
-  stop_ref_id | st-9f2c4b1a
-
 SwingTrader paged. Nothing in this message can place, cancel, or modify an order — acting on it is a human step at the broker or in the bot.
 Full card: https://workspace.example.invalid/cards/EXAMPLE?s=EXAMPLE

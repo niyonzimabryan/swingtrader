@@ -145,6 +145,17 @@ def build_payload(
                         else "—"
                     ),
                 },
+                # The ledger's as-of and its stale flag belong *here*, in the
+                # email, and not only in the page-only provenance block below.
+                # Every figure above was sized against this read of the book, so
+                # AGENTS.md §1.3 — repeat the staleness wherever you repeat the
+                # number — applies to the summary as much as to the full record.
+                # It is printed twice on the page for the same reason.
+                {
+                    "label": "ledger as of",
+                    "value": proposal.get("ledger_as_of_utc") or "never",
+                    "stale": bool(ledger_stale),
+                },
             ],
         }
     )
