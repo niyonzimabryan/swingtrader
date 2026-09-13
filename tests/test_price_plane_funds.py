@@ -55,8 +55,8 @@ def _rows(name: str) -> list[dict]:
     return list(_payload(name)["data"])
 
 
-#: The live SPY capture, ascending, as `(session, close, closeadj, closeunadj)`.
 def _spy_quotes() -> list[tuple[date, float, float, float]]:
+    """The live SPY capture, ascending, as `(session, close, closeadj, closeunadj)`."""
     rows = sorted(_rows("funds_spy.json"), key=lambda r: r["date"])
     return [
         (date.fromisoformat(r["date"]), float(r["close"]),

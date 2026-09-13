@@ -26,13 +26,12 @@ asks to see. Earlier and both refuse; at the end of the world both answer.
 from __future__ import annotations
 
 import contextlib
+import importlib
 import io
 import json
-import sys
 import unittest
 from unittest import mock
 
-import config.settings  # noqa: F401  (imported for the side effect below)
 from data.prices import store, universes
 from data.prices.base import ASSET_CLASS_EQUITY, ASSET_CLASS_FUND
 
@@ -40,10 +39,11 @@ from tests import cohortfixture
 from tests.dbfixture import init_test_db
 
 #: `config/__init__.py` binds a `Settings` **instance** as `config.settings`,
-#: which shadows the submodule of the same name on the package. `sys.modules`
-#: is therefore the only way to reach the module object to patch it — an
-#: `import config.settings as cs` hands back the instance instead.
-SETTINGS_MODULE = sys.modules["config.settings"]
+#: which shadows the submodule of the same name on the package — so
+#: `import config.settings as cs` hands back the instance, not the module, and
+#: `mock.patch.object` on it fails with a baffling `AttributeError`.
+#: `import_module` resolves by full dotted name and returns the module.
+SETTINGS_MODULE = importlib.import_module("config.settings")
 
 #: See the module docstring: the session where the roster splits one/one.
 SMOKE_SESSION_INDEX = 330
