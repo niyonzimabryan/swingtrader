@@ -181,7 +181,9 @@ class NotifySink:
             channels = self.channels()
             if not channels:
                 log.warning(
-                    "notification_no_channel", event=alert.event, subject=alert.subject
+                    "notification_no_channel",
+                    notification=alert.event,
+                    subject=alert.subject,
                 )
                 return {}
             detail = {}
@@ -198,7 +200,12 @@ class NotifySink:
                 detail=detail or None,
             )
         except Exception as exc:  # pragma: no cover - channel-specific
-            log.error("notification_delivery_failed", event=alert.event, error=str(exc))
+            # `event=` is structlog's own first positional; the alert's name
+            # goes under `notification` or the call raises inside the handler
+            # that exists to stop a delivery failure from raising.
+            log.error(
+                "notification_delivery_failed", notification=alert.event, error=str(exc)
+            )
             return {}
 
     async def deliver(self, alert: Alert) -> None:

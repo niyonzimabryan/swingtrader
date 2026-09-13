@@ -468,7 +468,13 @@ async def main():
 
     # Initialize scheduler (skip scans if SCHEDULER_ENABLED=false to save API
     # credits — but the daily pre-market self-restart still runs regardless).
-    import os
+    #
+    # `os` is imported at module scope. A second `import os` used to sit on this
+    # line, and because a function-level import binds the name *locally for the
+    # whole function*, it made every earlier `os.environ` read in `main()` an
+    # UnboundLocalError — including the one that gives the approval poller its
+    # RAILWAY_REPLICA_ID, so OWNER_ACTION_POLLER_ENABLED=true crashed the
+    # process at startup. `tests/test_headless_runtime.py` is what caught it.
     scheduler_enabled = os.getenv("SCHEDULER_ENABLED", "true").lower() not in ("false", "0", "no")
     scheduler = PipelineScheduler(pipeline, settings)
 
