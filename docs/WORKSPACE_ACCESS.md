@@ -175,6 +175,31 @@ scopes, and the fact that no `execute` scope exists. It is the "am I attached to
 the right workspace with the access I expect" check, and it is deliberately
 boring.
 
+## The card page (`/cards/...`)
+
+`propose_order` creates a row and delivers a card out of band. When
+`NOTIFY_EMAIL_ENABLED` is on, that card's email links to a read-only page this
+service serves:
+
+    GET /cards/{uid}?s={hmac}
+    GET /cards/{uid}/chart.png?s={hmac}
+
+**These take no token and are not part of the tool surface.** The signature is
+the credential: a full SHA-256 HMAC over the uid under `CARD_LINK_SECRET`
+(falling back to `EXECUTION_APPROVAL_SECRET`), compared in constant time. A bad
+signature, an unknown uid and a card with no chart all return the same 404, so
+the route cannot be used to enumerate cards.
+
+Nothing under `/cards` writes, and nothing under it approves: it renders the
+stored card payload and that is all. Approval remains the signed, expiring,
+single-use Telegram callback handled in the bot process, which this service
+cannot import. With the flag off the routes are not registered at all.
+
+An agent session has no reason to fetch a card page — everything on it came from
+the tool response the session already has — but a link pasted into a session is
+harmless, and its content is subject to the same rule as any fetched page:
+`docs/NOTIFICATIONS.md` for the design, AGENTS.md §5 for the rule.
+
 ## When it does not work
 
 | Symptom | Cause |
@@ -186,6 +211,7 @@ boring.
 | `429 rate_limited` | 60 read or 10 write calls in a minute on one token (spec K §4.1). `Retry-After` says how long. Usually an agent loop, not a limit that is too low. |
 | `/health` reports `"reachable": false` | The service cannot reach Postgres. Check `DATABASE_URL` on the workspace service. |
 | Claude Code: `INVALID_CONFIG: 'url' is not a valid URL` | `WORKSPACE_BASE_URL` is unset, so `.mcp.json` expands to `/mcp`. Export it. Expected until then. |
+| `/cards/<uid>` returns 404 with a link straight out of an email | Either `NOTIFY_EMAIL_ENABLED` is false on the workspace (the routes are not registered), or the signing key changed since the card was minted. The same 404 covers an unknown uid on purpose. |
 
 ## Verifying it once, by hand
 

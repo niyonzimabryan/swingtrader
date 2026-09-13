@@ -229,6 +229,28 @@ class Settings(BaseSettings):
     proposal_max_position_pct: float = 0.10
     proposal_max_sector_pct: float = 0.30
 
+    # --- Notification channels and HTML cards (notify/) ---
+    # Off by default, like every new capability. With `notify_email_enabled`
+    # false no email is sent, no card row is written, and the workspace does
+    # not serve the /cards routes at all — production behaviour is exactly
+    # what it was before this shipped. Telegram has no flag of its own here:
+    # it is configured when TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set,
+    # which is the condition it has always been delivered under.
+    notify_email_enabled: bool = False
+    resend_api_key: str = ""
+    # Resend requires a verified sending domain; `PAGER_EMAIL_FROM` is the
+    # address on it. `PAGER_EMAIL_TO` may be a comma-separated list.
+    pager_email_from: str = ""
+    pager_email_to: str = ""
+    # HMAC key for the card-page link. Falls back to EXECUTION_APPROVAL_SECRET
+    # when unset, which is what production already carries; a dedicated key
+    # lets the two rotate independently, because the card link does not expire
+    # and an approval reference lives for half an hour.
+    card_link_secret: str = ""
+    # How many daily bars the card chart draws. Read from the stored payload at
+    # render time; the bars themselves are captured when the card is built.
+    card_chart_sessions: int = 60
+
     # --- Strategy Lab (Spec Q §14, PR 4) ---
     # Two gates, both off. `strategy_lab_enabled` is the master switch: with it
     # false nothing in `strategy_lab/` is imported by the pipeline, no scheduled

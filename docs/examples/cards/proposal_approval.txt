@@ -1,0 +1,33 @@
+PROPOSAL 42 · LONG
+AMD  [awaiting approval]
+$108.00 entry, $99.00 stop, 34 shares — evidenced budget
+
+  entry: $108.00
+  stop: $99.00
+  size: 34 shares
+      $3,672.00 notional · $306.00 at risk
+  budget: evidenced
+      Evidenced: a qualifying cohort answer for this ticker sized it.
+  expected hold: 15 sessions
+  ledger as of: 2026-09-13T13:45:00
+
+  [chart omitted in the plain-text part]
+
+RISK MATH
+  risk_fraction requested: 0.00500
+  m (multiplier): 0.6169
+  risk_fraction effective: 0.00310
+  LB (lower 90% bound): +0.0124
+  PE (point estimate): +0.0201
+  horizon: 15
+      trading sessions
+  gate mode: advisory
+  caps that bound the size: evidenced_risk_cap
+
+  cited_ok: the cited answer is full/ok for AMD, computed 2 sessions ago.
+
+  Approving places a live entry and then a `gtc` `stop_market` protective exit. Approval happens on Telegram, not here: this card is a record, and nothing on this page or in this email can approve, modify, or place an order. Risk is re-computed from fresh state first; the approval is single-use, expiring, and bound to you.
+
+SwingTrader — an agent proposes, the owner approves out of band, code executes.
+This message is not investment advice and this system is not a licensed advisor.
+Full card: https://workspace.example.invalid/cards/EXAMPLE?s=EXAMPLE

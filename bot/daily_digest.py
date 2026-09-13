@@ -29,8 +29,37 @@ class DailyDigest:
             if text and self.nm:
                 await self.nm.mq.send(self.nm.chat_id, text)
                 log.info("daily_digest_sent")
+                self._email_card(text)
         except Exception as e:
             log.error("daily_digest_failed", error=str(e))
+
+    def _email_card(self, text: str) -> None:
+        """The same digest as an HTML email card, when the flag is on.
+
+        Built from the MarkdownV2 the Telegram message already carried rather
+        than by re-reading the ledger: two renderings of one digest that queried
+        the book twice could disagree, and the one thing a digest must be is
+        internally consistent. ``notify.cards.digest`` un-escapes MarkdownV2 and
+        splits on this report's own ``*Header*`` convention; it interprets no
+        emphasis, so a line like ``AAPL: -2.1%`` survives untouched.
+        """
+        if not self.nm:
+            return
+        from notify.cards.digest import from_markdown
+
+        now = datetime.now(ET)
+
+        self.nm.email_card(
+            from_markdown(
+                title="Daily digest",
+                markdown=text,
+                subject=f"Daily digest — {now.strftime('%b %d, %Y')}",
+                headline=now.strftime("%A %d %B %Y, 5 PM ET"),
+                eyebrow="daily digest",
+                ref=f"digest:daily:{now.date().isoformat()}",
+                created_at_utc=utcnow_naive().isoformat(),
+            )
+        )
 
     def _build_digest(self) -> str:
         """Build the full digest message. Returns MarkdownV2 string."""

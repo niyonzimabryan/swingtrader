@@ -42,8 +42,45 @@ class WeeklyReport:
             if text and self.nm:
                 await self.nm.mq.send(self.nm.chat_id, text)
                 log.info("weekly_report_sent")
+                self._email_cards(text, data)
         except Exception as e:
             log.error("weekly_report_failed", error=str(e))
+
+    def _email_cards(self, text: str, data: dict) -> None:
+        """The report as an email card, and the scoreboard as its own.
+
+        Two cards rather than one, because they are two different things with
+        two different rules: the report carries a model-written narrative, and
+        the Strategy Lab scorecard carries numbers no model may touch (Spec Q
+        §10). Keeping them separate means the scorecard's own warnings,
+        refusals and exploratory/clean split are printed by the renderer that
+        was written for them, verbatim, instead of surviving a round trip
+        through MarkdownV2.
+        """
+        if not self.nm:
+            return
+        now = datetime.now(ET)
+        from notify.cards.digest import from_markdown
+
+        self.nm.email_card(
+            from_markdown(
+                title="Weekly report",
+                markdown=text,
+                subject=f"Weekly performance report — week ending {now.strftime('%b %d, %Y')}",
+                headline=now.strftime("week ending %A %d %B %Y"),
+                eyebrow="weekly report",
+                ref=f"digest:weekly:{now.date().isoformat()}",
+                created_at_utc=utcnow_naive().isoformat(),
+            )
+        )
+
+        lab = (data or {}).get("strategy_lab")
+        if lab:
+            from notify.cards.scorecard import build_payload
+
+            self.nm.email_card(
+                build_payload(scoreboard=lab, created_at_utc=utcnow_naive().isoformat())
+            )
 
     def _gather_data(self) -> dict:
         """Gather all performance data for the past week."""

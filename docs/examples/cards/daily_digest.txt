@@ -1,0 +1,26 @@
+DAILY DIGEST
+Daily digest
+Friday 13 September 2026, 5 PM ET
+
+  as of: 2026-09-13T21:00:00
+
+📊 DAILY DIGEST — SEP 13, 2026
+  Portfolio: `$101,204.18`
+  Today: 🟢 `+$1,204.18` (`+1.20%`)
+
+POSITIONS
+  AMD  `+4.1%`  (`$6,140`)  day 7 of 20
+  HIMS `-2.3%`  (`$3,980`)  day 2 of 20
+  GIS  `+0.4%`  (`$5,010`)  day 14 of 20
+
+TODAY'S ACTIVITY
+  Memos generated: `2`
+  Orders filled: `1`
+  Proposals: `1` proposed, `1` risk_rejected
+
+ALERTS
+  GIS is at day 14 of a 20-day maximum hold.
+
+SwingTrader — summary only. Nothing here places, cancels, or modifies an order.
+This message is not investment advice and this system is not a licensed advisor.
+Full card: https://workspace.example.invalid/cards/EXAMPLE?s=EXAMPLE

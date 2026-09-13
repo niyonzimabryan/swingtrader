@@ -26,7 +26,7 @@ Bryan's laptop (was 2026-09-12 06:15 UTC, orchestrating session
 | | |
 |---|---|
 | `main` head | #74 (Strategy Lab 6) merged on top of `816e499`; this docs PR next |
-| Alembic head | `0011_comparable_subject_ticker` (single) |
+| Alembic head | `0011_comparable_subject_ticker` (single); `0012_notify_email_cards` on `claude/notify-email-cards` |
 | Tests | 1,793 on SQLite (3 Postgres-only skips); CI: 4 shards per engine, ~8 min |
 | CI | `.github/workflows/ci.yml` — sqlite + postgres matrix, Python **3.12** |
 
@@ -275,3 +275,19 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   Owner-side, still open before the first paper trade: nothing until these
   merge; then `NOTIFY_EMAIL_ENABLED=true` and `WORKSPACE_OWNER_TOOLS_ENABLED=true`
   on the services, an `admin`-scoped token re-issued, and the client attached.
+- 2026-09-13 — **`notify/` built on `claude/notify-email-cards` (not yet merged).**
+  A delivery layer both processes can import: a Resend email channel behind
+  `NOTIFY_EMAIL_ENABLED` (default off), the existing Telegram senders wrapped as
+  a channel, one HTML card renderer with five card kinds, and a signed read-only
+  page at `/cards/{uid}` on the workspace (HMAC over the uid under
+  `CARD_LINK_SECRET`, falling back to `EXECUTION_APPROVAL_SECRET`; non-expiring;
+  one 404 for every failure so it is not an enumeration oracle). Alembic
+  `0012_notify_email_cards` adds `cards` and `notifications_sent` off `0011`.
+  Telegram delivery is **unchanged and still the only approvable channel** — an
+  email has no callback and the card page has no route that writes; removing
+  Telegram belongs to the headless-runtime change. `docs/NOTIFICATIONS.md` is
+  the reference and `docs/examples/cards/` has a rendered example of each card.
+  Owner action once merged: `NOTIFY_EMAIL_ENABLED=true` on both services, and
+  `WORKSPACE_BASE_URL` on the **bot** service so links in email from the bot
+  work (`docs/OWNER_SETUP.md` §5). Not verified: any real Resend send, and the
+  page against a real Postgres — both need production credentials.

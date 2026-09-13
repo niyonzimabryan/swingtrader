@@ -40,3 +40,62 @@ class RecordingPager:
 
     def events(self) -> list[str]:
         return [event for event, _ in self.pages]
+
+
+class NotifyPager:
+    """A pager that renders a page card and broadcasts it (``notify/``).
+
+    Wired where a Telegram-backed pager already is; it does not replace the log
+    line, it adds a channel. Constructed only when a channel is configured, so
+    with ``NOTIFY_EMAIL_ENABLED`` off and no Telegram credentials this class is
+    never instantiated and paging is exactly what it was.
+
+    **Never raises.** A page is a report about something that already went
+    wrong; a delivery failure inside it must not become a second failure inside
+    the sync that was trying to tell you about the first.
+    """
+
+    def __init__(self, settings, *, channels=None, session_factory=None, also_log: bool = True):
+        self.settings = settings
+        self.channels = channels
+        self.session_factory = session_factory
+        self.also_log = also_log
+
+    def __call__(self, event: str, detail: dict) -> None:
+        if self.also_log:
+            log_pager(event, detail)
+        try:
+            from notify.cards import deliver
+            from notify.cards.alert import build_payload
+            from utils.timeutils import utcnow_naive
+
+            payload = build_payload(
+                event=event,
+                detail=detail,
+                created_at_utc=utcnow_naive().isoformat(),
+            )
+            deliver(
+                payload,
+                settings=self.settings,
+                channels=self.channels,
+                session_factory=self.session_factory,
+            )
+        except Exception as exc:  # pragma: no cover - channel-specific
+            log.error("page_delivery_failed", event=event, error=str(exc))
+
+
+def pager_for(settings, *, channels=None, session_factory=None):
+    """The pager a process should use: the notifying one, or the log-only default.
+
+    Returns :func:`log_pager` when no channel is configured, so a deployment
+    that has set nothing up behaves exactly as it did before this existed.
+    """
+    if channels is None:
+        from notify.registry import configured_channels
+
+        channels = configured_channels(settings, session_factory=session_factory)
+    if not channels:
+        return log_pager
+    return NotifyPager(
+        settings, channels=channels, session_factory=session_factory
+    )

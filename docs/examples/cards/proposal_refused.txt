@@ -1,0 +1,35 @@
+PROPOSAL 42 · LONG
+AMD  [refused · insufficient_settled_cash]
+$108.00 entry, $99.00 stop, 0 shares — discretionary budget
+
+  entry: $108.00
+  stop: $99.00
+  size: 0 shares
+      $0.00 notional · $0.00 at risk
+  budget: discretionary
+      Discretionary: judgment, drawn from the separate budget with its own per-trade cap and daily notional.
+  expected hold: 15 sessions
+  ledger as of: 2026-09-13T13:45:00
+
+RISK MATH
+  risk_fraction requested: 0.00500
+  m (multiplier): n/a
+  risk_fraction effective: 0.00000
+  LB (lower 90% bound): -0.0088
+  PE (point estimate): +0.0042
+  horizon: n/a
+      trading sessions
+  gate mode: advisory
+  caps that bound the size: none
+
+  uncited: no cohort answer was cited, so this is discretionary.
+
+REFUSED
+  insufficient_settled_cash
+  settled cash is $1,204.00; this entry needs $3,672.00. The sale that funds it settles on 2026-09-16.
+  
+  Nothing to approve. Risk is re-evaluated from fresh state at approval time in any case, so a refusal here is not a reason to work around this card.
+
+SwingTrader — an agent proposes, the owner approves out of band, code executes.
+This message is not investment advice and this system is not a licensed advisor.
+Full card: https://workspace.example.invalid/cards/EXAMPLE?s=EXAMPLE
