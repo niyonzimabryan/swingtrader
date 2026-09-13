@@ -1,7 +1,8 @@
 # Sharadar direct API — recorded payload shapes
 
-Recorded 2026-09-10 against `https://api.sharadar.com/v1.0` using Sharadar's
-public `test-api-key` (free sample universe, AAPL included). No paid key was
+Recorded 2026-09-10 (equities) and **2026-09-13 (funds)** against
+`https://api.sharadar.com/v1.0` using Sharadar's public `test-api-key` (free
+sample universe: AAPL for `stocks`/`actions`, SPY for `funds`). No paid key was
 used and none of these bodies contain a key — the `test-api-key` string itself
 is public per `docs/vendors/sharadar.md` and is not a secret, but it is
 stripped from these files anyway since the fixtures need only the response
@@ -64,6 +65,67 @@ bodies, not the request URLs.
   requested — errors are always JSON.
 - `error_403_unknown_table.json` — `GET /data/notatable`: `HTTP 403`,
   `{"error": "Forbidden", "description": "Unknown table."}`.
+
+## Funds (SFP) — recorded live 2026-09-13
+
+Every file in this section is a **real capture**, not a construction, except
+the one explicitly marked otherwise at the end.
+
+- `schema_funds.sql` — `GET /schema/funds?format=sqlite`. The column names are
+  **byte-identical to `stocks`**: `ticker, date, open, high, low, close,
+  volume, closeadj, closeunadj, lastupdated`, primary key `(ticker, date)`.
+  That is why `FUNDS_COLUMNS` in the adapter differs from `STOCKS_COLUMNS` in
+  exactly one entry — `closeadj`, which the fund path needs and the equity path
+  does not.
+- `tickers_spy_all_tables.json` — `GET /data/tickers?ticker=SPY` with **no**
+  `table` filter. Exactly **one** row, and its `table` is `"funds"`
+  (permaticker `118691`, NYSEARCA, `category: "ETF"`, `firstpricedate`
+  1993-01-29). Compare `tickers_aapl_all_tables.json`, where the same
+  unfiltered query returns three rows (`stocks`, `fundamentals`, `insiders`).
+  This single file is the whole reason the adapter had to change: SPY has no
+  `stocks` row, so an adapter that only ever sent `table=stocks` could not see
+  the benchmark at all.
+- `tickers_spy_funds.json` — the same query with `table=funds`. Identical
+  single row, confirming the filter works server-side for `funds` exactly as
+  it does for `stocks`.
+- `funds_spy.json` / `funds_spy.csv` — `GET /data/funds?ticker=SPY&from=2024-03-11&to=2024-03-20`,
+  in both formats. Eight sessions, chosen because **2024-03-15 is an SPY
+  ex-dividend date** and it is inside the window: `closeadj/close` is
+  0.970733 on 2024-03-14 and 0.973779 on 2024-03-15, and the step is what
+  `fund_factors_from_quotes` reads a distribution out of. Same envelope as
+  `stocks` (`{"count": N, "data": [ {...} ]}`), rows descending by date.
+- `error_403_stocks_spy.json` — `GET /data/stocks?ticker=SPY`: `HTTP 403`,
+  `{"error": "Exceeds free tier", ...}`. SPY is not in the `stocks` table.
+- `error_403_actions_spy.json` — `GET /data/actions?ticker=SPY`: the same
+  `HTTP 403`. **This is the one that shaped the design.** Sharadar's docs say
+  `actions` covers "all tickers in fundamentals, stocks and funds tables", but
+  the public key cannot read a fund's rows there, so this session could not
+  observe a single fund distribution in `actions`. It could and did observe
+  them in `funds.closeadj`. That is why a fund's bar factors are derived from
+  `closeadj` (`data/prices/sharadar.py::fund_factors_from_quotes`) rather than
+  from the action log, and why the design note says so out loud instead of
+  trusting a documented claim it could not check.
+
+### `unverified_live: true` — built from the schema, never asserted on as a value
+
+- `actions_spy_unverified.json` — **not a live capture.** `actions?ticker=SPY`
+  is a 403 on this key (above), so this file is constructed from
+  `schema_actions.sql`'s column list to give `corporate_actions()` a fund
+  payload of the right *shape* to parse. It carries an explicit
+  `"unverified_live": true` key at the top level so nothing can mistake it for
+  a recording. The two `value` numbers in it are the ones this session derived
+  from SPY's own `closeadj`, and **no test asserts on them as values** — the
+  tests that read this file assert on shape, on the table the request went to,
+  and on the §4.3 reconstruction identity, all of which hold whatever the
+  numbers are. Replace it with a real capture from a paid key and every test
+  that reads it should still pass; if one does not, that test was wrong.
+
+## Things that did *not* produce a 403
+
+`GET /data/tickers` is not free-tier-limited at all: SPY, IVV and QQQ each
+returned a full master row on the public key even though only SPY's *prices*
+are readable. So the auto-detect path in `security_master(asset_class=None)`
+works on a free key for any name, and only the price call is gated.
 
 ## Things that did *not* produce a 401
 
