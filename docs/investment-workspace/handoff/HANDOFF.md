@@ -6,7 +6,7 @@ updated in every integration commit; the "Last updated" line says how fresh it
 is. If it is more than a few hours old, trust `git log origin/main` and the
 open-PR list over this file.
 
-**Last updated:** 2026-09-13 04:05 UTC, by the orchestrating session
+**Last updated:** 2026-09-13 04:30 UTC, by the orchestrating session
 (`session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
 Bryan's laptop (was 2026-09-12 06:15 UTC, orchestrating session
 `session_01F6Ca8hXxdGkaYhPQ6id9Q4`).
@@ -50,10 +50,11 @@ signed full-page view served by the workspace.
 |---|---|---|---|---|
 | #80 `claude/system-overview-doc` | `docs/SYSTEM_OVERVIEW.md`; published to Google Drive: https://docs.google.com/document/d/1_dy3kIiaM3VwkivuIPjbnH1p1OKdI6w5ohXJ3CxpJL0/edit | `session_01D8jUpshohWT44o1L6gLPHd` | sonnet | **merged** |
 | #81 `claude/notify-email-cards` | `notify/` package, Resend channel behind `NOTIFY_EMAIL_ENABLED`, HTML card renderer + PNG chart, signed `/cards/<uid>` page, `cards` + `notifications_sent` tables (`0012_notify_email_cards`) | `session_01NSbbAvFecNAkxaZSQ6v8P9` | opus | **merged** |
-| #82 `claude/owner-tools-mcp` | `OWNER_ID`; ten `admin`/`read` owner tools behind `WORKSPACE_OWNER_TOOLS_ENABLED`; `orchestrator/approval_poller.py` behind `OWNER_ACTION_POLLER_ENABLED`; `owner_actions` table (`0012_owner_control_surface`); Spec K §10 + L §10 rulings; merge revision `0013_merge_notify_owner` added by the orchestrator | `session_01A4B5sYhhr8ZDnRFHkVq4xY` | opus | integrated; CI |
+| #82 `claude/owner-tools-mcp` | `OWNER_ID`; ten `admin`/`read` owner tools behind `WORKSPACE_OWNER_TOOLS_ENABLED`; `orchestrator/approval_poller.py` behind `OWNER_ACTION_POLLER_ENABLED`; `owner_actions` table (`0012_owner_control_surface`); Spec K §10 + L §10 rulings; merge revision `0013_merge_notify_owner` added by the orchestrator | `session_01A4B5sYhhr8ZDnRFHkVq4xY` | opus | **merged** |
 
-Alembic head after #82: `0013_merge_notify_owner` (single). Next, **after #82
-merges**: the headless runtime — `TELEGRAM_ENABLED=false` runs scheduler,
+| `claude/headless-runtime` | `TELEGRAM_ENABLED` (default true); headless `main.py` with scheduler, monitors, execution services and the approval poller; channel-agnostic `NotificationManager` over `notify/`; headless email card sender; `OWNER_ID` refusal | `session_01Fe9DRSdz2HRirVDsj3yogd` | opus | building |
+
+Alembic head on `main`: `0013_merge_notify_owner` (single). In flight: the headless runtime — `TELEGRAM_ENABLED=false` runs scheduler,
 monitors, and the approval poller with no Telegram token, and
 `NotificationManager` routes through `notify/`. Then Bryan's final steps:
 `NOTIFY_EMAIL_ENABLED`, `OWNER_ACTION_POLLER_ENABLED` (bot), then
@@ -300,3 +301,6 @@ the live `gtc stop_market` probe (`docs/EXECUTION_LIFECYCLE.md` §6);
   at the same spot), HANDOFF taken from `main`, and `0013_merge_notify_owner`
   added over the two `0012_*` heads. Full 3.12 suite run on the merged tree
   before pushing.
+- 2026-09-13 04:30Z — #82 merged (full 3.12 suite on the integrated tree:
+  1,951 tests, 3 skips; CI green). Headless-runtime worker spawned from
+  `main` at `d705572`; brief verbatim in `briefs/headless-runtime.md`.
