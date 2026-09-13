@@ -211,7 +211,7 @@ class ApprovalPoller:
             row = session.get(OwnerAction, int(action_id))
             if row is None:  # pragma: no cover - the claim just read it
                 return None
-            kind, uid, status = row.kind, row.action_uid, row.status
+            kind, uid = row.kind, row.action_uid
 
         handlers = {
             "approve_order": self._approve_order,
