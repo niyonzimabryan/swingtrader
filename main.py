@@ -198,7 +198,7 @@ async def main():
     # every approval would be minted against the empty string and every one of
     # them would be bound to nobody. Refuse to start rather than run a lifecycle
     # whose owner binding is vacuous.
-    if telegram_enabled is False and getattr(settings, "phase6_execution_enabled", False):
+    if not telegram_enabled and getattr(settings, "phase6_execution_enabled", False):
         from portfolio.approvals import resolve_owner_id as _check_owner_id
 
         if not _check_owner_id(settings):
@@ -293,9 +293,10 @@ async def main():
     # Phase 6 (Spec L §6): the proposal -> approval -> execution lifecycle.
     # Wired only when PHASE6_EXECUTION_ENABLED; with the flag off the proposal
     # tool is not even registered on the workspace and no callback is accepted.
-    # The card sender posts through the existing message queue; the execution
-    # service is the ONLY path from an approval to a placement, and it lives in
-    # execution/ where the workspace can never import it.
+    # The card sender posts through the existing message queue, or by email when
+    # Telegram is off; the execution service is the ONLY path from an approval to
+    # a placement either way, and it lives in execution/ where the workspace can
+    # never import it.
     approval_poller = None
     if getattr(settings, "phase6_execution_enabled", False):
         from execution.lifecycle import ExecutionService
