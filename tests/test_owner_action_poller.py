@@ -316,6 +316,36 @@ class PollerTests(unittest.TestCase):
             "a plain proposal must not be routed as a lab execution",
         )
 
+    def test_rejecting_a_lab_execution_cancels_it(self):
+        """The one rejection the tool cannot apply itself.
+
+        A plain rejection is a ledger write and `reject_order` does it inline. A
+        Strategy Lab execution has a second row in `strategy_trades` whose
+        `proposed` state would otherwise hold its decision's single
+        open-execution slot forever, and cancelling it needs `execution/` — so
+        it is queued like an approval and lands here.
+        """
+        cancelled = []
+
+        class _Cancelling:
+            def cancel(self, **kwargs):
+                cancelled.append(kwargs)
+                return "cancelled"
+
+        _proposal_id, uid = self._proposal(execution_id="exec-xyz789")
+        action_uid = self._record_approval(uid, kind="reject_order")
+        notify = _RecordingNotifier()
+
+        self._poller(lab=_Cancelling(), notify=notify).run_once()
+
+        self.assertEqual(len(cancelled), 1)
+        self.assertEqual(cancelled[0]["execution_id"], "exec-xyz789")
+        self.assertEqual(cancelled[0]["by"], "owner")
+        status, outcome, _by = self._action(action_uid)
+        self.assertEqual(status, "executed")
+        self.assertEqual(outcome, "cancelled")
+        self.assertIn("owner_action_cancelled", notify.names())
+
     def test_a_refusal_is_terminal(self):
         from execution.lifecycle import ExecutionRefused
 
