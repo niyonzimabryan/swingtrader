@@ -26,6 +26,7 @@ migrations/
     0012_owner_control_surface.py    owner_actions: decisions recorded over MCP (spec K §10)
     0012_notify_email_cards.py       the notification delivery log and the stored card (notify/)
     0013_merge_notify_owner.py       merge point: 0012_notify_email_cards + 0012_owner_control_surface (no schema change)
+    0014_securities_asset_class.py   securities.asset_class: equity | fund, so a benchmark ETF is never a universe member (spec N §5.2)
 ```
 
 `0009_execution_lifecycle` branches from the single head `0008_merge_strategy_lab`
@@ -56,6 +57,31 @@ questions about different names share one row and one id. The swap goes through
 `op.batch_alter_table`, so it is a table rebuild on SQLite and a plain
 `ALTER TABLE ... DROP/ADD CONSTRAINT` on Postgres, and `downgrade()` narrows the
 key back *before* dropping the column it names.
+
+`0014_securities_asset_class` branches from the single head
+`0013_merge_notify_owner` and adds one column, `securities.asset_class`
+(`equity` | `fund`, `NOT NULL`, `equity` by default). It is the first revision
+since `0011` to add a column to an existing table, and it is safe for the same
+reason `0012_owner_control_surface` avoided one: `securities` is a **Phase 3p**
+table (`0002_price_plane`), not one `0001_baseline` created, so
+`database/schema.py::classify` — which adopts an unversioned production
+database by matching its table-and-column signature against a revision exactly
+— is unaffected. Read `tests/test_schema_discipline.py` before adding a column
+anywhere else; the baseline trap is real and the test names it.
+
+The server default is dropped in a second `batch_alter_table` block right after
+the column is added. It exists only to fill existing rows during the `ALTER`;
+`database/models.py` declares the column with a Python-side default like every
+other column on that table, and the schema-discipline test compares
+`upgrade head` against `create_all()` column by column, so a server default
+left in place is drift.
+
+`downgrade()` drops the column, and is lossy in one specific way: a database
+that had ingested ETFs loses the record of which securities were funds, so a
+universe rebuild on the downgraded schema would rank a benchmark ETF into
+`liquid_us_equity_v1`. It does not refuse — the rows survive and a master
+refresh after re-upgrading restores the fact from the vendor — but it is worth
+knowing before you run it.
 
 `0012_owner_control_surface` branches from `0011_comparable_subject_ticker` and
 adds one table, `owner_actions`: the queue the MCP owner tools write a decision

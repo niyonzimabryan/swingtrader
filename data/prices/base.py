@@ -35,6 +35,19 @@ from typing import Iterable, Sequence
 #: Only `performance` carries a Shumway terminal return; `unknown` censors.
 DELISTING_REASONS = ("performance", "merger_acquisition", "other", "unknown")
 
+#: What kind of instrument a security-master row describes.
+#:
+#: The distinction is not cosmetic and it is not a vendor detail: an ETF is the
+#: *benchmark* a cohort's abnormal returns are measured against (Spec N §5.2),
+#: and a benchmark that is also a cohort member is a number measured against
+#: itself. `data/prices/universes.py` therefore ranks equities only, and
+#: `tests/test_price_plane.py` asserts a fund can never enter a liquidity-ranked
+#: universe. `equity` is the default so that every row written before this
+#: field existed reads as what it in fact was.
+ASSET_CLASS_EQUITY = "equity"
+ASSET_CLASS_FUND = "fund"
+ASSET_CLASSES = (ASSET_CLASS_EQUITY, ASSET_CLASS_FUND)
+
 #: The Shumway venue split: -30% NYSE/AMEX, -55% Nasdaq (Spec N §4.2).
 VENUES = ("nyse_amex", "nasdaq", "other", "unknown")
 
@@ -76,6 +89,10 @@ class SecurityMasterRow:
     is one of `DELISTING_REASONS`; a vendor that does not publish a reason gets
     `unknown`, which is honest and which the §4.4 censoring rule then treats as
     censored rather than matured.
+
+    `asset_class` is one of `ASSET_CLASSES` and defaults to `equity`, which is
+    what every row written before the field existed was. It is what keeps the
+    benchmark ETF out of "liquid US equities": see `ASSET_CLASSES` above.
     """
 
     security_uid: str
@@ -89,12 +106,18 @@ class SecurityMasterRow:
     listing_date: date | None = None
     delisting_date: date | None = None
     delisting_reason: str = "unknown"
+    asset_class: str = ASSET_CLASS_EQUITY
 
     def __post_init__(self) -> None:
         if not self.security_uid:
             raise PricePlaneSchemaError("security_uid must not be empty")
         if not self.ticker:
             raise PricePlaneSchemaError(f"{self.security_uid}: ticker must not be empty")
+        if self.asset_class not in ASSET_CLASSES:
+            raise PricePlaneSchemaError(
+                f"{self.ticker}: unknown asset class {self.asset_class!r}; "
+                f"expected one of {ASSET_CLASSES}"
+            )
         if self.delisting_reason not in DELISTING_REASONS:
             raise PricePlaneSchemaError(
                 f"{self.ticker}: unknown delisting reason {self.delisting_reason!r}; "
@@ -239,8 +262,18 @@ class PricePlane(ABC):
     def security_master(
         self,
         tickers: Sequence[str] | None = None,
+        *,
+        asset_class: str | None = ASSET_CLASS_EQUITY,
     ) -> tuple[SecurityMasterRow, ...]:
-        """Security-master rows, including delisted names with their reason."""
+        """Security-master rows, including delisted names with their reason.
+
+        `asset_class` names which instrument class to look up. It defaults to
+        `equity` rather than to `None` on purpose: a caller that has not thought
+        about funds gets the behaviour it had before funds existed, and a
+        universe job cannot pick up ETFs by forgetting an argument. `None`
+        means "whatever class the source says this name is", which is the
+        auto-detect path a backfill uses when the operator has not said.
+        """
 
     @abstractmethod
     def index_membership(self, universe_slug: str) -> tuple[MembershipInterval, ...]:

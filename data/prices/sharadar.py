@@ -48,8 +48,37 @@ not a search extract:
 * `tickers` returns **one row per plan a ticker appears in** (`table: "stocks"
   | "fundamentals" | "insiders"`, otherwise identical) when queried with no
   `table` filter — confirmed live against AAPL, which came back 3×. This
-  adapter always sends `table=stocks` (confirmed server-side to filter
-  correctly) so `security_master` never double-counts a name.
+  adapter sends `table=stocks` or `table=funds` (confirmed server-side to
+  filter correctly) so `security_master` never double-counts a name; the one
+  path that omits the filter, `asset_class=None`, narrows the rows itself to
+  the two tables that carry prices.
+
+Equities and funds are two tables, and SPY is only in the second
+---------------------------------------------------------------
+Sharadar splits the price file: `stocks` (legacy `SEP`) carries operating
+companies, `funds` (legacy `SFP`) carries ETFs, CEFs, ETNs and ETDs — about
+10,000 tickers per the vendor's own page. Confirmed live on 2026-09-13 with the
+public `test-api-key`:
+
+* `GET /data/tickers?ticker=SPY` returns exactly **one** row and its `table` is
+  `funds` (permaticker 118691, NYSEARCA, category `ETF`). SPY has no `stocks`
+  row at all, so an adapter that only ever sent `table=stocks` — which this one
+  did until this change — could not see the benchmark that every abnormal
+  return in Spec N §5.2 is measured against.
+* `GET /data/funds?ticker=SPY` returns `200` with bars. `GET /data/stocks?ticker=SPY`
+  returns `403 "Exceeds free tier"`, as does `GET /data/actions?ticker=SPY`.
+* `GET /schema/funds` is **byte-identical to `stocks` in its column names**
+  (`ticker, date, open, high, low, close, volume, closeadj, closeunadj,
+  lastupdated`), recorded as `tests/fixtures/sharadar_direct/schema_funds.sql`.
+
+So the fund path differs from the equity path in exactly two places: the table
+`daily_bars` reads, and where its split and dividend factors come from. The
+second is the interesting one and it is documented on
+`fund_factors_from_quotes`: a fund's factors are derived from its own `closeadj`
+column, because `actions` is documented to cover funds ("all tickers in
+fundamentals, stocks and funds tables") but **could not be observed doing so**
+from this session, while `closeadj` could be and was. `corporate_actions()`
+still reads `actions` for a fund exactly as for an equity.
 * `tickers` carries **no delisting-reason field** (confirmed against
   `schema_tickers.sql`). The reason is therefore derived from `actions` where
   one exists and is `unknown` otherwise — unchanged from the original mapping,
@@ -117,6 +146,9 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from data.prices.base import (
+    ASSET_CLASS_EQUITY,
+    ASSET_CLASS_FUND,
+    ASSET_CLASSES,
     CorporateActionRecord,
     DailyBar,
     MembershipInterval,
@@ -137,9 +169,22 @@ BASE_URL = "https://api.sharadar.com/v1.0"
 #: (`SEP`, `TICKERS`, `ACTIONS`, `SP500`) also work per the vendor docs but the
 #: modern names are what this adapter sends.
 TABLE_STOCKS = "stocks"
+TABLE_FUNDS = "funds"
 TABLE_ACTIONS = "actions"
 TABLE_TICKERS = "tickers"
 TABLE_SP500 = "sp500"
+
+#: Sharadar splits its price file in two and a name lives in exactly one half:
+#: `stocks` (legacy `SEP`) for operating companies, `funds` (legacy `SFP`) for
+#: ETFs, CEFs, ETNs and ETDs. SPY is in `funds` and **not** in `stocks` —
+#: confirmed live, see the module docstring. These two maps are the only place
+#: the correspondence is written down; nothing anywhere guesses a table from a
+#: symbol.
+TABLE_BY_ASSET_CLASS = {
+    ASSET_CLASS_EQUITY: TABLE_STOCKS,
+    ASSET_CLASS_FUND: TABLE_FUNDS,
+}
+ASSET_CLASS_BY_TABLE = {table: klass for klass, table in TABLE_BY_ASSET_CLASS.items()}
 
 #: Header carrying the key. Chosen over the `api_key` query param so the key
 #: never ends up in a URL, a log line, or a `Referer` on the bulk redirect.
@@ -154,8 +199,22 @@ LEGACY_API_KEY_ENV = "NASDAQ_DATA_LINK_API_KEY"
 #: Columns each table must contain. Extra columns are tolerated (a vendor
 #: adding a field should not stop ingest); a missing or renamed one raises.
 STOCKS_COLUMNS = ("ticker", "date", "open", "high", "low", "close", "volume", "closeunadj")
+#: `funds` has byte-identical column names to `stocks` (verified against
+#: `tests/fixtures/sharadar_direct/schema_funds.sql`, which is the vendor's own
+#: DDL). `closeadj` is in this list and not in `STOCKS_COLUMNS` because the fund
+#: path *needs* it: it is where a fund's distributions are, and it is the only
+#: place this adapter could verify they are. See `_fund_factors`.
+FUNDS_COLUMNS = (
+    "ticker", "date", "open", "high", "low", "close", "volume", "closeadj", "closeunadj",
+)
 ACTIONS_COLUMNS = ("date", "action", "ticker", "value")
 TICKERS_COLUMNS = (
+    # `table` is first in the vendor's own primary key and is what says which
+    # price table a name's bars are in. It is validated rather than read
+    # best-effort because the auto-detect path in `security_master` keys off
+    # it: a `tickers` payload without it would otherwise resolve every name to
+    # nothing at all, quietly.
+    "table",
     "permaticker", "ticker", "name", "exchange", "isdelisted",
     "firstpricedate", "lastpricedate",
 )
@@ -205,6 +264,32 @@ ACTION_DIVIDEND_VALUES = ("dividend",)
 SP500_ADD_ACTIONS = ("added",)
 SP500_REMOVE_ACTIONS = ("removed",)
 
+#: Half of the last decimal Sharadar quotes `close` and `closeadj` at. Every
+#: value observed live is at most three decimal places (`462.612`, `460.01`),
+#: so a quoted value carries at most 0.0005 of rounding error.
+FUND_QUOTE_HALF_ULP = 0.0005
+
+#: Four quoted values enter one implied distribution (`close` and `closeadj` on
+#: this session and the previous one), so the propagated rounding bound is
+#: `4 x FUND_QUOTE_HALF_ULP`, scaled from adjusted units into raw ones.
+FUND_QUOTE_TERMS = 4
+
+#: How far above that rounding bound an implied distribution has to be before
+#: this adapter believes it is a distribution rather than arithmetic noise.
+#:
+#: **Measured, not guessed.** Against SPY's live `funds` rows for 2023-12-01 ..
+#: 2025-01-31 (292 sessions, free `test-api-key`), the implied distribution was
+#: above 2 bps of price on exactly five sessions — 2023-12-15, 2024-03-15,
+#: 2024-06-21, 2024-09-20 and 2024-12-20, SPY's four quarterly ex-dividend
+#: dates in that window plus the one that opens it — and the amounts came out
+#: at 1.9063 / 1.6000 / 1.7588 / 1.7453 / 1.9699 dollars per share. On the
+#: other 286 sessions the implied value never exceeded **0.019 bps** of price
+#: (stdev 0.0074 bps), which is $0.0009 a share and is exactly what 3-decimal
+#: rounding predicts. The floor this constant sets for SPY is about $0.01 —
+#: roughly ten times the largest noise ever observed and about a hundred and
+#: fifty times smaller than the smallest real distribution.
+FUND_DISTRIBUTION_SAFETY = 5.0
+
 DEFAULT_TIMEOUT_S = 30.0
 #: Rows requested per page. Deliberately well under the vendor's own
 #: `limit=10000` default so a single ticker's full history is never pulled in
@@ -227,6 +312,119 @@ class PricePlaneAuthError(PricePlaneConfigError):
     which is exactly what `PricePlaneConfigError` already means for a missing
     key. Callers that only catch `PricePlaneConfigError` still catch this.
     """
+
+
+#: A split factor this close to 1.0 is rounding in `closeunadj / close`, not a
+#: split. `F = closeunadj / close` is a ratio of two 3-decimal quotes, so its
+#: relative error is about `0.0005 x (1/closeunadj + 1/close)` — of order 1e-6
+#: at SPY's price level and still under 1e-4 for a one-dollar fund. Snapping is
+#: not cosmetic: an unsnapped 1.0000001 on every ordinary session would compound
+#: through `derived.forward_split_factors` and put a fictional split on every
+#: stored bar.
+FUND_SPLIT_SNAP_RTOL = 1e-4
+
+
+def fund_factors_from_quotes(
+    quotes: Sequence[tuple[date, float, float, float]],
+    ticker: str = "",
+) -> tuple[tuple[float, float], ...]:
+    """`(split_factor, dividend_cash)` per session, from the `funds` table alone.
+
+    `quotes` is `(session_date, close, closeadj, closeunadj)` ascending. The
+    return is one pair per input session; the first is always `(1.0, 0.0)`
+    because a one-session return needs a previous close.
+
+    Why the fund path derives its factors from prices and the equity path does
+    not
+    -------------------------------------------------------------------------
+    Sharadar documents `actions` as covering "all tickers in fundamentals,
+    stocks and funds tables", so reading a fund's distributions there would be
+    the symmetrical thing to do. This adapter does not, for one reason:
+    **it could not be verified.** On the public `test-api-key`,
+    `GET /data/funds?ticker=SPY` returns `200` with bars while
+    `GET /data/actions?ticker=SPY` returns `403 "Exceeds free tier"` — so the
+    one table that could be observed carrying SPY's distributions is `funds`,
+    through `closeadj`, and it was (see `FUND_DISTRIBUTION_SAFETY` for the
+    measurement). Spec N §5.2 measures every abnormal return against the
+    benchmark's **total return**; a benchmark whose dividend factors came from
+    a table this session never saw a fund row in would be a number nobody had
+    checked. `corporate_actions()` still reads `actions` for a fund, exactly as
+    for an equity — it is the vendor's action log and the interface promises
+    it — but the *bars* carry factors derived here.
+
+    The arithmetic
+    --------------
+    Sharadar's `close` is split-adjusted, `closeunadj` is raw, and `closeadj`
+    is "adjusted for splits, dividends and spinoffs" (vendor docs). With
+    `F(i) = closeunadj(i) / close(i)` the cumulative forward split factor of
+    `derived.py`:
+
+        split_factor(i) = F(i-1) / F(i)
+        close(i)/close(i-1)        = raw(i) x split_factor(i) / raw(i-1)
+        closeadj(i)/closeadj(i-1)  = (raw(i) + div(i)) x split_factor(i) / raw(i-1)
+
+    Subtracting the two relatives isolates the distribution:
+
+        div(i) = [closeadj(i)/closeadj(i-1) - close(i)/close(i-1)]
+                 x raw(i-1) / split_factor(i)
+
+    which is exactly the `dividend_cash` `derived.total_return_closes` wants,
+    so the stored total-return series reproduces the vendor's own adjusted
+    series in returns (it differs in level: ours is anchored at the last raw
+    close by the §4.3 convention, Sharadar's at its own).
+
+    What is deliberately *not* believed
+    -----------------------------------
+    Below `FUND_DISTRIBUTION_SAFETY x` the propagated rounding bound the implied
+    value is zeroed: three-decimal quotes cannot resolve a tenth of a cent, and
+    storing 0.0007 of "dividend" on 250 ordinary sessions a year would be a
+    fabricated fact on every one of them. A **negative** implied distribution
+    larger than that bound is not zeroed and not stored either — it raises,
+    because it means the vendor's adjusted series cannot be expressed in the
+    three-series model at all, and a price plane that degrades quietly is worse
+    than one that is down (module rule 1).
+
+    One caveat worth stating where it will be read: `closeadj` folds spinoffs in
+    alongside cash. A fund that spun off value would have that arrive here as
+    `dividend_cash`. That is right for total return and imprecise as a label,
+    and it is why `docs/PRICE_PLANE.md` calls a fund's factor provenance
+    `closeadj_derived` rather than `dividend`.
+    """
+    out: list[tuple[float, float]] = [(1.0, 0.0)]
+    for index in range(1, len(quotes)):
+        session, close, adj, unadj = quotes[index]
+        _, prev_close, prev_adj, prev_unadj = quotes[index - 1]
+        context = f"funds {ticker} {session}".strip()
+        for label, value in (
+            ("close", close), ("closeadj", adj), ("closeunadj", unadj),
+            ("previous close", prev_close), ("previous closeadj", prev_adj),
+            ("previous closeunadj", prev_unadj),
+        ):
+            if value <= 0:
+                raise PricePlaneSchemaError(
+                    f"{context}: {label} is {value!r}; a fund's factors are a "
+                    f"ratio of quotes and a non-positive quote has no ratio"
+                )
+
+        split = (prev_unadj / prev_close) / (unadj / close)
+        if abs(split - 1.0) <= FUND_SPLIT_SNAP_RTOL:
+            split = 1.0
+
+        implied = ((adj / prev_adj) - (close / prev_close)) * prev_unadj / split
+        bound = FUND_QUOTE_TERMS * FUND_QUOTE_HALF_ULP * (prev_unadj / prev_adj)
+        floor = FUND_DISTRIBUTION_SAFETY * bound
+        if implied < -floor:
+            raise PricePlaneSchemaError(
+                f"{context}: closeadj implies a distribution of {implied:.6f} per "
+                f"share — negative, and {abs(implied) / bound:.1f}x the "
+                f"{bound:.6f} this quote precision can explain as rounding. A "
+                f"negative distribution cannot be expressed as `dividend_cash`, "
+                f"so the three-series contract (Spec N §4.3) cannot hold for this "
+                f"session and this adapter will not store a series that pretends "
+                f"it does."
+            )
+        out.append((split, implied if implied > floor else 0.0))
+    return tuple(out)
 
 
 def api_key_from_env(explicit: str | None = None) -> str:
@@ -276,7 +474,10 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         self._client = client
         self._timeout = timeout
         self._page_size = page_size
-        self._uid_cache: dict[str, str] = {}
+        #: `{ticker: (security_uid, asset_class)}`. Both halves are cached
+        #: together because both come from the same `tickers` row, and the
+        #: class is what decides which price table `daily_bars` reads.
+        self._resolved: dict[str, tuple[str, str]] = {}
 
     # -- transport -------------------------------------------------------- #
 
@@ -507,15 +708,18 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
     def _bar_from_row(
         self, row: Mapping[str, Any], ticker: str, uid: str,
         split_factor: float, dividend_cash: float,
+        table: str = TABLE_STOCKS,
     ) -> DailyBar:
-        session = self._need_date(row, "date", f"stocks {ticker}")
-        context = f"stocks {ticker} {session}"
+        session = self._need_date(row, "date", f"{table} {ticker}")
+        context = f"{table} {ticker} {session}"
         adjusted_close = self._need_float(row, "close", context)
         raw_close = self._need_float(row, "closeunadj", context)
         if adjusted_close <= 0:
             raise PricePlaneSchemaError(f"{context}: close is {adjusted_close}")
-        # `stocks`' OHLC are split-adjusted; closeunadj is not. The ratio is
-        # the cumulative split adjustment as of this session, exactly.
+        # `stocks`' and `funds`' OHLC are split-adjusted; closeunadj is not.
+        # The ratio is the cumulative split adjustment as of this session,
+        # exactly — the two tables carry byte-identical column names and
+        # semantics (`schema_stocks.sql` / `schema_funds.sql`).
         ratio = raw_close / adjusted_close
         return DailyBar(
             security_uid=uid,
@@ -551,13 +755,22 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
     def daily_bars(
         self, ticker: str, start: date | None = None, end: date | None = None
     ) -> tuple[DailyBar, ...]:
+        """Bars from whichever price table the master says this name lives in.
+
+        The table is resolved through `tickers`, never inferred from the symbol
+        — `SPY`, `GLD` and `TLT` look like every other three-letter ticker, and
+        a wrong guess here is silently empty bars rather than an error.
+        """
+        uid, asset_class = self._resolve(ticker)
+        if asset_class == ASSET_CLASS_FUND:
+            return self._fund_bars(ticker, uid, start, end)
+
         params: dict[str, Any] = {"ticker": ticker}
         if start:
             params["from"] = start.isoformat()
         if end:
             params["to"] = end.isoformat()
 
-        uid = self._uid_for(ticker)
         factors = self._factors(ticker, start, end)
 
         bars: list[DailyBar] = []
@@ -569,6 +782,53 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         if not bars:
             return ()
         return with_derived_series(sorted(bars, key=lambda b: b.session_date))
+
+    def _fund_bars(
+        self, ticker: str, uid: str, start: date | None, end: date | None
+    ) -> tuple[DailyBar, ...]:
+        """The fund path: one call to `funds`, factors from its own `closeadj`.
+
+        Deliberately **not** a call to `actions`. See `fund_factors_from_quotes`
+        for why, and `docs/PRICE_PLANE.md` for what the resulting provenance is
+        called. One consequence worth knowing at the call site: a fund's bars
+        cost a single request, where an equity's cost two.
+
+        The window matters to the arithmetic in a way it does not for an equity.
+        Every factor here is a ratio against the **previous session in the slice
+        returned**, so the first bar of any window carries `(1.0, 0.0)` — if a
+        distribution went ex on `start`, that window cannot see it. `--since`
+        therefore wants a session of slack, and `store.upsert_bars` overwrites
+        by `(security_uid, session_date)`, so a re-run with an earlier `--since`
+        corrects it.
+        """
+        params: dict[str, Any] = {"ticker": ticker}
+        if start:
+            params["from"] = start.isoformat()
+        if end:
+            params["to"] = end.isoformat()
+
+        rows = list(self._rows(TABLE_FUNDS, params, FUNDS_COLUMNS))
+        if not rows:
+            return ()
+        rows.sort(key=lambda r: str(r.get("date")))
+
+        quotes: list[tuple[date, float, float, float]] = []
+        for row in rows:
+            session = self._need_date(row, "date", f"funds {ticker}")
+            context = f"funds {ticker} {session}"
+            quotes.append((
+                session,
+                self._need_float(row, "close", context),
+                self._need_float(row, "closeadj", context),
+                self._need_float(row, "closeunadj", context),
+            ))
+
+        factors = fund_factors_from_quotes(quotes, ticker)
+        bars = [
+            self._bar_from_row(row, ticker, uid, split, dividend, table=TABLE_FUNDS)
+            for row, (split, dividend) in zip(rows, factors)
+        ]
+        return with_derived_series(bars)
 
     def _factors(
         self, ticker: str, start: date | None, end: date | None
@@ -593,7 +853,7 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         if end:
             params["to"] = end.isoformat()
 
-        uid = self._uid_for(ticker)
+        uid, _asset_class = self._resolve(ticker)
         records = [
             self._action_from_row(row, ticker, uid)
             for row in self._rows(TABLE_ACTIONS, params, ACTIONS_COLUMNS)
@@ -601,19 +861,62 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         return tuple(sorted(records, key=lambda r: (r.ex_date, r.action_type)))
 
     def security_master(
-        self, tickers: Sequence[str] | None = None
+        self,
+        tickers: Sequence[str] | None = None,
+        *,
+        asset_class: str | None = ASSET_CLASS_EQUITY,
     ) -> tuple[SecurityMasterRow, ...]:
-        # `table=stocks` filters the direct API's per-plan duplication:
-        # `tickers` returns one row per plan a name appears in (`stocks`,
-        # `fundamentals`, `insiders`) unless filtered — confirmed live, see
-        # the module docstring and `tests/fixtures/sharadar_direct/README.md`.
-        params: dict[str, Any] = {"table": TABLE_STOCKS}
+        """Master rows for one instrument class, or for whichever class each name is.
+
+        `asset_class="equity"` (the default) sends `table=stocks` and
+        `asset_class="fund"` sends `table=funds`. That filter is not an
+        optimisation: `tickers` returns **one row per plan a name appears in**
+        (`stocks`, `fundamentals`, `insiders` for an equity) when queried
+        unfiltered, confirmed live against AAPL, so an unfiltered read
+        triple-counts every operating company.
+
+        `asset_class=None` is the auto-detect path — no `table` filter, and the
+        rows that come back are narrowed to the two price tables, one per name.
+        It is what `daily_bars` resolves through and what
+        `scripts/price_backfill.py --asset-class auto` runs, because "is SPY an
+        equity or a fund" is a question for the vendor's master and not for a
+        guess about a three-letter symbol. A name that somehow appears in both
+        price tables raises rather than resolving to one of them.
+
+        The default is `equity` rather than `None` so that every caller written
+        before funds existed keeps the behaviour it was written against, and so
+        that the universe job cannot start ranking ETFs by forgetting an
+        argument.
+        """
+        if asset_class is not None and asset_class not in ASSET_CLASSES:
+            raise PricePlaneConfigError(
+                f"asset_class must be one of {ASSET_CLASSES} or None for "
+                f"auto-detect, got {asset_class!r}"
+            )
+        params: dict[str, Any] = {}
+        if asset_class is not None:
+            params["table"] = TABLE_BY_ASSET_CLASS[asset_class]
         if tickers is not None:
             params["ticker"] = ",".join(tickers)
 
         rows = []
+        seen_class_by_ticker: dict[str, str] = {}
         for row in self._rows(TABLE_TICKERS, params, TICKERS_COLUMNS):
+            table = str(row.get("table") or "").strip().lower()
+            row_class = ASSET_CLASS_BY_TABLE.get(table)
+            if row_class is None:
+                # Only reachable on the auto-detect path: `fundamentals` and
+                # `insiders` rows describe the same name in a plan that carries
+                # no prices, so they are not security-master rows here.
+                continue
             ticker = str(self._need(row, "ticker", "tickers"))
+            previous = seen_class_by_ticker.setdefault(ticker, row_class)
+            if previous != row_class:
+                raise PricePlaneSchemaError(
+                    f"tickers has {ticker!r} in both the {previous!r} and "
+                    f"{row_class!r} price tables; this adapter will not pick one. "
+                    f"Pass asset_class= explicitly to say which you mean."
+                )
             context = f"tickers {ticker}"
             uid = f"{SOURCE}:{self._need(row, 'permaticker', context)}"
             exchange = str(row.get("exchange") or "").strip().upper()
@@ -622,11 +925,12 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
             # Seed the cache before `delisting_reason` reaches back through
             # `corporate_actions` for a uid: that round trip is what would
             # otherwise recurse into this method.
-            self._uid_cache[ticker] = uid
+            self._resolved[ticker] = (uid, row_class)
             rows.append(SecurityMasterRow(
                 security_uid=uid,
                 ticker=ticker,
                 source=self.source,
+                asset_class=row_class,
                 name=str(row.get("name") or "") or None,
                 exchange=exchange or None,
                 venue=VENUE_BY_EXCHANGE.get(exchange, "other" if exchange else "unknown"),
@@ -691,17 +995,30 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
     def known_universes(self) -> tuple[str, ...]:
         return ("sharadar_sp500_v1",)
 
-    def _uid_for(self, ticker: str) -> str:
-        """A stable id for a ticker, from TICKERS' `permaticker`.
+    def _resolve(self, ticker: str) -> tuple[str, str]:
+        """`(security_uid, asset_class)` for a ticker, from the `tickers` master.
 
-        Cached per instance: a backfill over 5,000 names would otherwise fetch
-        the master 5,000 times.
+        The uid is `permaticker`-derived; the class says which price table the
+        name's bars are in. Both are resolved in one auto-detecting master call
+        (`asset_class=None`) rather than two, and cached per instance: a
+        backfill over 5,000 names would otherwise fetch the master 5,000 times.
+
+        Raises rather than defaulting to `equity` for a name `tickers` does not
+        carry. Defaulting would send the request to `stocks`, get an empty list
+        back, and report "no bars" for a name the vendor has — which is exactly
+        the failure this whole change exists to undo.
         """
-        if ticker not in self._uid_cache:
-            rows = self.security_master([ticker])
+        if ticker not in self._resolved:
+            rows = self.security_master([ticker], asset_class=None)
             if not rows:
                 raise PricePlaneSchemaError(
-                    f"tickers has no row for {ticker!r}; refusing to invent a security id"
+                    f"tickers has no row for {ticker!r} in either the "
+                    f"{TABLE_STOCKS!r} or the {TABLE_FUNDS!r} price table; "
+                    f"refusing to invent a security id"
                 )
-            self._uid_cache[ticker] = rows[0].security_uid
-        return self._uid_cache[ticker]
+            self._resolved[ticker] = (rows[0].security_uid, rows[0].asset_class)
+        return self._resolved[ticker]
+
+    def _uid_for(self, ticker: str) -> str:
+        """Back-compat alias: the uid half of `_resolve`."""
+        return self._resolve(ticker)[0]

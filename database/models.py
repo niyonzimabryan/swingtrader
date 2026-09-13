@@ -732,6 +732,12 @@ class Security(Base):
     listing_date = Column(Date, nullable=True)
     delisting_date = Column(Date, nullable=True)
     delisting_reason = Column(String(32), nullable=False, default="unknown")
+    # `equity` | `fund` (`data.prices.base.ASSET_CLASSES`). A fund is a
+    # benchmark, never a cohort member: `data/prices/universes.py` ranks
+    # equities only. Added by `0014_securities_asset_class`, which backfills
+    # every pre-existing row to `equity` — which is what they all were, since
+    # the adapter could only reach `table=stocks` before that revision.
+    asset_class = Column(String(16), nullable=False, default="equity")
     source = Column(String(40), nullable=False)
     ingested_at = Column(UtcDateTime, default=utcnow_naive)
 
