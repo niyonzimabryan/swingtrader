@@ -214,7 +214,7 @@ history, never the whole market. Measured locally against a synthetic
 2,000-ticker × 2,500-session zip (~5M rows, ~265 MB — comparable in scale to
 the real 10-year universe): the old whole-file parse peaked at **3.37 GB**
 RSS (matching the production SIGKILL number almost exactly); the streaming
-path peaked at **46 MB**.
+path peaked at **98 MB**.
 
 `--tickers` now filters **during** staging, not after the parse — a filtered
 run never writes another name's rows to the staging file at all.

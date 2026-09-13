@@ -304,7 +304,7 @@ derived one ticker at a time (`data/prices/bulk_stream.py`,
 Measured locally against a synthetic 2,000-ticker × 2,500-session zip (~5M
 rows, ~265 MB — comparable in scale to the real 10-year universe): the old
 whole-file parse peaked at **3.37 GB RSS**, matching the SIGKILL number above
-almost exactly; the streaming path peaked at **46 MB**. That is comfortably
+almost exactly; the streaming path peaked at **98 MB**. That is comfortably
 under both the platform's earlier kill point and the cgroup's 8 GB limit, so
 **running `--bulk years=10` inside the bot container is safe now** — this is a
 local, synthetic-data measurement (this session has no production access), not

@@ -320,17 +320,18 @@ class BackfillBulkResumeTests(unittest.TestCase):
             checkpoint_path = Path(tmp) / "checkpoint.json"
             staging_db_path = _staging_db_path_for(checkpoint_path)
 
-            # Simulate a process that staged part of a prior (different)
-            # attempt and then died before flipping `staging_complete`: hand
-            # -write a garbage table at the staging path, so this test knows
-            # it gets dropped rather than unioned with the real restage.
+            # Simulate a process that staged a prior (different) attempt and
+            # then died before flipping `staging_complete`: stage an
+            # unrelated "ZZZZ" row at the same path, so this test knows it
+            # gets dropped rather than unioned with the real restage.
+            leftover_zip = Path(tmp) / "leftover.zip"
+            leftover_zip.write_bytes(_zip_bytes(
+                "SHARADAR_STOCKS.csv",
+                "ticker,date,open,high,low,close,volume,closeunadj\n"
+                "ZZZZ,2000-01-01,1,1,1,1,1,1\n",
+            ))
             leftover = BulkStagingStore(staging_db_path)
-            leftover._recreate_table(STOCKS_COLUMNS)
-            leftover._conn.execute(
-                'INSERT INTO rows ("ticker", "date", "open", "high", "low", "close", '
-                '"volume", "closeunadj") VALUES ("ZZZZ", "2000-01-01", 1, 1, 1, 1, 1, 1)'
-            )
-            leftover._conn.commit()
+            leftover.stage(leftover_zip, STOCKS_COLUMNS)
             leftover.close()
 
             state = _new_bulk_checkpoint(

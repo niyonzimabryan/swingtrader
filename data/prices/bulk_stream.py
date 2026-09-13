@@ -17,21 +17,44 @@ staging-disk usage shrinks back down as tickers are drained rather than
 growing for the life of the run.
 
 Only the caller's `expected` columns are staged, never every column the CSV
-happens to carry. Two reasons, not one: it keeps this store's SQL — table and
-column names built from `expected` — safe to build from vendor-supplied CSV
-headers, since only a fixed, hardcoded tuple from `data/prices/sharadar.py`
+happens to carry. Two reasons, not one: it keeps this store's table shape —
+built from `expected` — safe to build from vendor-supplied CSV headers, since
+only a fixed, hardcoded tuple from `data/prices/sharadar.py`
 (`STOCKS_COLUMNS` / `ACTIONS_COLUMNS`) ever reaches it; and nothing downstream
 reads an unexpected column anyway, so staging it would only cost disk.
+
+This staging file is a private, throwaway SQLite database for one backfill
+run — never `DATABASE_URL`, never touched by Alembic, gone once the run's
+checkpoint directory is cleaned up. Its table is therefore defined and
+(re)created through SQLAlchemy Core's `Table`/`MetaData` rather than a
+hand-written `CREATE TABLE` string: same reason `data/prices/store.py`
+already reaches for SQLAlchemy over raw SQL for the tables Alembic *does*
+own, and it keeps `tests/test_schema_discipline.py`'s inline-DDL guard
+meaningful — that guard is about catching a hand-rolled schema mutation
+against the *application's* database slipping in outside a migration, not
+about this module's disposable staging file.
 """
 
 from __future__ import annotations
 
 import csv
 import io
-import sqlite3
 import zipfile
 from pathlib import Path
 from typing import Sequence
+
+from sqlalchemy import (
+    Column,
+    Index,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    delete,
+    insert,
+    inspect,
+    select,
+)
 
 from data.prices.base import PricePlaneSchemaError
 
@@ -50,22 +73,22 @@ class BulkStagingStore:
     `stage()` streams a zip's rows in; `distinct_tickers()`, `rows_for_ticker()`
     and `drop_ticker()` are how a caller drains it one ticker at a time.
     Opening a path that already carries a staged table (from a prior process
-    that staged and then died) reads its column list back from the schema, so
-    `--resume` can reopen a completed staging pass with no `stage()` call.
+    that staged and then died) reflects its column list back from the schema,
+    so `--resume` can reopen a completed staging pass with no `stage()` call.
     """
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
-        self._conn = sqlite3.connect(self.db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._engine = create_engine(f"sqlite:///{self.db_path}")
+        self._metadata = MetaData()
+        self._table: Table | None = None
         self.columns: tuple[str, ...] = ()
         if self.has_data():
-            cursor = self._conn.execute(f"PRAGMA table_info({TABLE_NAME})")
-            self.columns = tuple(row[1] for row in cursor.fetchall())
+            self._table = Table(TABLE_NAME, self._metadata, autoload_with=self._engine)
+            self.columns = tuple(c.name for c in self._table.columns)
 
     def close(self) -> None:
-        self._conn.close()
+        self._engine.dispose()
 
     def __enter__(self) -> "BulkStagingStore":
         return self
@@ -76,11 +99,7 @@ class BulkStagingStore:
 
     def has_data(self) -> bool:
         """Whether a staging table already exists (not whether it has rows)."""
-        cursor = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-            (TABLE_NAME,),
-        )
-        return cursor.fetchone() is not None
+        return inspect(self._engine).has_table(TABLE_NAME)
 
     def stage(
         self,
@@ -127,53 +146,54 @@ class BulkStagingStore:
                         f"The CSV header was {list(fieldnames)}."
                     )
 
-                batch: list[tuple] = []
-                for row in reader:
-                    if wanted is not None and row.get("ticker") not in wanted:
-                        continue
-                    batch.append(tuple(row.get(c) for c in self.columns))
-                    if len(batch) >= batch_size:
-                        self._insert_batch(batch)
+                with self._engine.begin() as conn:
+                    batch: list[dict] = []
+                    for row in reader:
+                        if wanted is not None and row.get("ticker") not in wanted:
+                            continue
+                        batch.append({c: row.get(c) for c in self.columns})
+                        if len(batch) >= batch_size:
+                            conn.execute(insert(self._table), batch)
+                            staged += len(batch)
+                            batch = []
+                    if batch:
+                        conn.execute(insert(self._table), batch)
                         staged += len(batch)
-                        batch = []
-                if batch:
-                    self._insert_batch(batch)
-                    staged += len(batch)
 
-        self._conn.execute(
-            f'CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_ticker ON {TABLE_NAME}(ticker)'
-        )
-        self._conn.commit()
         return staged
 
     def _recreate_table(self, columns: Sequence[str]) -> None:
-        self._conn.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
-        col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
-        self._conn.execute(f"CREATE TABLE {TABLE_NAME} ({col_defs})")
-        self._conn.commit()
-
-    def _insert_batch(self, batch: list[tuple]) -> None:
-        placeholders = ", ".join("?" for _ in self.columns)
-        col_list = ", ".join(f'"{c}"' for c in self.columns)
-        self._conn.executemany(
-            f"INSERT INTO {TABLE_NAME} ({col_list}) VALUES ({placeholders})", batch
-        )
-        self._conn.commit()
+        # `Table.drop`/`.create` (single-table DDL), not the `MetaData`-wide
+        # `drop_all`/`create_all` — the latter are reserved for the
+        # application schema (`database/schema.py`'s test-only
+        # `create_all_for_tests`; `tests/test_schema_discipline.py`'s
+        # `test_create_all_is_confined_to_the_test_helper`), which this
+        # staging file has nothing to do with.
+        metadata = MetaData()
+        table = Table(TABLE_NAME, metadata, *(Column(c, String) for c in columns))
+        if "ticker" in columns:
+            Index(f"idx_{TABLE_NAME}_ticker", table.c.ticker)
+        table.drop(self._engine, checkfirst=True)
+        table.create(self._engine, checkfirst=True)
+        self._metadata = metadata
+        self._table = table
 
     def distinct_tickers(self) -> list[str]:
         """Every ticker still staged, ascending — deterministic run order."""
-        cursor = self._conn.execute(
-            f"SELECT DISTINCT ticker FROM {TABLE_NAME} ORDER BY ticker"
-        )
-        return [row[0] for row in cursor.fetchall()]
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                select(self._table.c.ticker).distinct().order_by(self._table.c.ticker)
+            )
+            return [row[0] for row in result]
 
     def rows_for_ticker(self, ticker: str) -> list[dict]:
-        col_list = ", ".join(f'"{c}"' for c in self.columns)
-        cursor = self._conn.execute(
-            f"SELECT {col_list} FROM {TABLE_NAME} WHERE ticker = ? ORDER BY date",
-            (ticker,),
-        )
-        return [dict(zip(self.columns, row)) for row in cursor.fetchall()]
+        with self._engine.connect() as conn:
+            result = conn.execute(
+                select(self._table)
+                .where(self._table.c.ticker == ticker)
+                .order_by(self._table.c.date)
+            )
+            return [dict(row._mapping) for row in result]
 
     def drop_ticker(self, ticker: str) -> None:
         """Delete one ticker's staged rows once its bars are safely stored.
@@ -182,5 +202,5 @@ class BulkStagingStore:
         gone is a ticker that finished, so it never reappears in
         `distinct_tickers()` and is never reprocessed.
         """
-        self._conn.execute(f"DELETE FROM {TABLE_NAME} WHERE ticker = ?", (ticker,))
-        self._conn.commit()
+        with self._engine.begin() as conn:
+            conn.execute(delete(self._table).where(self._table.c.ticker == ticker))

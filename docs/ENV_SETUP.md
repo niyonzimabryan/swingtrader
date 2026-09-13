@@ -95,7 +95,7 @@ relying on any cohort, then either:
   staging now, not after the zip is parsed. The zip is streamed into an
   on-disk SQLite staging file and derived one ticker at a time rather than
   held in memory whole (`docs/PRICE_PLANE.md`'s "Bulk backfill" section) —
-  measured locally at 46 MB peak RSS against a ~5M-row synthetic zip, versus
+  measured locally at 98 MB peak RSS against a ~5M-row synthetic zip, versus
   3.37 GB for the pre-streaming implementation (which is what got the bot
   container SIGKILLed in production; see
   `docs/investment-workspace/handoff/OWNER_SETUP_EXECUTION_2026-09-12.md` §4).
