@@ -442,9 +442,14 @@ These are known and unresolved, not oversights.
    terminal behaviour against a known collapse — and it is **not** enough to
    publish as a delisting-date reference. The audit blob carries
    `sources_verified_against_primary_filing: false` and the script says so.
-2. **No Sharadar run has happened.** No key exists. Everything in
-   `SharadarPricePlane` was exercised against stub payloads, and its column list
-   is verified from search extracts only (above).
+2. **Partly stale: a Sharadar run has now happened, for funds.** This item was
+   written before any key existed. The direct-API port (2026-09-10) and the
+   fund path (2026-09-13) were both exercised against live payloads with the
+   public `test-api-key`, recorded under `tests/fixtures/sharadar_direct/`, and
+   `funds` column names come from the vendor's own DDL rather than a search
+   extract. What is still true: nothing has been run against a **paid** key, so
+   the bulk redirect, the delisting `action` values, and anything outside the
+   free sample universe remain unexercised.
 3. **Cross-check `closeadj` once a key exists — done for funds, still open for
    equities.** For a fund the derived total-return series now *is* checked
    against `closeadj`, because the factors come from it: over 292 live SPY
@@ -457,18 +462,27 @@ These are known and unresolved, not oversights.
    complete, and it deliberately ignores the quarterly snapshot rows: treating a
    snapshot as a join would date every current constituent's membership to the
    snapshot.
-5. **Fund coverage is the slice path only.** `--bulk` parses the `stocks` zip;
+5. **Whether `actions` carries fund distributions is still an open question,
+   and a paid key settles it in one request.** The vendor documents that it
+   does; the public key 403s, so this repo has never seen one. It changes
+   nothing today — the bars take their factors from `closeadj` either way — but
+   it is worth knowing, and the check is
+   `GET /data/actions?ticker=SPY&from=2024-03-01&to=2024-03-31`: a `dividend`
+   row on 2024-03-15 with a value near `1.60` means the log covers funds, and
+   an empty result means the design note above was not paranoia. Either answer
+   is worth appending to Spec N §12.
+6. **Fund coverage is the slice path only.** `--bulk` parses the `stocks` zip;
    a `funds` bulk zip is a separate change and `--bulk --asset-class fund`
    refuses rather than silently loading equities. For one benchmark that is the
    right trade — SPY through the slice path is a single paged request.
-6. **A fund's `volume` is stored as the vendor publishes it**, which for both
+7. **A fund's `volume` is stored as the vendor publishes it**, which for both
    `stocks` and `funds` is split-adjusted, while `raw_close` is not. So
    `DailyBar.dollar_volume` mixes an unadjusted price with an adjusted volume
    across a split. This is pre-existing on the equity path and was deliberately
    not changed here: it moves every liquidity rank and therefore every
    universe, which is not a thing to fold into a benchmark change. It does not
    reach the benchmark, which is never ranked.
-7. **`liquid_us_equity_v1` rebuilds in memory.** `universes.rebuild` loads every
+8. **`liquid_us_equity_v1` rebuilds in memory.** `universes.rebuild` loads every
    stored bar to rank month-ends. That is fine for the fixture and for a few
    hundred names; a full 5,000-name, 10-year file is ~12M rows and will need a
    windowed rebuild (one month-end at a time, bars restricted to the window).
