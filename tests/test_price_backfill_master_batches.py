@@ -18,7 +18,11 @@ measures.
 
 import unittest
 
-from scripts.price_backfill import MASTER_TICKER_PARAM_MAX_CHARS, _master_batches
+from scripts.price_backfill import (
+    MASTER_TICKER_PARAM_MAX_CHARS,
+    MASTER_TICKER_PARAM_MAX_COUNT,
+    _master_batches,
+)
 
 
 class MasterBatchLengthTests(unittest.TestCase):
@@ -62,12 +66,72 @@ class MasterBatchLengthTests(unittest.TestCase):
     def test_empty_input_yields_nothing(self):
         self.assertEqual(list(_master_batches([])), [])
 
-    def test_a_batch_exactly_at_the_limit_is_not_split(self):
-        # 38 four-char symbols + 37 commas = 189 characters.
-        tickers = [f"T{n:03d}" for n in range(38)]
-        self.assertEqual(len(",".join(tickers)), 189)
+    def test_a_batch_near_the_length_limit_is_not_split(self):
+        """A group inside BOTH limits is sent as one request.
+
+        Originally written with 38 four-character symbols (189 chars), back
+        when the character cap was believed to be the only limit. The vendor
+        then refused that batch on count. Rewritten to 27 six-character symbols
+        — 188 characters and 27 tickers, inside both ceilings — because the
+        original assertion was factually wrong about the API, not because it
+        was inconvenient.
+        """
+        tickers = [f"SYM{n:03d}" for n in range(27)]
+        self.assertEqual(len(",".join(tickers)), 188)
+        self.assertLessEqual(len(tickers), MASTER_TICKER_PARAM_MAX_COUNT)
 
         self.assertEqual(list(_master_batches(tickers)), [tickers])
+
+
+
+class MasterBatchCountTests(unittest.TestCase):
+    """The second limit, which the vendor only reveals once length is satisfied.
+
+        Too many tickers: ticker accepts at most 30 tickers per request (got 34).
+
+    Observed live 2026-09-14 on the run immediately after the character fix.
+    Batching on length alone averaged 47 tickers per request and was refused.
+    """
+
+    def test_no_batch_exceeds_the_count_limit(self):
+        tickers = [f"T{n:03d}" for n in range(500)]
+
+        for batch in _master_batches(tickers):
+            self.assertLessEqual(len(batch), MASTER_TICKER_PARAM_MAX_COUNT)
+
+    def test_both_limits_hold_simultaneously(self):
+        tickers = [f"SYM{n:05d}" for n in range(500)]
+
+        for batch in _master_batches(tickers):
+            self.assertLessEqual(len(batch), MASTER_TICKER_PARAM_MAX_COUNT)
+            self.assertLessEqual(len(",".join(batch)), MASTER_TICKER_PARAM_MAX_CHARS)
+
+    def test_count_binds_for_short_symbols(self):
+        """Thirty 5-char symbols join to 179 chars — under the length limit."""
+        tickers = ["ABCDE"] * 120
+
+        batches = list(_master_batches(tickers))
+
+        self.assertEqual(len(batches[0]), MASTER_TICKER_PARAM_MAX_COUNT)
+        self.assertLess(len(",".join(batches[0])), MASTER_TICKER_PARAM_MAX_CHARS)
+
+    def test_length_binds_for_long_symbols(self):
+        """Thirty 8-char symbols would join to 269 chars — over the limit."""
+        tickers = ["ABCDEFGH"] * 120
+
+        batches = list(_master_batches(tickers))
+
+        self.assertLess(len(batches[0]), MASTER_TICKER_PARAM_MAX_COUNT)
+        self.assertLessEqual(len(",".join(batches[0])), MASTER_TICKER_PARAM_MAX_CHARS)
+
+    def test_length_batching_alone_would_have_been_refused(self):
+        """The regression: 190 chars of 4-char symbols is ~38 tickers > 30."""
+        tickers = [f"AB{n:02d}" for n in range(38)]
+        self.assertLessEqual(len(",".join(tickers)), MASTER_TICKER_PARAM_MAX_CHARS)
+        self.assertGreater(len(tickers), MASTER_TICKER_PARAM_MAX_COUNT)
+
+        for batch in _master_batches(tickers):
+            self.assertLessEqual(len(batch), MASTER_TICKER_PARAM_MAX_COUNT)
 
 
 if __name__ == "__main__":

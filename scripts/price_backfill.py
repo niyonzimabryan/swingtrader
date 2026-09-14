@@ -113,6 +113,19 @@ from utils.timeutils import utcnow_naive
 #: requests and the cost of being wrong is the whole run.
 MASTER_TICKER_PARAM_MAX_CHARS = 190
 
+#: And a second, independent ceiling, which the vendor only reveals once the
+#: character limit is satisfied: "Too many tickers: ticker accepts at most 30
+#: tickers per request (got 34)" — observed live 2026-09-14, on the very next
+#: run after the character fix. Batching on either limit alone is not enough,
+#: because which one binds depends on symbol length: thirty five-character
+#: symbols join to 179 characters and are refused on count, while thirty
+#: eight-character symbols join to 269 and are refused on length.
+#:
+#: The vendor validates in stages and surfaces one limit at a time, so neither
+#: of these was discoverable from the other's error message, and neither is in
+#: `docs/vendors/sharadar.md`.
+MASTER_TICKER_PARAM_MAX_COUNT = 30
+
 #: `--max-rss-mb` default. Chosen well under the bot container's 8 GB cgroup
 #: limit — the platform SIGKILLed at 3.4 GB in production, so this guard is
 #: meant to abort long before either ceiling, leaving room to actually see the
@@ -180,12 +193,18 @@ def _new_bulk_checkpoint(
 def _master_batches(
     tickers: Sequence[str],
     max_chars: int = MASTER_TICKER_PARAM_MAX_CHARS,
+    max_count: int = MASTER_TICKER_PARAM_MAX_COUNT,
 ) -> Iterator[list[str]]:
-    """Group `tickers` so each `",".join(batch)` stays inside the vendor limit.
+    """Group `tickers` so each request satisfies **both** vendor limits.
 
-    Batching by joined length rather than by count is the whole point: symbols
-    run from one to five characters, so a fixed count is either wastefully
-    small or over the limit depending on which names the zip happens to carry.
+    Sharadar caps the `ticker` parameter at 200 characters *and* at 30 tickers,
+    and validates them in stages — it reports the count limit only once the
+    length limit is satisfied. Honouring one alone just moves the failure:
+    batching purely on length averaged 47 tickers and was refused on count.
+
+    Which limit binds depends on symbol length. Thirty five-character symbols
+    join to 179 characters, so count binds. Thirty eight-character symbols join
+    to 269, so length binds first. Hence both, on every batch.
 
     A single symbol longer than `max_chars` is still yielded on its own — there
     is no smaller request to make, and letting the vendor refuse it is more
@@ -195,7 +214,9 @@ def _master_batches(
     length = 0
     for ticker in tickers:
         addition = len(ticker) + (1 if batch else 0)
-        if batch and length + addition > max_chars:
+        too_long = batch and length + addition > max_chars
+        too_many = len(batch) >= max_count
+        if too_long or too_many:
             yield batch
             batch, length = [ticker], len(ticker)
         else:
