@@ -77,6 +77,7 @@ import argparse
 import json
 import sys
 import tempfile
+from collections.abc import Iterator, Sequence
 from datetime import date, datetime
 from pathlib import Path
 
@@ -95,7 +96,22 @@ from utils.timeutils import utcnow_naive
 #: Tickers per `security_master` call in bulk mode, so the comma-joined
 #: `ticker=` query string stays well under any sane URL-length limit even for
 #: a `years=full` run over the whole market.
-MASTER_BATCH_SIZE = 200
+#: Sharadar rejects a `ticker` query parameter longer than 200 **characters**:
+#: "Invalid ticker parameter: ticker exceeds maximum length of 200 characters.
+#: Use fewer tickers, date filters, or bulk download (years=) for large
+#: universes." — observed live against the production API on 2026-09-14.
+#:
+#: The previous `MASTER_BATCH_SIZE = 200` read that limit as 200 *tickers*.
+#: Two hundred four-character symbols join to roughly a thousand characters, so
+#: every `--bulk` run died on its very first master lookup, before writing a
+#: single bar. `--tickers` with a short list stayed under the limit by accident,
+#: which is why the ten-name slice load worked and the whole-market one never
+#: could.
+#:
+#: 190 rather than 200 leaves room for the vendor counting the parameter
+#: slightly differently than we do; the cost of the margin is a few extra
+#: requests and the cost of being wrong is the whole run.
+MASTER_TICKER_PARAM_MAX_CHARS = 190
 
 #: `--max-rss-mb` default. Chosen well under the bot container's 8 GB cgroup
 #: limit — the platform SIGKILLed at 3.4 GB in production, so this guard is
@@ -159,6 +175,34 @@ def _new_bulk_checkpoint(
         "started_at": utcnow_naive().isoformat(),
         "updated_at": None,
     }
+
+
+def _master_batches(
+    tickers: Sequence[str],
+    max_chars: int = MASTER_TICKER_PARAM_MAX_CHARS,
+) -> Iterator[list[str]]:
+    """Group `tickers` so each `",".join(batch)` stays inside the vendor limit.
+
+    Batching by joined length rather than by count is the whole point: symbols
+    run from one to five characters, so a fixed count is either wastefully
+    small or over the limit depending on which names the zip happens to carry.
+
+    A single symbol longer than `max_chars` is still yielded on its own — there
+    is no smaller request to make, and letting the vendor refuse it is more
+    honest than dropping it silently.
+    """
+    batch: list[str] = []
+    length = 0
+    for ticker in tickers:
+        addition = len(ticker) + (1 if batch else 0)
+        if batch and length + addition > max_chars:
+            yield batch
+            batch, length = [ticker], len(ticker)
+        else:
+            batch.append(ticker)
+            length += addition
+    if batch:
+        yield batch
 
 
 def _save_bulk_checkpoint(state: dict) -> None:
@@ -251,7 +295,12 @@ def backfill(
     }
 
     with get_session() as session:
-        master_rows = plane.security_master(tickers, asset_class=asset_class)
+        # Batched for the same reason as the bulk path above: an explicit
+        # `--tickers` list of more than ~40 symbols would otherwise blow the
+        # vendor's 200-character `ticker` parameter limit.
+        master_rows = []
+        for batch in _master_batches(list(tickers)):
+            master_rows.extend(plane.security_master(batch, asset_class=asset_class))
         summary["securities_written"] = store.upsert_securities(session, master_rows)
         summary["security_uid_by_ticker"] = {
             row.ticker: row.security_uid for row in master_rows
@@ -398,8 +447,7 @@ def backfill_bulk(
                 ticker_list = stream.tickers()
                 uid_by_ticker: dict[str, str] = {}
                 securities_written = 0
-                for start in range(0, len(ticker_list), MASTER_BATCH_SIZE):
-                    batch = ticker_list[start:start + MASTER_BATCH_SIZE]
+                for batch in _master_batches(ticker_list):
                     master_rows = plane.security_master(batch)
                     securities_written += store.upsert_securities(session, master_rows)
                     uid_by_ticker.update({row.ticker: row.security_uid for row in master_rows})
