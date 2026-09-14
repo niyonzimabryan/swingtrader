@@ -59,6 +59,23 @@ TEST_DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/swingtra
 See [docs/DATABASE_ENGINES.md](docs/DATABASE_ENGINES.md) for a local Postgres in
 one command.
 
+### Never run the suite where live delivery credentials are set
+
+Not in the production container, not on a box whose `.env` holds a real
+`RESEND_API_KEY` or `TELEGRAM_BOT_TOKEN`. On 2026-09-13 the suite was run
+inside the production bot container and the notification tests took the real
+send path, delivering 12 real emails and Telegram messages — test-fixture trade
+proposals, subjects like `[approval needed] NVDA — proposal 1` — to the owner's
+personal inbox. The tests' database was a throwaway; the credentials were not.
+
+`notify/testguard.py`, armed in `tests/__init__.py`, now makes that impossible:
+a test that tries to build a channel reaching the real Resend or Telegram API
+raises `LiveSenderRefused`, and the six delivery variables are blanked for the
+test process. Inject a transport (`tests.notifyfixture.RecordingTransport`) to
+assert what a channel sends; use `testguard.allow_inert_channels()` only to
+assert *which* channels the registry builds. Full reasoning in
+[docs/NOTIFICATIONS.md §9](docs/NOTIFICATIONS.md).
+
 ## Schema Changes
 
 The schema is owned by Alembic. Adding a column or a table means writing a

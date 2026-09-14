@@ -20,7 +20,7 @@ import unittest
 
 from database.db import get_session, init_db
 from database.models import NotificationSend
-from notify import registry, store
+from notify import registry, store, testguard
 from notify.channel import KIND_PAGE, KIND_PROPOSAL, Notification
 from notify.resend import ResendChannel, parse_recipients
 from notify.telegram import TELEGRAM_MSG_LIMIT, CallableChannel, TelegramChannel
@@ -231,7 +231,12 @@ class RegistryTests(unittest.TestCase):
     """Every flag combination, and what ``broadcast`` does with each."""
 
     def names(self, settings) -> list[str]:
-        return [channel.name for channel in registry.configured_channels(settings)]
+        # A statement about registry *policy*, not about delivery: these assert
+        # which channels get built, never what they put on the wire. The live
+        # sender guard refuses a real transport, so build them inert — the
+        # channel objects are real, their transports raise if anyone sends.
+        with testguard.allow_inert_channels():
+            return [channel.name for channel in registry.configured_channels(settings)]
 
     def test_nothing_configured_is_no_channel(self):
         self.assertEqual(self.names(nf.FakeSettings()), [])
@@ -266,7 +271,9 @@ class RegistryTests(unittest.TestCase):
         settings = nf.email_settings(
             telegram_bot_token=nf.FAKE_TELEGRAM_TOKEN, telegram_chat_id=nf.FAKE_CHAT_ID
         )
-        self.assertEqual([c.name for c in registry.email_channels(settings)], ["email"])
+        with testguard.allow_inert_channels():
+            names = [c.name for c in registry.email_channels(settings)]
+        self.assertEqual(names, ["email"])
 
     def test_broadcast_reaches_every_channel_and_reports_each(self):
         first = nf.RecordingChannel("email")
