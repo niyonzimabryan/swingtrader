@@ -873,7 +873,28 @@ class RobinhoodMCPBroker:
         return headers
 
 
-def _extract_list(raw: Any, preferred_keys: tuple[str, ...]) -> list[dict]:
+#: How far below the top level a payload list may be found. The live Robinhood
+#: MCP wraps every response in an envelope — ``{"data": {...}, "structured":
+#: {...}, "guide": str, "text": str}`` — so the list a caller wants sits one or
+#: two levels down. Three is generous for that shape and keeps the walk
+#: obviously terminating.
+_MAX_ENVELOPE_DEPTH = 3
+
+
+def _extract_list(raw: Any, preferred_keys: tuple[str, ...], _depth: int = 0) -> list[dict]:
+    """The list of rows inside one MCP response, wherever the server put it.
+
+    The envelope fallback at the bottom is load-bearing against the **live**
+    server and is not reachable from the recorded-shape fixtures. Verified
+    against production on 2026-09-13: ``get_accounts`` returns its rows at
+    ``data.accounts``, not at ``accounts``, so every preceding branch missed
+    them and this function returned ``[]`` — for all twelve read paths that
+    call it, and silently, because an empty list reads as "you hold nothing"
+    rather than as an error. ``tests/fixtures/robinhood/`` put the list at the
+    top level (see that directory's README: they were built from the tool
+    schema, never from a live response), which is why the suite stayed green
+    while every real read came back empty.
+    """
     if isinstance(raw, list):
         return [item for item in raw if isinstance(item, dict)]
     if not isinstance(raw, dict):
@@ -882,13 +903,22 @@ def _extract_list(raw: Any, preferred_keys: tuple[str, ...]) -> list[dict]:
         value = raw.get(key)
         if isinstance(value, list):
             return [item for item in value if isinstance(item, dict)]
-        if isinstance(value, dict):
-            nested = _extract_list(value, preferred_keys)
+        if isinstance(value, dict) and _depth < _MAX_ENVELOPE_DEPTH:
+            nested = _extract_list(value, preferred_keys, _depth + 1)
             if nested:
                 return nested
     for value in raw.values():
         if isinstance(value, list) and all(isinstance(item, dict) for item in value):
             return value
+    # Last: descend through envelope dicts the server wrapped the payload in.
+    # Deliberately last, so every shape that already resolved above keeps
+    # resolving exactly as it did.
+    if _depth < _MAX_ENVELOPE_DEPTH:
+        for value in raw.values():
+            if isinstance(value, dict):
+                nested = _extract_list(value, preferred_keys, _depth + 1)
+                if nested:
+                    return nested
     return []
 
 
