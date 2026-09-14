@@ -166,6 +166,16 @@ killed mid-way — by `--max-rss-mb`'s own guard, or by the same SIGKILL this
 was built to survive — restarts with `--resume` from the next undone ticker,
 not from the top of the zip. See `scripts/price_backfill.py`'s module
 docstring for the full `--checkpoint`/`--resume`/`--max-rss-mb` contract.
+
+The `tickers` table is a bulk download too, and for a different reason —
+requests, not memory. Resolving a whole-market security master through
+`security_master` costs ~470 requests at the vendor's 30-tickers-per-request
+ceiling, plus one `actions` slice per delisted name, and Sharadar answers
+`HTTP 429 ... Request count quota exceeded. Slow down or use bulk downloads
+for large extracts.` `iter_security_master_bulk` reads the `tickers` full
+snapshot instead — one request, streamed a row at a time — and both it and
+`security_master` build their rows through `_master_row_from_tickers_row`, so
+the two cannot disagree about a `security_uid`.
 """
 
 from __future__ import annotations
@@ -178,7 +188,7 @@ import tempfile
 import zipfile
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from data.prices.base import (
     ASSET_CLASS_EQUITY,
@@ -774,7 +784,13 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         return out
 
     @staticmethod
-    def _read_bulk_csv(zip_path: str | Path, expected: Sequence[str]) -> dict[str, list[dict]]:
+    def _iter_bulk_csv(zip_path: str | Path, expected: Sequence[str]) -> Iterator[dict]:
+        """Yield a bulk zip's single CSV member row by row, header validated.
+
+        Holds one row at a time. `_read_bulk_csv` is the materialising wrapper
+        for callers that genuinely want the whole table grouped by ticker (the
+        small `actions` zip); anything whole-market drives this directly.
+        """
         with zipfile.ZipFile(zip_path) as archive:
             members = [n for n in archive.namelist() if n.lower().endswith(".csv")]
             if len(members) != 1:
@@ -791,9 +807,13 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
                         f"{zip_path}: expected columns {missing} are absent. "
                         f"The CSV header was {list(fieldnames)}."
                     )
-                grouped: dict[str, list[dict]] = {}
-                for row in reader:
-                    grouped.setdefault(row["ticker"], []).append(row)
+                yield from reader
+
+    @classmethod
+    def _read_bulk_csv(cls, zip_path: str | Path, expected: Sequence[str]) -> dict[str, list[dict]]:
+        grouped: dict[str, list[dict]] = {}
+        for row in cls._iter_bulk_csv(zip_path, expected):
+            grouped.setdefault(row["ticker"], []).append(row)
         return grouped
 
     # -- parsing ---------------------------------------------------------- #
@@ -1044,48 +1064,143 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         rows = []
         seen_class_by_ticker: dict[str, str] = {}
         for row in self._rows(TABLE_TICKERS, params, TICKERS_COLUMNS):
-            table = str(row.get("table") or "").strip().lower()
-            row_class = ASSET_CLASS_BY_TABLE.get(table)
-            if row_class is None:
-                # Only reachable on the auto-detect path: `fundamentals` and
-                # `insiders` rows describe the same name in a plan that carries
-                # no prices, so they are not security-master rows here.
-                continue
-            ticker = str(self._need(row, "ticker", "tickers"))
-            previous = seen_class_by_ticker.setdefault(ticker, row_class)
-            if previous != row_class:
-                raise PricePlaneSchemaError(
-                    f"tickers has {ticker!r} in both the {previous!r} and "
-                    f"{row_class!r} price tables; this adapter will not pick one. "
-                    f"Pass asset_class= explicitly to say which you mean."
-                )
-            context = f"tickers {ticker}"
-            uid = f"{SOURCE}:{self._need(row, 'permaticker', context)}"
-            exchange = str(row.get("exchange") or "").strip().upper()
-            delisted = str(self._need(row, "isdelisted", context)).strip().upper() == "Y"
-            last_price = self._optional_date(row, "lastpricedate")
-            # Seed the cache before `delisting_reason` reaches back through
-            # `corporate_actions` for a uid: that round trip is what would
-            # otherwise recurse into this method.
-            self._resolved[ticker] = (uid, row_class)
-            rows.append(SecurityMasterRow(
-                security_uid=uid,
-                ticker=ticker,
-                source=self.source,
-                asset_class=row_class,
-                name=str(row.get("name") or "") or None,
-                exchange=exchange or None,
-                venue=VENUE_BY_EXCHANGE.get(exchange, "other" if exchange else "unknown"),
-                ticker_valid_from=self._optional_date(row, "firstpricedate"),
-                ticker_valid_to=last_price if delisted else None,
-                listing_date=self._optional_date(row, "firstpricedate"),
-                # Sharadar has no delisting-date column; the last price
-                # observation is the best available proxy and is labelled as
-                # one in docs/PRICE_PLANE.md.
-                delisting_date=last_price if delisted else None,
-                delisting_reason=self.delisting_reason(ticker) if delisted else "unknown",
-            ))
+            master_row = self._master_row_from_tickers_row(
+                row, seen_class_by_ticker, self.delisting_reason,
+            )
+            if master_row is not None:
+                rows.append(master_row)
         return tuple(sorted(rows, key=lambda r: (r.ticker, r.security_uid)))
+
+    def _master_row_from_tickers_row(
+        self,
+        row: Mapping[str, Any],
+        seen_class_by_ticker: dict[str, str],
+        delisting_reason: Callable[[str], str],
+    ) -> SecurityMasterRow | None:
+        """One `tickers` row -> one `SecurityMasterRow`, or `None` to skip it.
+
+        **The single mapping from a vendor `tickers` row to this repo's
+        security master.** Both paths that read that table go through here —
+        the per-request `security_master` and the whole-snapshot
+        `iter_security_master_bulk` — because a bulk path that derived
+        `security_uid` or `asset_class` even slightly differently would not
+        fail; it would write a second, subtly different master row for a name
+        already in the database and orphan bars from it months later.
+        `tests/test_sharadar_tickers_bulk.py` asserts the two agree row for
+        row.
+
+        `seen_class_by_ticker` is the caller's accumulator for the
+        "name is in both price tables" check, and is mutated here.
+        `delisting_reason` is the resolver for a delisted name's reason
+        category: `self.delisting_reason` (one HTTP `actions` slice per
+        delisted name) on the per-request path, or a lookup into an
+        already-downloaded bulk `actions` table on the bulk path. Both end in
+        `_delisting_reason_from_actions`, so both read the same vendor rows
+        through the same mapping.
+        """
+        table = str(row.get("table") or "").strip().lower()
+        row_class = ASSET_CLASS_BY_TABLE.get(table)
+        if row_class is None:
+            # Only reachable on the auto-detect path: `fundamentals` and
+            # `insiders` rows describe the same name in a plan that carries
+            # no prices, so they are not security-master rows here.
+            return None
+        ticker = str(self._need(row, "ticker", "tickers"))
+        previous = seen_class_by_ticker.setdefault(ticker, row_class)
+        if previous != row_class:
+            raise PricePlaneSchemaError(
+                f"tickers has {ticker!r} in both the {previous!r} and "
+                f"{row_class!r} price tables; this adapter will not pick one. "
+                f"Pass asset_class= explicitly to say which you mean."
+            )
+        context = f"tickers {ticker}"
+        uid = f"{SOURCE}:{self._need(row, 'permaticker', context)}"
+        exchange = str(row.get("exchange") or "").strip().upper()
+        delisted = str(self._need(row, "isdelisted", context)).strip().upper() == "Y"
+        last_price = self._optional_date(row, "lastpricedate")
+        # Seed the cache before `delisting_reason` reaches back through
+        # `corporate_actions` for a uid: that round trip is what would
+        # otherwise recurse into this method.
+        self._resolved[ticker] = (uid, row_class)
+        return SecurityMasterRow(
+            security_uid=uid,
+            ticker=ticker,
+            source=self.source,
+            asset_class=row_class,
+            name=str(row.get("name") or "") or None,
+            exchange=exchange or None,
+            venue=VENUE_BY_EXCHANGE.get(exchange, "other" if exchange else "unknown"),
+            ticker_valid_from=self._optional_date(row, "firstpricedate"),
+            ticker_valid_to=last_price if delisted else None,
+            listing_date=self._optional_date(row, "firstpricedate"),
+            # Sharadar has no delisting-date column; the last price
+            # observation is the best available proxy and is labelled as
+            # one in docs/PRICE_PLANE.md.
+            delisting_date=last_price if delisted else None,
+            delisting_reason=delisting_reason(ticker) if delisted else "unknown",
+        )
+
+    def iter_security_master_bulk(
+        self,
+        zip_path: str | Path,
+        *,
+        asset_class: str | None = ASSET_CLASS_EQUITY,
+        actions_by_ticker: Mapping[str, Sequence[CorporateActionRecord]] | None = None,
+    ) -> Iterator[SecurityMasterRow]:
+        """`security_master`, but from the `tickers` bulk snapshot: one request.
+
+        `docs/vendors/sharadar.md` line 50: "`tickers` and `descriptions` only
+        publish a full snapshot; `years=5` and `years=10` still download that
+        file." So `bulk_download(TABLE_TICKERS, ...)` is one HTTP request that
+        carries every row the per-request path would otherwise ask for 30
+        tickers at a time — roughly 470 requests for a whole-market backfill
+        once #98 made both vendor `ticker`-parameter limits (200 characters
+        *and* 30 tickers) correct. That request count is what returned
+        `HTTP 429 ... Request count quota exceeded. Slow down or use bulk
+        downloads for large extracts.` and exhausted the daily quota.
+
+        **The per-request `security_master` is not replaced.** One request
+        beats 470, but 470 beats a whole-market download when the caller wants
+        three tickers: `--tickers`, the delisting audit's resolver
+        (`data/prices/audit.py`) and `daily_bars`' own `_resolve` all still
+        take the slice path.
+
+        Rows are yielded in file order, streaming — one CSV row is held at a
+        time — rather than sorted like `security_master`'s return value, so a
+        whole-market snapshot never has to be materialised to be upserted.
+        `asset_class` filters client-side on the `table` column exactly as the
+        `table=` query parameter filters server-side; `None` is the same
+        auto-detect path, and still raises on a name in both price tables.
+
+        `actions_by_ticker` (`load_bulk_actions`' return value) supplies the
+        delisting reason for delisted names without an HTTP `actions` slice
+        each. Without it this falls back to `self.delisting_reason`, which is
+        one request per delisted name — on a whole-market snapshot that is
+        thousands of requests and defeats the purpose of being here.
+        """
+        if asset_class is not None and asset_class not in ASSET_CLASSES:
+            raise PricePlaneConfigError(
+                f"asset_class must be one of {ASSET_CLASSES} or None for "
+                f"auto-detect, got {asset_class!r}"
+            )
+        wanted_table = TABLE_BY_ASSET_CLASS[asset_class] if asset_class is not None else None
+
+        if actions_by_ticker is None:
+            resolve_reason: Callable[[str], str] = self.delisting_reason
+        else:
+            def resolve_reason(ticker: str) -> str:
+                return self._delisting_reason_from_actions(actions_by_ticker.get(ticker, ()))
+
+        seen_class_by_ticker: dict[str, str] = {}
+        for row in self._iter_bulk_csv(zip_path, TICKERS_COLUMNS):
+            if wanted_table is not None:
+                if str(row.get("table") or "").strip().lower() != wanted_table:
+                    continue
+            master_row = self._master_row_from_tickers_row(
+                row, seen_class_by_ticker, resolve_reason,
+            )
+            if master_row is not None:
+                yield master_row
 
     #: See `data/prices/audit.py`'s resolver: `find_by_company_name` below
     #: performs a real search, so a miss there is informative (`unresolved`),
@@ -1142,8 +1257,26 @@ follow_redirects=...)` returning a context manager whose `__enter__` gives
         TICKERS has no reason field, so this is the only vendor-side signal,
         and it is unverified (see module docstring). `unknown` is the honest
         default and the one Spec N §4.4 treats as censored.
+
+        One HTTP `actions` slice per call. The bulk master path
+        (`iter_security_master_bulk`) reads the same vendor rows out of an
+        already-downloaded `actions` zip and hands them to
+        `_delisting_reason_from_actions` — the same mapping, no request.
         """
-        for action in reversed(self.corporate_actions(ticker)):
+        return self._delisting_reason_from_actions(self.corporate_actions(ticker))
+
+    @staticmethod
+    def _delisting_reason_from_actions(
+        actions: Sequence[CorporateActionRecord],
+    ) -> str:
+        """Last mappable `actions` row wins; `unknown` when none maps.
+
+        Both `delisting_reason` paths end here, so the reason a name gets does
+        not depend on whether its actions arrived over a slice request or in a
+        bulk zip. Both callers pass rows sorted by `(ex_date, action_type)` —
+        `corporate_actions` and `load_bulk_actions` both sort that way.
+        """
+        for action in reversed(tuple(actions)):
             mapped = DELISTING_REASON_BY_ACTION.get(action.action_type)
             if mapped is not None:
                 return mapped

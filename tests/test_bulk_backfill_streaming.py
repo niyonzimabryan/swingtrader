@@ -49,7 +49,7 @@ from data.prices import store
 from data.prices.base import PricePlaneSchemaError
 from data.prices.bulk_stream import BulkStagingStore
 from data.prices.derived import check_reconstruction, with_derived_series
-from data.prices.sharadar import STOCKS_COLUMNS, SharadarPricePlane
+from data.prices.sharadar import STOCKS_COLUMNS, TICKERS_COLUMNS, SharadarPricePlane
 from tests.dbfixture import init_test_db
 
 
@@ -132,12 +132,29 @@ _ACTIONS_CSV = (
 )
 
 
+def _tickers_csv(rows=None):
+    """The same rows the stub serves over HTTP, as the `tickers` bulk zip's CSV.
+
+    `backfill_bulk` resolves the security master from that one snapshot rather
+    than 30 tickers per request (the ~470 requests that earned a 429), so the
+    stub has to be able to serve it. Both fixtures come from `_tickers_rows`,
+    which is the point: the two master paths must agree.
+    """
+    rows = _tickers_rows() if rows is None else rows
+    columns = TICKERS_COLUMNS
+    lines = [",".join(columns)]
+    for row in rows:
+        lines.append(",".join(str(row.get(c, "")).replace(",", " ") for c in columns))
+    return "\n".join(lines) + "\n"
+
+
 def _stub_plane(stocks_csv=_STOCKS_CSV, actions_csv=_ACTIONS_CSV):
     client = _StubClient(
         tables={"tickers": _tickers_rows(), "actions": []},
         streams={
             "stocks": _StubStream(content=_zip_bytes("SHARADAR_STOCKS.csv", stocks_csv)),
             "actions": _StubStream(content=_zip_bytes("SHARADAR_ACTIONS.csv", actions_csv)),
+            "tickers": _StubStream(content=_zip_bytes("SHARADAR_TICKERS.csv", _tickers_csv())),
         },
     )
     return SharadarPricePlane(api_key="test-key", client=client)

@@ -29,6 +29,30 @@ not get wrong:
   `docs/PRICE_PLANE.md` has the fund adjustment semantics, which are the one
   place the two paths genuinely differ.
 
+**Three limits Sharadar enforces and does not document below.** Each was
+knowable only from the live refusal, and each was only reachable after the
+previous one was fixed — observed running `--bulk years=10` against production
+on 2026-09-14:
+
+1. `ticker` is capped at **200 characters** of the joined parameter:
+   `Invalid ticker parameter: ticker exceeds maximum length of 200 characters.`
+   (`scripts/price_backfill.MASTER_TICKER_PARAM_MAX_CHARS`, budgeted at 190.)
+2. `ticker` is *also* capped at **30 tickers** per request:
+   `Too many tickers: ticker accepts at most 30 tickers per request (got 34).`
+   The vendor validates in stages and reports the count only once the length
+   is legal, so neither limit is visible from the other's error message.
+   (`MASTER_TICKER_PARAM_MAX_COUNT`.)
+3. There is a **daily request-count quota**, and honouring 1 and 2 is what
+   runs into it: `HTTP 429 ... Request count quota exceeded. Slow down or use
+   bulk downloads for large extracts.` A whole-market master lookup at 30
+   tickers a request is ~470 requests, plus one `actions` slice per delisted
+   name. The fix is the one the message names — the `tickers` bulk snapshot
+   (line 50 below: it "only publishes a full snapshot", so `years=` just
+   downloads that file), read by
+   `SharadarPricePlane.iter_security_master_bulk`. The numeric size of the
+   quota is not published and is not known here; only that ~470 + per-delisted
+   requests in one run exceeds it.
+
 ---
 
 # Sharadar
