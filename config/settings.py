@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     robinhood_max_order_notional: float = 5.0
     robinhood_max_daily_notional: float = 10.0
     robinhood_max_open_positions: int = 3
+    # Owner ruling 2026-09-13: set false to run Robinhood uncapped, so the
+    # account balance is the binding limit rather than the constants above.
+    # Only the notional/position-count ceilings are lifted; the allowed/blocked
+    # symbol lists and the long-only direction check always apply.
+    robinhood_notional_caps_enabled: bool = True
     robinhood_allow_fractional: bool = True
     robinhood_allow_options: bool = False
     robinhood_allowed_symbols: str = ""

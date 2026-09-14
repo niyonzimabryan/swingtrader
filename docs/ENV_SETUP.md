@@ -244,7 +244,19 @@ To reach a **live** state — only after the §6 live probe has passed:
 
 - Additionally `ALLOW_LIVE_TRADING=true` and `EXECUTION_MODE=live`. Both are
   required on top of the flag; absence or invalidity of either never means live.
-- Fund the Agentic account by hand; `ROBINHOOD_ACCOUNT_BUDGET` caps it in code.
+- Fund the Agentic account by hand. The caps that actually bind in code are
+  `ROBINHOOD_MAX_ORDER_NOTIONAL` (per order, `5`), `ROBINHOOD_MAX_DAILY_NOTIONAL`
+  (`10`) and `ROBINHOOD_MAX_OPEN_POSITIONS` (`3`), all enforced in
+  `execution/order_manager.py` and only for `robinhood` — paper and Alpaca have
+  never been subject to them. `ROBINHOOD_ACCOUNT_BUDGET` is read nowhere and
+  caps nothing; fund the account to the amount you are willing to lose.
+- `ROBINHOOD_NOTIONAL_CAPS_ENABLED` (default `true`) turns those three caps off
+  when set to `false` — owner ruling 2026-09-13, so the account balance is the
+  binding limit rather than the constants. What stays enforced either way:
+  `ROBINHOOD_ALLOWED_SYMBOLS` / `ROBINHOOD_BLOCKED_SYMBOLS`, the long-only
+  direction check, and the human approval step — which, with the caps off, is
+  the remaining control on order size. Every order built with the caps off logs
+  `robinhood_notional_caps_disabled` at WARNING.
 - Confirm the kill switch is off: `/live_kill off` (it is a persistent database
   row and survives restart; `/live_kill on` blocks approval-to-placement).
 

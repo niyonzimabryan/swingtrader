@@ -288,7 +288,15 @@ class OrderManager:
             order_type = str(getattr(self.settings, "robinhood_order_type", "market")).lower()
             side = "buy"
             requested = self._desired_notional(trade_params, shares, entry_price)
-            requested = min(requested, float(getattr(self.settings, "robinhood_max_order_notional", requested)))
+            if self._robinhood_caps_enabled():
+                requested = min(requested, float(getattr(self.settings, "robinhood_max_order_notional", requested)))
+            else:
+                log.warning(
+                    "robinhood_notional_caps_disabled",
+                    ticker=ticker,
+                    notional=round(requested, 2),
+                    detail="ROBINHOOD_NOTIONAL_CAPS_ENABLED=false: per-order, daily and open-position caps are not enforced",
+                )
             if order_type == "market":
                 return BrokerOrderRequest(
                     symbol=ticker,
@@ -364,6 +372,12 @@ class OrderManager:
         if ticker.upper() in blocked_symbols:
             reasons.append(f"{ticker} is blocked by ROBINHOOD_BLOCKED_SYMBOLS.")
 
+        if not self._robinhood_caps_enabled():
+            # Owner ruling 2026-09-13: notional/position-count ceilings off.
+            # The symbol lists above and the long-only check in
+            # _build_order_request still apply; so does human approval.
+            return {"allowed": not reasons, "reasons": reasons, "request": request}
+
         max_positions = int(getattr(self.settings, "robinhood_max_open_positions", 3))
         if len(positions) >= max_positions and not any(p.get("ticker") == ticker.upper() for p in positions):
             reasons.append(f"Robinhood max open positions reached ({len(positions)}/{max_positions}).")
@@ -387,6 +401,14 @@ class OrderManager:
                 f"(${used_today:.2f} used + ${effective:.2f} new / ${daily_cap:.2f} cap)."
             )
         return {"allowed": not reasons, "reasons": reasons, "request": request}
+
+    def _robinhood_caps_enabled(self) -> bool:
+        """Whether the Robinhood notional/position-count caps are enforced.
+
+        Defaults to True, so a settings object that predates the flag keeps
+        today's behaviour.
+        """
+        return bool(getattr(self.settings, "robinhood_notional_caps_enabled", True))
 
     def _effective_notional(self, request: BrokerOrderRequest) -> float:
         """Real dollar exposure of an order: explicit dollar_amount, else
