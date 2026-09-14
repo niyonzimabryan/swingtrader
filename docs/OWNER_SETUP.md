@@ -491,8 +491,9 @@ DATABASE_URL="$POSTGRES_URL" python -m scripts.cohort_smoke     # Spec N §11: o
 `EXECUTION_MODE=paper` on the bot. `EXECUTION_MODE` is **not** `live` and
 `ALLOW_LIVE_TRADING` was left exactly as it was found.
 
-The proposal itself is yours to make: it arrives in Telegram as a card for you
-to approve, and an agent must not both propose and approve. From an attached
+The proposal itself is yours to make: it arrives as a card — in Telegram, in
+your inbox, or both — for you to approve, and an agent must not both propose and
+approve. From an attached
 client, `propose_order` with `ticker`, `entry`, `stop`, `risk_fraction` — and no
 quantity, because the execution service sizes it.
 
@@ -502,12 +503,10 @@ The card is sent by the **workspace** process, which is a separate process from
 the bot, so the workspace needs its own delivery credentials. There are two
 channels and they are not interchangeable.
 
-**Telegram is the only channel that can carry an approvable card**, because the
-callback you tap arrives in the *bot* process, which is the one polling
-Telegram. The workspace service therefore needs `TELEGRAM_BOT_TOKEN` and
-`TELEGRAM_CHAT_ID` too. Without them the workspace logs
-`proposal_card_channel_unconfigured` at startup and every `propose_order`
-creates a `proposed` row that nobody can approve. Sending messages does not
+**Telegram is the only channel that can carry an approval affordance** — a
+button you tap — because the callback arrives in the *bot* process, which is the
+one polling Telegram. If you want the tappable card, the workspace service needs
+`TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` too. Sending messages does not
 conflict with the bot's polling (only `getUpdates` is exclusive). Use Railway
 variable references so the values are not copied:
 
@@ -517,6 +516,16 @@ railway variables --service workspace --set 'TELEGRAM_BOT_TOKEN=${{swingtrader.T
 
 Then confirm the warning is gone from `railway logs --service workspace` after
 the redeploy.
+
+**But the button is not the only approval route**, and since the owner ruling of
+2026-09-13 it is not the one in use. With `WORKSPACE_OWNER_TOOLS_ENABLED=true`
+(§5a below, `docs/ENV_SETUP.md` §9a) you approve with `approve_order` in your
+coding-agent chat, and no Telegram credential is involved anywhere. That is what
+production runs today. So a workspace with email but no Telegram is a workspace
+whose cards carry no button — not one whose proposals are stuck: it logs
+`proposal_card_approval_route_mcp` at info, naming the route, and warns
+`proposal_card_not_approvable` only when the owner tools are off too, which is
+the case where there really is no way to approve.
 
 **Email is how you read it.** Since you do not use Telegram day to day, turn the
 email channel on and the same card arrives in your inbox as designed HTML, with

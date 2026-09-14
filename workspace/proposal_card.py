@@ -8,11 +8,11 @@ nothing but the credentials that are already in settings.
 
 Two channels now, both optional and independently configured:
 
-**Telegram** is unchanged and is still the only *approvable* surface. The same
-bot, the same chat, the same signed single-use callback data, reached over its
-HTTP API rather than through the in-process queue. The callback the owner taps
-still arrives at the bot process, which is the one polling Telegram, and is
-handled there (``bot/handlers/proposals.py``).
+**Telegram** is unchanged and is still the only channel that *carries* an
+approval affordance. The same bot, the same chat, the same signed single-use
+callback data, reached over its HTTP API rather than through the in-process
+queue. The callback the owner taps still arrives at the bot process, which is
+the one polling Telegram, and is handled there (``bot/handlers/proposals.py``).
 
 **Email** (``NOTIFY_EMAIL_ENABLED``) sends the same card as designed HTML with a
 link to the full page on this service. It carries **no** approval affordance and
@@ -21,9 +21,16 @@ read-only, and approval stays where it is signed, expiring, single-use and
 owner-bound. Turning email on therefore adds a way to *see* a proposal, never a
 way to release one.
 
+A channel is not the same thing as an approval *route*, and the two came apart
+on 2026-09-13. With ``WORKSPACE_OWNER_TOOLS_ENABLED`` on, the owner approves
+with the ``approve_order`` MCP owner tool in his coding-agent chat — no Telegram
+involved, the same signed, single-use, expiring, owner-bound reference, and
+still only a *recorded* decision that the runtime process acts on (Spec K §10,
+Spec L §10). So "no Telegram" no longer implies "nothing can be approved", and
+the startup warnings below are conditioned on the route, not just the channel.
+
 Registered in :func:`workspace.app` lifespan. With nothing configured the
-default log-only sender stays in place and a proposal simply cannot be approved,
-which is the safe direction.
+default log-only sender stays in place, which is the safe direction.
 """
 
 from __future__ import annotations
@@ -113,8 +120,7 @@ def register_if_configured(settings, *, session_factory=None) -> list[str]:
 
     Idempotent and safe to call at every workspace startup. With the Phase 6
     flag off, or nothing configured, it leaves the log-only default in place and
-    returns ``[]`` — and a proposal then cannot be approved, which is the safe
-    direction.
+    returns ``[]`` — the card is then only logged, which is the safe direction.
     """
     from portfolio import approvals
 
@@ -126,6 +132,7 @@ def register_if_configured(settings, *, session_factory=None) -> list[str]:
 
     token = (getattr(settings, "telegram_bot_token", "") or "").strip()
     chat_id = (getattr(settings, "telegram_chat_id", "") or "").strip()
+    owner_tools = bool(getattr(settings, "workspace_owner_tools_enabled", False))
     if token and chat_id:
         senders.append(TelegramCardSender(bot_token=token, chat_id=chat_id))
         names.append("telegram")
@@ -147,26 +154,53 @@ def register_if_configured(settings, *, session_factory=None) -> list[str]:
         log.warning(
             "proposal_card_channel_unconfigured",
             missing=",".join(missing),
+            approval_route="mcp" if owner_tools else "none",
             note=(
                 "PHASE6_EXECUTION_ENABLED is on but no approval-card channel is "
-                "configured, so cards will only be logged and no proposal can be "
-                "approved. Unset: " + ", ".join(missing) + ". Telegram is the only "
-                "channel that can carry an approvable card; email is a second way "
-                "to see one, never a second way to release one."
+                "configured, so cards will only be logged. Unset: "
+                + ", ".join(missing)
+                + ". Telegram is the only channel that can carry an approval "
+                "affordance; email is a second way to see a card, never a second "
+                "way to release one."
+                + (
+                    " WORKSPACE_OWNER_TOOLS_ENABLED is on, so a proposal can "
+                    "still be read with proposals_pending and approved with "
+                    "approve_order over MCP — but nothing will reach you "
+                    "unprompted."
+                    if owner_tools
+                    else " No proposal can be approved: there is no delivered "
+                    "card and no MCP owner tool."
+                )
             ),
         )
         return []
 
     if not (token and chat_id):
-        log.warning(
-            "proposal_card_not_approvable",
-            note=(
-                "email is configured but Telegram is not, so cards are delivered "
-                "and nothing can be approved: the approval callback arrives on "
-                "Telegram, in the bot process. Set TELEGRAM_BOT_TOKEN and "
-                "TELEGRAM_CHAT_ID to make a proposal approvable."
-            ),
-        )
+        if owner_tools:
+            log.info(
+                "proposal_card_approval_route_mcp",
+                approval_route="mcp",
+                note=(
+                    "the workspace has no Telegram credentials, so cards carry no "
+                    "button; approval is the approve_order MCP owner tool in the "
+                    "owner's coding-agent chat (Spec K §10). Nothing else about "
+                    "the boundary changes: approve_order records a decision and "
+                    "places nothing."
+                ),
+            )
+        else:
+            log.warning(
+                "proposal_card_not_approvable",
+                approval_route="none",
+                note=(
+                    "a card channel is configured but no approval route is: the "
+                    "workspace has no Telegram credentials, so the card carries no "
+                    "callback, and WORKSPACE_OWNER_TOOLS_ENABLED is off, so there "
+                    "is no approve_order tool either. Either set "
+                    "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID, or set "
+                    "WORKSPACE_OWNER_TOOLS_ENABLED=true to approve over MCP."
+                ),
+            )
 
     approvals.register_card_sender(
         senders[0] if len(senders) == 1 else FanOutCardSender(senders)

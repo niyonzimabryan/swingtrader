@@ -73,7 +73,7 @@ read to build the URL; the workspace does not use it to decide what to serve.
 |---|---|---|
 | false | unset | Nothing is delivered. `notify_no_channel` is logged per message. |
 | false | set | Telegram only — today's behaviour, unchanged. |
-| true (fully configured) | unset | Email only. Nothing an email carries can approve; approval is the `approve_order` MCP owner tool (Spec K §10). The workspace logs `proposal_card_not_approvable` when *it* has no Telegram channel, which is about the card, not about whether you can decide. |
+| true (fully configured) | unset | Email only. Nothing an email carries can approve; approval is the `approve_order` MCP owner tool (Spec K §10). With `WORKSPACE_OWNER_TOOLS_ENABLED=true` the workspace says so at startup with `proposal_card_approval_route_mcp` at info; with it off there is no route at all and `proposal_card_not_approvable` is a warning naming both remedies. |
 | true (fully configured) | set | Both. Telegram carries the approvable card; email carries the designed one plus the link. |
 | true, something missing | either | `notify_email_channel_unconfigured` names the missing variable; Telegram still works if set. |
 
