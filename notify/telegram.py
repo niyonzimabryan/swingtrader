@@ -17,6 +17,9 @@ Two shapes of Telegram sender existed before this package, and both stay:
 Both write to ``notifications_sent`` so a Telegram delivery is as visible in the
 log as an email one, and both swallow every exception.
 
+``TelegramChannel``'s transport is injected for the same reason Resend's is, and
+under the test suite :mod:`notify.testguard` refuses to supply the live default.
+
 **The inline keyboard.** ``Notification.detail["telegram"]`` is merged over the
 payload, so an approvable card carries its ``reply_markup`` there while a page
 or a digest carries none. That is what lets one registry deliver both without
@@ -25,7 +28,7 @@ the approval callback leaking into the generic path.
 
 from __future__ import annotations
 
-from notify import store
+from notify import store, testguard
 from notify.channel import Notification
 from utils.logger import get_logger
 
@@ -86,7 +89,7 @@ class TelegramChannel:
     ):
         self.bot_token = str(bot_token or "")
         self.chat_id = str(chat_id or "")
-        self.transport = transport or _httpx_transport
+        self.transport = testguard.resolve_transport(self.name, transport, _httpx_transport)
         self.timeout = float(timeout)
         self.session_factory = session_factory
         self.api_base = api_base

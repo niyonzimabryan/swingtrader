@@ -11,7 +11,10 @@ request is four keys; an SDK would add a package, a version pin, and a second
 retry policy to reason about, in exchange for nothing.
 
 The transport is injected (``transport=``) so the tests can assert on the exact
-request body without a network. The default posts with ``httpx``.
+request body without a network. The default posts with ``httpx`` — and under
+the test suite :mod:`notify.testguard` refuses to hand out that default at all,
+because on 2026-09-13 it was handed out inside the production container and
+mailed twelve fixture proposals to a real inbox.
 
 **Fail closed, and never raise.** Every failure path — no key, no recipient, a
 4xx, a timeout, a malformed response — logs, writes a ``failed`` row to
@@ -24,7 +27,7 @@ from __future__ import annotations
 import base64
 import os
 
-from notify import store
+from notify import store, testguard
 from notify.channel import Notification
 from utils.logger import get_logger
 
@@ -96,7 +99,7 @@ class ResendChannel:
         self.api_key = str(api_key or "")
         self.sender = str(sender or "")
         self.recipients = parse_recipients(recipients)
-        self.transport = transport or _httpx_transport
+        self.transport = testguard.resolve_transport(self.name, transport, _httpx_transport)
         self.timeout = float(timeout)
         self.session_factory = session_factory
         self.api_url = api_url

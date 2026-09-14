@@ -245,7 +245,9 @@ real message, so it gets a named log line (`notify_email_channel_unconfigured`,
 1. Write a class in `notify/` with `name: str` and
    `send(notification) -> bool`. It must **never raise** and must write its
    attempt through `notify.store.record_send`. Take the transport as a
-   constructor argument so it can be tested without a network.
+   constructor argument so it can be tested without a network, and resolve it
+   with `notify.testguard.resolve_transport(self.name, transport, <live>)` so
+   the suite cannot build a channel that reaches your provider — see §9.
 2. Add its flag and credentials to `config/settings.py`, `.env.example` and
    §2 above. Default off.
 3. Build it in `notify.registry.configured_channels`, and log a named warning
@@ -277,3 +279,58 @@ real message, so it gets a named log line (`notify_email_channel_unconfigured`,
 - **Nothing here is scheduled.** Delivery happens on the path that produced the
   thing being reported, which keeps AGENTS.md §1.4 intact: no scheduled job in
   this package needs a model, because no job in this package needs one.
+
+## 9. Testing: the suite cannot send, and that is enforced
+
+**Never run the test suite in an environment that holds live delivery
+credentials.** Not the production container, not a shell with a populated
+`.env` on the path, not a Railway `run`.
+
+This is written down because it happened. On **2026-09-13** the full suite was
+run with `python -m unittest discover -s tests -p "test_*.py"` inside the
+production bot container, whose environment carries a live `RESEND_API_KEY`,
+`PAGER_EMAIL_FROM`, `PAGER_EMAIL_TO`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+and `NOTIFY_EMAIL_ENABLED=true`. The notification tests built real channels and
+took the real send path: **12 real emails and Telegram messages** went to the
+owner's personal inbox, carrying test-fixture trade proposals with subjects
+like `[approval needed] NVDA — proposal 1`. Nothing was written to production —
+the tests use their own throwaway database — but the database was the only
+thing that was sandboxed. The credentials were not.
+
+`notify/testguard.py` is the fix, armed once in `tests/__init__.py`, which is
+the only module every run imports (the suite is unittest; there is no
+`conftest.py` and a pytest one would not run). Three layers:
+
+1. **Construction refuses.** `ResendChannel` and `TelegramChannel` resolve
+   their transport through `testguard.resolve_transport`. Under the suite, a
+   channel that would use the real `httpx` transport raises
+   `LiveSenderRefused` with a message naming this incident. Passing the live
+   transport explicitly is treated as the same request.
+2. **An explicit opt-in for tests that need channel objects.**
+   `testguard.allow_inert_channels()` permits construction and substitutes a
+   transport that refuses at send time. It is for assertions about *which*
+   channels the registry builds — it never permits delivery. A test that
+   asserts what goes on the wire injects `tests.notifyfixture.RecordingTransport`
+   instead, as every notification test already does.
+3. **The credentials are blanked.** `testguard.neutralise_environment()` sets
+   all six variables to neutral values in `os.environ` for the test process, so
+   an unanticipated code path finds nothing to authenticate with. It is called
+   *after* `config.settings` is imported, because that module's
+   `load_dotenv(override=True)` would otherwise copy `.env` back over the
+   scrub; environment variables outrank pydantic-settings' `env_file`, so the
+   blanks then win for every `Settings()` the suite builds.
+
+`LiveSenderRefused` derives from `BaseException`, not `Exception`, and that is
+load-bearing. Every `send` path here — plus `registry.broadcast` and
+`portfolio.paging.send_card` — catches `Exception` and turns it into a logged
+`False`, because a channel must never raise into the row it was reporting. A
+guard that raised `Exception` would be swallowed into a silent non-delivery,
+which is exactly the failure that hides a test believing it asserted a
+delivery. As a `BaseException` it passes through all of them untouched, with no
+edit to any handler, and `unittest` reports it as a loud test error.
+
+`CallableChannel` is not guarded: it has no transport of its own and is handed
+the bot's in-process queue, which is injected at every call site.
+
+CI has no production secrets, so none of this changes what CI does. It changes
+what happens when the suite is run somewhere it should not be.

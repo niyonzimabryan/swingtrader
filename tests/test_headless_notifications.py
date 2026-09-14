@@ -24,7 +24,7 @@ from unittest import mock
 
 from bot.notifications import NotificationManager, NotifySink, TelegramSink
 from database.db import get_session
-from notify import registry
+from notify import registry, testguard
 from notify.channel import KIND_ALERT, KIND_SCAN_MEMO
 from tests import notifyfixture as nf
 from tests.dbfixture import init_test_db
@@ -144,7 +144,13 @@ class TelegramModeTests(ManagerTestCase):
         for name in sorted(CALLS):
             with self.subTest(method=name):
                 manager = self.manager()
-                self.call(manager, name)
+                # `NotificationManager.email_card` asks the registry for the
+                # email channels, and `configured_channels` builds every
+                # configured channel before filtering — so with Telegram
+                # configured it constructs a Telegram channel here and throws
+                # it away. Inert, because this asserts the queue, not delivery.
+                with testguard.allow_inert_channels():
+                    self.call(manager, name)
                 self.assertEqual(
                     len(manager.mq.sent), 1, f"{name} sent {manager.mq.sent}"
                 )
@@ -323,12 +329,12 @@ class ChannelSelectionTests(unittest.TestCase):
         settings = nf.email_settings(
             telegram_bot_token=nf.FAKE_TELEGRAM_TOKEN, telegram_chat_id=nf.FAKE_CHAT_ID
         )
-        self.assertEqual(
-            [c.name for c in registry.configured_channels(settings)], ["email", "telegram"]
-        )
-        self.assertEqual(
-            [c.name for c in registry.non_telegram_channels(settings)], ["email"]
-        )
+        # Inert: this asserts which channels the registry builds, not delivery.
+        with testguard.allow_inert_channels():
+            configured = [c.name for c in registry.configured_channels(settings)]
+            headless = [c.name for c in registry.non_telegram_channels(settings)]
+        self.assertEqual(configured, ["email", "telegram"])
+        self.assertEqual(headless, ["email"])
 
     def test_nothing_configured_is_an_empty_list_not_a_failure(self):
         self.assertEqual(registry.non_telegram_channels(nf.FakeSettings()), [])

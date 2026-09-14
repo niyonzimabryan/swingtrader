@@ -23,6 +23,8 @@ import sys
 from contextlib import ExitStack, contextmanager
 from unittest import mock
 
+from notify import testguard
+
 
 class FakeSettings:
     """Whatever ``main()`` reads, with ``""`` for anything not named.
@@ -261,6 +263,13 @@ def patched_main(settings, *, patch_telegram: bool = True):
 
     with ExitStack() as stack:
         patch = stack.enter_context
+        # `main()` builds its delivery channels from the settings it is handed,
+        # and the live sender guard refuses one that would reach a real API.
+        # This harness is about *what main() wires up*, never about delivery —
+        # this module's header says nothing here touches a network, and before
+        # the guard existed that claim was not quite true. Inert: the channel
+        # objects are real, their transports refuse.
+        patch(testguard.allow_inert_channels())
         patch(mock.patch.object(main_module, "Settings", lambda: settings))
         patch(mock.patch.object(main_module, "_init_langfuse", lambda s: None))
         patch(mock.patch.object(main_module, "init_db", lambda url: None))

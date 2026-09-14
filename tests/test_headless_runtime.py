@@ -28,6 +28,7 @@ from tests.headlessfixture import (
     patched_main,
     run_main,
 )
+from notify import testguard
 from tests.notifyfixture import FAKE_CARD_SECRET, FAKE_RESEND_KEY
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -321,7 +322,9 @@ class ChannelReportingTests(unittest.TestCase):
             **email_overrides(),
         )
 
-        self.assertEqual(main_module._channel_names(settings, True), ["telegram", "email"])
+        with testguard.allow_inert_channels():  # names, not delivery
+            names = main_module._channel_names(settings, True)
+        self.assertEqual(names, ["telegram", "email"])
 
     def test_headless_never_names_telegram_even_with_credentials_set(self):
         import main as main_module
@@ -333,7 +336,9 @@ class ChannelReportingTests(unittest.TestCase):
             **email_overrides(),
         )
 
-        self.assertEqual(main_module._channel_names(settings, False), ["email"])
+        with testguard.allow_inert_channels():  # names, not delivery
+            names = main_module._channel_names(settings, False)
+        self.assertEqual(names, ["email"])
 
     def test_headless_with_nothing_configured_reports_no_channel(self):
         import main as main_module
