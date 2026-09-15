@@ -1,7 +1,7 @@
 {
-  "fetched_at_utc": "2026-09-08T23:46:20.413578+00:00",
+  "fetched_at_utc": "2026-09-14T02:12:38.775985+00:00",
   "server": "https://agent.robinhood.com/mcp/trading",
-  "tool_count": 73,
+  "tool_count": 75,
   "tools": [
     {
       "annotations": null,
@@ -7971,6 +7971,195 @@
         "readOnlyHint": true,
         "title": null
       },
+      "description": "List the market-data datapoints available for building raw expressions: functions (with signatures) and fields, each with a category and description. Expressions serve two purposes \u2014 filters (screen on the expression's value) and columns (display it in results) \u2014 on preview_scan, create_scan and update_scan_config. Call this before constructing one; do not guess datapoint names or signatures.\n\nFor filters, use expressions only for screens no enum filter covers: check get_scanner_filter_specs first, and prefer an enum filter_type whenever one fits. For columns, a standard column referenced by display_name alone needs no expression at all.\n\nScoping a scan to a set of instruments is done here, not with an enum filter: the descriptive category's symbol field restricts a scan to named tickers or to an index's members. See the guide for the exact predicates.\n\nRequires a category, since the full catalog is too large to return at once. Pass \"technical\", \"price_volume\", \"fundamental\", \"options\", \"volatility\", \"quote\" or \"descriptive\"; the response lists every category with a description so you can pick a different one if needed.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "description": "Which part of the catalog to return. One of: technical (chart studies - rsi, macd, adx, bollinger, pivots), price_volume (prices, changes, moving averages, volume), fundamental (marketCap, peRatio, eps, dividends, sector, earnings dates), options (options volume and open interest on the underlying), volatility (implied and realized volatility, IV rank), quote (bid/ask, sizes, spread), descriptive (symbol, type, listing, date arithmetic). Also accepts \"function\" or \"field\" to slice by kind instead, or any category name from a previous response. Required - the full catalog is too large to return at once.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category"
+        ],
+        "type": "object"
+      },
+      "name": "get_scanner_datapoints",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "description": "Tool-specific result payload; see the inner properties for fields.",
+            "properties": {
+              "argument_types": {
+                "description": "Legal values for the named argument types that appear in signatures. A signature says candlePeriod: CandlePeriod; this says what CandlePeriod may be.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "argument_names": {
+                      "description": "Argument names that take this type, e.g. [\"candlePeriod\"].",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    },
+                    "name": {
+                      "description": "Type name as it appears in a signature, e.g. \"CandlePeriod\".",
+                      "type": "string"
+                    },
+                    "note": {
+                      "description": "Guidance for arguments that are easy to confuse \u2014 read this before choosing a value.",
+                      "type": "string"
+                    },
+                    "values": {
+                      "description": "The only legal values. Pass one of these verbatim (quoted inside the expression); anything else is rejected upstream.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "argument_names",
+                    "values"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "categories": {
+                "description": "Every category in the catalog, always returned in full so a wrong category can be corrected without another failed call.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "aliases": {
+                      "description": "Values accepted for the category parameter to select this category.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    },
+                    "datapoint_count": {
+                      "description": "How many datapoints this category holds \u2014 an indication of how large the response will be.",
+                      "maximum": 2147483647,
+                      "minimum": -2147483648,
+                      "type": "integer"
+                    },
+                    "description": {
+                      "description": "What this category covers, naming representative datapoints in it.",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Category name as it appears on a datapoint.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "description",
+                    "datapoint_count",
+                    "aliases"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "datapoints": {
+                "description": "The datapoints in the requested category. Empty when the category matched nothing \u2014 read categories and call again.",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "description": {
+                      "description": "What the datapoint computes.",
+                      "type": "string"
+                    },
+                    "examples": {
+                      "description": "Worked expressions using this datapoint, safe to copy and adapt. Present on a minority of datapoints.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    },
+                    "kind": {
+                      "description": "\"function\" takes arguments and must be called with parentheses; \"field\" is referenced bare.",
+                      "type": "string"
+                    },
+                    "name": {
+                      "description": "Identifier to use inside an expression, e.g. \"rsi\", \"fundamental.marketCap\". Case-sensitive.",
+                      "type": "string"
+                    },
+                    "signature": {
+                      "description": "The callable form to copy, e.g. rsi(candleCount: number, candlePeriod: CandlePeriod, session: Session = \"all\"): number. An argument type in UpperCamelCase (CandlePeriod, TimePeriod, Session) has a fixed set of legal values listed in argument_types; a value not in that set is rejected by the market-data provider. A trailing = shows the default, which may be omitted from the call.",
+                      "type": "string"
+                    },
+                    "value_type": {
+                      "description": "Type the datapoint evaluates to: \"number\" or \"string\". Compare a number datapoint against numeric values only.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "kind",
+                    "signature",
+                    "description",
+                    "value_type"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              }
+            },
+            "required": [
+              "datapoints",
+              "categories",
+              "argument_types"
+            ],
+            "type": "object"
+          },
+          "guide": {
+            "description": "Build an expression by copying a signature and filling its arguments: rsi(candleCount: number, candlePeriod: CandlePeriod, session: Session = \"all\") becomes rsi(candleCount=14, candlePeriod=\"1d\", session=\"all\"). Arguments are passed by name, string values are quoted, and an argument shown with a default may be omitted.\n\nAn argument type in UpperCamelCase has a fixed value set in argument_types \u2014 using a value outside it fails upstream, so check there rather than inferring. Read the note on CandlePeriod and TimePeriod before choosing: candlePeriod is the size of each candle, timePeriod is how far back to look, and confusing them silently changes what the screen measures.\n\nSome screens are composed rather than looked up: comparing two datapoints puts the whole comparison in the expression with predicate \"=\" and values [\"True\"] \u2014 \"put volume exceeds call volume\" is optionsPutDayVolume > optionsCallDayVolume, \"price above its average\" is tradeAllDay.price > closeAvg(...). Prefer that boolean form over dividing (optionsPutDayVolume / optionsCallDayVolume > 1): a division silently drops every instrument whose denominator is zero, which here are the most put-skewed names \u2014 the ones the screen exists to find. Composition is also the fallback when an enum filter covers the screen but not your variant \u2014 e.g. relative volume has an enum filter (FILTER_TYPE_RELATIVE_VOLUME), so only compose dayVolume / volumeAvg(...) for a lookback missing from its supported_lengths.\n\nScoping the universe to specific instruments uses the symbol field with a LIST predicate rather than a comparison, and the expression is the bare word symbol:\n- named tickers \u2014 predicate ANY_OF, values the tickers (\"only AAPL and MSFT\" is expression symbol, predicate ANY_OF, values [\"AAPL\", \"MSFT\"]).\n- members of an index \u2014 predicate IN_LIST, values index CODES, not tickers (\"S&P 500 stocks\" is expression symbol, predicate IN_LIST, values [\"SP500\"]). Several codes union: [\"SP500\", \"NDX\"] means in either index.\nThe two predicates are not interchangeable, and mixing them up fails in opposite ways: IN_LIST with a ticker is rejected upstream (\"list name 'AAPL' does not exist\"), while ANY_OF with an index code returns zero rows and no error at all. Valid index codes: SP100, SP400, SP500, SP500_SecIndicies, SP500_SecIndustrIndicies, SP600, DJI, NDX, NDXT25, Russell1000, Russell2000, Russell3000, RussellMidcap, RussellMicrocap, HGX, HXC, OSX, RUF, SOX, UTY, XAU, S5C. There is no code for the Nasdaq Composite: \"COMP\" resolves upstream but collides with the Compound (COMP) crypto symbol, so avoid it. A user's own watchlist or positions cannot be used as a scope.\n\nThe same expressions work as result COLUMNS (the columns parameter of preview_scan, create_scan and update_scan_config): a column displays the expression's value without screening on it. A boolean-comparison filter reads best with its operands as columns (e.g. the put-exceeds-call screen showing both volumes); the division that is wrong as a filter is fine as a column, where a zero denominator only blanks a cell instead of dropping the row.\n\nAlways validate an expression with preview_scan before saving it to a scan.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "guide"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": null,
+        "idempotentHint": null,
+        "openWorldHint": null,
+        "readOnlyHint": true,
+        "title": null
+      },
       "description": "List every valid scanner filter type and how to use it. Call this before constructing filters for create_scan or update_scan_filters \u2014 do not guess filter_type names.\n\nThis tool takes no parameters.",
       "inputSchema": {
         "additionalProperties": false,
@@ -9154,6 +9343,10 @@
                         "description": "Asset class of this order: ASSET_CLASS_EQUITY, ASSET_CLASS_OPTION, or ASSET_CLASS_CRYPTO.",
                         "type": "string"
                       },
+                      "contingency_type": {
+                        "description": "Advanced-order contingency, e.g. 'oco'. Omitted for standalone orders.",
+                        "type": "string"
+                      },
                       "dollar_amount": {
                         "additionalProperties": false,
                         "description": "Notional dollar amount for a dollar-based order. Present for dollar-based orders; mutually exclusive with quantity.",
@@ -9247,7 +9440,7 @@
                         ]
                       },
                       "market_hours": {
-                        "description": "Which trading session the order is valid for, e.g. 'regular_hours', 'extended_hours', or 'all_day_hours'. Omitted when the upstream did not specify a session (e.g. a reconciled option order, whose placement snapshot carries no market-hours signal).",
+                        "description": "Which trading session the order is valid for, e.g. 'regular_hours', 'extended_hours', or 'all_day_hours'. Omitted when the upstream did not specify a session.",
                         "type": "string"
                       },
                       "option_type": {
@@ -9255,7 +9448,7 @@
                         "type": "string"
                       },
                       "order_type": {
-                        "description": "Order type, e.g. 'market', 'limit', 'stop_loss', or 'stop_limit'.",
+                        "description": "Order type, e.g. 'market', 'limit', 'stop_loss', or 'stop_limit'. Omitted for contingent orders.",
                         "type": "string"
                       },
                       "peg_type": {
@@ -9296,7 +9489,7 @@
                         "type": "string"
                       },
                       "side": {
-                        "description": "Order side, e.g. 'buy', 'sell', or 'sell_short'.",
+                        "description": "Order side, e.g. 'buy', 'sell', or 'sell_short'. Omitted for contingent orders.",
                         "type": "string"
                       },
                       "stop_price": {
@@ -9341,6 +9534,98 @@
                           "object"
                         ]
                       },
+                      "sub_orders": {
+                        "description": "The complete sub-order set for a contingent order.",
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "asset_class": {
+                              "description": "Asset class of this sub-order.",
+                              "type": "string"
+                            },
+                            "is_primary": {
+                              "description": "Whether this sub-order triggers the remaining contingent orders.",
+                              "type": "boolean"
+                            },
+                            "limit_price": {
+                              "additionalProperties": false,
+                              "description": "Limit price when the sub-order is limit-priced.",
+                              "properties": {
+                                "amount": {
+                                  "description": "Decimal monetary amount as a string, e.g. '150.25'. Not a number, to avoid float rounding.",
+                                  "type": "string"
+                                },
+                                "currency_code": {
+                                  "description": "Currency of the amount, e.g. 'USD'. Omitted when the upstream did not specify one.",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "amount"
+                              ],
+                              "type": [
+                                "null",
+                                "object"
+                              ]
+                            },
+                            "order_type": {
+                              "description": "Sub-order type, e.g. 'market' or 'limit'.",
+                              "type": "string"
+                            },
+                            "quantity": {
+                              "description": "Share quantity as a decimal string.",
+                              "type": "string"
+                            },
+                            "side": {
+                              "description": "Sub-order side, e.g. 'buy' or 'sell'.",
+                              "type": "string"
+                            },
+                            "stop_price": {
+                              "additionalProperties": false,
+                              "description": "Stop trigger price when the sub-order is stop-triggered.",
+                              "properties": {
+                                "amount": {
+                                  "description": "Decimal monetary amount as a string, e.g. '150.25'. Not a number, to avoid float rounding.",
+                                  "type": "string"
+                                },
+                                "currency_code": {
+                                  "description": "Currency of the amount, e.g. 'USD'. Omitted when the upstream did not specify one.",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "amount"
+                              ],
+                              "type": [
+                                "null",
+                                "object"
+                              ]
+                            },
+                            "time_in_force": {
+                              "description": "How long the sub-order stays active.",
+                              "type": "string"
+                            },
+                            "trigger": {
+                              "description": "What activates the sub-order: 'immediate' or 'stop'.",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "asset_class",
+                            "side",
+                            "quantity",
+                            "order_type",
+                            "trigger",
+                            "time_in_force",
+                            "is_primary"
+                          ],
+                          "type": "object"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      },
                       "symbol": {
                         "description": "Ticker symbol of the tradable, e.g. 'AAPL' for an equity or option underlying, or 'BTC-USD' for crypto.",
                         "type": "string"
@@ -9375,20 +9660,16 @@
                         ]
                       },
                       "time_in_force": {
-                        "description": "How long the order stays active, e.g. 'gfd' (good for day) or 'gtc' (good till canceled).",
+                        "description": "How long the order stays active, e.g. 'gfd' (good for day) or 'gtc' (good till canceled). Omitted for contingent orders.",
                         "type": "string"
                       },
                       "trigger": {
-                        "description": "What activates the order, e.g. 'immediate' or 'stop'.",
+                        "description": "What activates the order, e.g. 'immediate' or 'stop'. Omitted for contingent orders.",
                         "type": "string"
                       }
                     },
                     "required": [
-                      "asset_class",
-                      "side",
-                      "order_type",
-                      "time_in_force",
-                      "trigger"
+                      "asset_class"
                     ],
                     "type": [
                       "null",
@@ -9423,6 +9704,10 @@
                         "description": "Asset class of this order: ASSET_CLASS_EQUITY, ASSET_CLASS_OPTION, or ASSET_CLASS_CRYPTO.",
                         "type": "string"
                       },
+                      "contingency_type": {
+                        "description": "Advanced-order contingency, e.g. 'oco'. Omitted for standalone orders.",
+                        "type": "string"
+                      },
                       "dollar_amount": {
                         "additionalProperties": false,
                         "description": "Notional dollar amount for a dollar-based order. Present for dollar-based orders; mutually exclusive with quantity.",
@@ -9516,7 +9801,7 @@
                         ]
                       },
                       "market_hours": {
-                        "description": "Which trading session the order is valid for, e.g. 'regular_hours', 'extended_hours', or 'all_day_hours'. Omitted when the upstream did not specify a session (e.g. a reconciled option order, whose placement snapshot carries no market-hours signal).",
+                        "description": "Which trading session the order is valid for, e.g. 'regular_hours', 'extended_hours', or 'all_day_hours'. Omitted when the upstream did not specify a session.",
                         "type": "string"
                       },
                       "option_type": {
@@ -9524,7 +9809,7 @@
                         "type": "string"
                       },
                       "order_type": {
-                        "description": "Order type, e.g. 'market', 'limit', 'stop_loss', or 'stop_limit'.",
+                        "description": "Order type, e.g. 'market', 'limit', 'stop_loss', or 'stop_limit'. Omitted for contingent orders.",
                         "type": "string"
                       },
                       "peg_type": {
@@ -9565,7 +9850,7 @@
                         "type": "string"
                       },
                       "side": {
-                        "description": "Order side, e.g. 'buy', 'sell', or 'sell_short'.",
+                        "description": "Order side, e.g. 'buy', 'sell', or 'sell_short'. Omitted for contingent orders.",
                         "type": "string"
                       },
                       "stop_price": {
@@ -9610,6 +9895,98 @@
                           "object"
                         ]
                       },
+                      "sub_orders": {
+                        "description": "The complete sub-order set for a contingent order.",
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "asset_class": {
+                              "description": "Asset class of this sub-order.",
+                              "type": "string"
+                            },
+                            "is_primary": {
+                              "description": "Whether this sub-order triggers the remaining contingent orders.",
+                              "type": "boolean"
+                            },
+                            "limit_price": {
+                              "additionalProperties": false,
+                              "description": "Limit price when the sub-order is limit-priced.",
+                              "properties": {
+                                "amount": {
+                                  "description": "Decimal monetary amount as a string, e.g. '150.25'. Not a number, to avoid float rounding.",
+                                  "type": "string"
+                                },
+                                "currency_code": {
+                                  "description": "Currency of the amount, e.g. 'USD'. Omitted when the upstream did not specify one.",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "amount"
+                              ],
+                              "type": [
+                                "null",
+                                "object"
+                              ]
+                            },
+                            "order_type": {
+                              "description": "Sub-order type, e.g. 'market' or 'limit'.",
+                              "type": "string"
+                            },
+                            "quantity": {
+                              "description": "Share quantity as a decimal string.",
+                              "type": "string"
+                            },
+                            "side": {
+                              "description": "Sub-order side, e.g. 'buy' or 'sell'.",
+                              "type": "string"
+                            },
+                            "stop_price": {
+                              "additionalProperties": false,
+                              "description": "Stop trigger price when the sub-order is stop-triggered.",
+                              "properties": {
+                                "amount": {
+                                  "description": "Decimal monetary amount as a string, e.g. '150.25'. Not a number, to avoid float rounding.",
+                                  "type": "string"
+                                },
+                                "currency_code": {
+                                  "description": "Currency of the amount, e.g. 'USD'. Omitted when the upstream did not specify one.",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "amount"
+                              ],
+                              "type": [
+                                "null",
+                                "object"
+                              ]
+                            },
+                            "time_in_force": {
+                              "description": "How long the sub-order stays active.",
+                              "type": "string"
+                            },
+                            "trigger": {
+                              "description": "What activates the sub-order: 'immediate' or 'stop'.",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "asset_class",
+                            "side",
+                            "quantity",
+                            "order_type",
+                            "trigger",
+                            "time_in_force",
+                            "is_primary"
+                          ],
+                          "type": "object"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      },
                       "symbol": {
                         "description": "Ticker symbol of the tradable, e.g. 'AAPL' for an equity or option underlying, or 'BTC-USD' for crypto.",
                         "type": "string"
@@ -9644,20 +10021,16 @@
                         ]
                       },
                       "time_in_force": {
-                        "description": "How long the order stays active, e.g. 'gfd' (good for day) or 'gtc' (good till canceled).",
+                        "description": "How long the order stays active, e.g. 'gfd' (good for day) or 'gtc' (good till canceled). Omitted for contingent orders.",
                         "type": "string"
                       },
                       "trigger": {
-                        "description": "What activates the order, e.g. 'immediate' or 'stop'.",
+                        "description": "What activates the order, e.g. 'immediate' or 'stop'. Omitted for contingent orders.",
                         "type": "string"
                       }
                     },
                     "required": [
-                      "asset_class",
-                      "side",
-                      "order_type",
-                      "time_in_force",
-                      "trigger"
+                      "asset_class"
                     ],
                     "type": [
                       "null",
@@ -11106,6 +11479,264 @@
           },
           "guide": {
             "description": "This tool does NOT place the order \u2014 it returns a preview for the user to review. Present the preview as a table with exactly these rows, in this order: 1) side; 2) asset \u2014 symbol and pair, e.g. DOGE (DOGE-USD); 3) order type \u2014 ALWAYS the app's name: stop_loss = \"stop order\", stop_limit = \"stop limit order\"; never show the raw stop_loss/stop_limit values to the user; 4) quantity \u2014 always phrased as an amount of the asset (e.g. '0.001542 ETH'), never as 'shares'; for orders entered by quantity, the exact amount the user specified (for market and stop_loss label the per-unit price as estimated); for orders entered by dollar_amount, include the per-unit price (for market the response's price \u2014 the raw quote, the same price the app displays \u2014 with quantity derivation described under dollar_amount; the stop price for stop_loss, the limit price for limit/stop_limit) \u2014 label the quantity estimated for market and stop_loss, and exact for limit and stop_limit (derived deterministically from the limit price at placement); 5) limit price (limit and stop_limit orders only); 6) stop price (stop orders only); 7) notional entered (only when the resolved amount differs from what the user asked for); 8) time in force; 9) estimated fee \u2014 from estimated_fee, shown even when 0, with the fee_rate value appended verbatim in parentheses when present, e.g. \"$1.23 (0.5% maker)\" or \"$1.23 (0.35%)\"; when fee_rate is absent and fee_context is present, append the fee_context value verbatim in parentheses instead, e.g. \"$0 (asset not eligible for fee tiers)\" \u2014 never re-derive, re-label, or reword either parenthetical, and no parenthetical when both are absent; 10) estimated backup withholding \u2014 include this row ONLY when the order's tax_withholding is present, from tax_withholding.estimated_withholding_amount (the only amount a preview carries \u2014 it has no fills), labeled \"Estimated backup withholding\", with the tax_withholding.withholding_rate value appended verbatim in parentheses when present, e.g. \"$23.88 (24%)\"; never raise withholding at all when tax_withholding is absent; 11) estimated total cost or credit \u2014 from the order's net_rounded_estimated_notional, which is ALREADY net of both the fee in row 9 and the withholding in row 10, so present it as the bottom line and never subtract either row from it again; if it is absent, omit this row rather than substituting any other field as the total; label it plainly without qualifiers like \"(fee included)\"; ignore order.rounded_estimated_notional_with_estimated_fee, which is net of the fee only and will overstate a withholding-subject sell; a limit buy's final debit never exceeds it, a market buy's final debit is typically ~it with a worst case up to the collar more, a market sell's credit is typically ~it with a worst case up to the collar less, a stop order's fill notional is typically ~it with a worst case up to the collar worse; mention the collar sizing (see dollar_amount) only when the user asks why it is estimated; 12) routing. Directly below the table, add this line verbatim: \"You can switch between Market Maker Routing and Exchange Routing anytime in the Robinhood app under Settings \u2192 Crypto \u2192 Fee Tiers.\" \u2014 omit it only when the routing row is absent. When tax_withholding is present, add this sentence verbatim directly below the table: \"Your order will be subject to backup withholding. Please confirm your tax status at https://robinhood.com/tax-certification.\" \u2014 exactly as written, no rewording; omit it entirely when tax_withholding is absent. Identify the account by the crypto_account_number returned in the response, not by the brokerage account number the tool was called with. A request for a 'stop loss', 'stop order', or 'stop market' order is the stop_loss type \u2014 do not ask which stop type (a limit price given alongside the trigger makes it stop_limit); ask only when the phrasing names no type, e.g. a bare 'stop' or 'protect my position'. Then get explicit user confirmation before calling place_crypto_order. No order was created and no id was assigned; the response mirrors an order but is transient.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "guide"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": null,
+        "idempotentHint": null,
+        "openWorldHint": null,
+        "readOnlyHint": true,
+        "title": null
+      },
+      "description": "Run a filter set against live market data and return the matching instruments WITHOUT saving a scan. Nothing is persisted and no scan_id is returned. A preview behaves exactly like creating a scan with these filters would \u2014 same filters, same default columns, same live evaluation \u2014 so it is the way to validate a filter set before create_scan or update_scan_filters.\n\nExpression-based filters run here and save through create_scan (update_scan_filters rejects them). An expression filter sets expression (and omits filter_type): either a value expression with a numeric predicate (expression \"dayVolume / volumeAvg(candleCount=30, candlePeriod=\\\"1d\\\", session=\\\"all\\\")\", predicate PREDICATE_GREATER_THAN_OR_EQUAL, values [\"1.5\"]), or a boolean screen carrying the whole comparison inside the expression (expression \"tradeAllDay.price > closeAvg(candleCount=50, candlePeriod=\\\"1d\\\", session=\\\"all\\\")\", predicate PREDICATE_EQUAL, values [\"True\"]). An invalid expression comes back as a validation error from the market-data provider instead of failing a later save.\n\nPrefer an enum filter_type whenever one covers the request \u2014 enum filters are pre-validated and render as standard, user-editable filters in Legend. Call get_scanner_filter_specs first; build a raw expression only when no enum filter covers the request.\n\nColumns display values, filters screen. To show a datapoint in results without restricting matches, pass it in columns \u2014 never fake it with a no-op filter like \">= 0\", which pollutes the scan's filter list. A column is a display_name plus an expression, or a standard column's display name alone ({\"display_name\": \"Market cap\"}). Scans read best with a few contextual columns supporting the filters (e.g. a put/call screen showing both raw volumes).\n\nParameters:\n- filters (required, non-empty) \u2014 the complete filter set to evaluate.\n- columns (optional) \u2014 extra result columns on top of the filters' own columns and the standard defaults. Note: an expression matching a standard column's canonical form is shown as that standard column, canonical name included.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "description": "Optional result columns to display on top of what the filters and the standard default columns already show. Each column: display_name plus either an expression (raw market-data expression from get_scanner_datapoints) or nothing (a standard column referenced by name, e.g. \"Market cap\"). Columns display values, filters screen \u2014 to show a datapoint without restricting results, add a column here, never a no-op filter (e.g. >= 0).",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "display_name": {
+                  "description": "Column header, and the column's identity: matching an existing column's name (case-insensitively) customizes that column instead of adding a duplicate, and two columns cannot share a name. A filter with non-default interval/length names its column with those parameters (e.g. a 5-minute RSI filter's column is \"RSI (14, 5M)\") \u2014 matching it requires that exact name; a bare \"RSI\" next to it adds a separate, default-parameters RSI column. Without expression, must name a standard column (e.g. \"Market cap\", \"RSI\", \"Volume\") \u2014 an unknown name is rejected with the full list of valid ones.",
+                  "type": "string"
+                },
+                "expression": {
+                  "description": "Raw market-data expression computing the column's value, built from get_scanner_datapoints (same language as expression filters), e.g. \"optionsPutDayVolume / optionsCallDayVolume\". Omit to reference a standard column by display_name alone. If the expression equals a standard column's canonical form, the column is saved as that standard column and display_name is REPLACED by its canonical name (e.g. \"optionsPutDayVolume\" always saves as \"Total put volume\").",
+                  "type": "string"
+                },
+                "order": {
+                  "description": "Relative ordering among the columns passed in this call: lower comes first, columns without an order go last in the order given. The scan's standard default columns (Symbol, Name, price, Volume, ...) always come before these.",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "visible": {
+                  "description": "Whether the column shows in results. When omitted, a NEW column is visible, but a column customizing an existing filter-created column keeps that column's current visibility (some filter columns are deliberately hidden) \u2014 pass an explicit value to change it. A hidden column is still computed and saved.",
+                  "type": [
+                    "null",
+                    "boolean"
+                  ]
+                }
+              },
+              "required": [
+                "display_name"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "filters": {
+            "description": "Filters to evaluate, enum-based and/or expression-based. Enum filter: filter_type from get_scanner_filter_specs plus predicate/values and optional interval/length/plot. Expression filter: expression (omit filter_type) plus predicate/values and an optional display_title. At least one filter is required.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "display_title": {
+                  "description": "Optional short label for an expression filter, shown as the results-column header (e.g. \"Relative volume (30D)\"). Only used with expression.",
+                  "type": "string"
+                },
+                "expression": {
+                  "description": "Raw market-data expression to screen on, e.g. \"dayVolume / volumeAvg(candleCount=30, candlePeriod=\\\"1d\\\", session=\\\"all\\\")\" with a numeric predicate, or a whole comparison like \"tradeAllDay.price > closeAvg(candleCount=50, candlePeriod=\\\"1d\\\", session=\\\"all\\\")\" with predicate \"=\" and values [\"True\"]. Accepted by preview_scan (validate without saving) and create_scan (save); update_scan_filters rejects expressions \u2014 to change an expression filter on a saved scan, call create_scan with that scan's scan_id and the full filter set (a new configuration version is appended; earlier versions are preserved). Omit filter_type when set. Prefer an enum filter_type whenever one covers the request.",
+                  "type": "string"
+                },
+                "filter_type": {
+                  "description": "Wire-format enum name, e.g. \"FILTER_TYPE_RSI\". See the scanner-filter-specs resource for valid values. Omit when supplying expression.",
+                  "type": "string"
+                },
+                "interval": {
+                  "description": "Time granularity for time-series filters (e.g. \"1d\"). Use one of the supported_intervals from the filter's scanner-filter-specs entry. Not used with expression \u2014 encode granularity inside the expression.",
+                  "type": "string"
+                },
+                "length": {
+                  "description": "Lookback length for filters that need one (e.g. RSI period of 14). Use one of the supported_lengths from the filter's scanner-filter-specs entry. Not used with expression.",
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                },
+                "plot": {
+                  "description": "Plot / price-field input for filters that have one (e.g. \"open\" or \"close\" for % Change). Use one of the supported_plots from the filter's scanner-filter-specs entry. Not used with expression.",
+                  "type": "string"
+                },
+                "predicate": {
+                  "description": "Wire-format enum name, e.g. \"PREDICATE_GREATER_THAN\". See the scanner-filter-specs resource for the predicates supported by each filter.",
+                  "type": "string"
+                },
+                "values": {
+                  "description": "Threshold values. Single-element for unary predicates, two-element for BETWEEN, multi-element for IN_LIST/ANY_OF. For a boolean expression screen, exactly [\"True\"].",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                }
+              },
+              "required": [
+                "predicate",
+                "values"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "filters"
+        ],
+        "type": "object"
+      },
+      "name": "preview_scan",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "description": "Tool-specific result payload; see the inner properties for fields.",
+            "properties": {
+              "result": {
+                "additionalProperties": false,
+                "description": "Live market results for the previewed filter set. Nothing was saved: there is no scan_id, and nothing needs cleaning up.",
+                "properties": {
+                  "filters_applied": {
+                    "description": "The filters as parsed and applied. Expression filters echo back with filter_type_enum FILTER_TYPE_CUSTOM and their expression.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "expression": {
+                          "description": "Upstream market-data expression this filter screens on. Populated for every filter, standard or custom \u2014 an enum filter type is a preset that compiles to an expression upstream. Useful for explaining precisely what the filter measures (which interval, lookback and session it uses). When re-applying a standard filter, send filter_type_enum rather than this; for a FILTER_TYPE_CUSTOM filter this expression is exactly what to send, as the expression field of a create_scan filter.",
+                          "type": "string"
+                        },
+                        "filter_type": {
+                          "description": "Display label of the column this filter screens on, as shown in Legend (e.g. \"RSI\", \"Market cap\"). This is a user-editable label, so it is for describing the filter to the user \u2014 do NOT send it back as filter_type when re-applying filters; use filter_type_enum for that.",
+                          "type": "string"
+                        },
+                        "filter_type_enum": {
+                          "description": "Wire-format enum name for this filter (e.g. \"FILTER_TYPE_RSI\") \u2014 the value to pass as a filter's filter_type when re-sending this filter to create_scan or update_scan_filters. FILTER_TYPE_CUSTOM is the exception: such a filter is defined by its expression, so re-create it by sending the expression field to create_scan and omitting filter_type. Never send FILTER_TYPE_CUSTOM as a filter_type \u2014 it would create an empty filter. Empty only when the filter has no recognized type.",
+                          "type": "string"
+                        },
+                        "interval": {
+                          "description": "Time granularity for time-series filters (e.g. \"1d\", \"1h\"). Empty for snapshot filters.",
+                          "type": "string"
+                        },
+                        "length": {
+                          "description": "Lookback length for filters that need one (e.g. RSI period of 14). Zero/omitted for filters that don't take a length.",
+                          "maximum": 2147483647,
+                          "minimum": -2147483648,
+                          "type": "integer"
+                        },
+                        "plot": {
+                          "description": "Plot / price-field input for filters that have one (e.g. % Change uses \"open\" or \"close\" to choose changeFromOpen vs changeFromClose). Empty for filters that don't take a plot.",
+                          "type": "string"
+                        },
+                        "predicate": {
+                          "description": "Comparison operator in symbolic form (e.g. \">\", \"<\", \"BETWEEN\").",
+                          "type": "string"
+                        },
+                        "values": {
+                          "description": "Threshold values for the predicate. Single-element for >/</=, two-element for BETWEEN, multi-element for IN_LIST/ANY_OF.",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": [
+                            "null",
+                            "array"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "filter_type",
+                        "predicate",
+                        "values"
+                      ],
+                      "type": "object"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  },
+                  "results": {
+                    "description": "Matched instruments, live at time of execution. Exactly what a scan saved with these filters would return.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "columns": {
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Column display name -> cell value, for every visible column in the scan's configuration. Values are raw numeric strings, not display-formatted: columns whose header contains % hold ratios (multiply by 100 before presenting), large numbers can arrive in scientific notation, and floats carry precision noise. Always format before presenting. An empty string means the datapoint is undefined for that instrument; the row still matched the filters.",
+                          "type": "object"
+                        },
+                        "instrument_id": {
+                          "description": "Robinhood instrument UUID. Pass to other trading tools that take an instrument_id.",
+                          "type": "string"
+                        },
+                        "instrument_type": {
+                          "description": "Robinhood's own asset classification: EQUITY, OPTION, INDEX, CRYPTO, FUTURES_PRODUCT, FUTURES_CONTRACT, COMBO. NOT the vocabulary the asset-type filter accepts, and not translatable to it: EQUITY covers both stocks and ETFs, which that filter distinguishes. To screen on asset type, use the values listed in the asset-type filter's options from get_scanner_filter_specs, never a value copied from this field.",
+                          "type": "string"
+                        },
+                        "ticker": {
+                          "description": "Trading symbol (e.g. AAPL). Sourced from the scan's symbol column; empty when the scan has no symbol column visible.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "ticker",
+                        "instrument_id",
+                        "instrument_type",
+                        "columns"
+                      ],
+                      "type": "object"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  },
+                  "sorted_by": {
+                    "description": "Sort column + direction applied to the preview results (e.g. \"Market cap desc\").",
+                    "type": "string"
+                  },
+                  "total_items": {
+                    "description": "Total instruments matching the previewed filters right now. May exceed len(results) when the row limit is hit.",
+                    "maximum": 2147483647,
+                    "minimum": -2147483648,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "total_items",
+                  "results"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "result"
+            ],
+            "type": "object"
+          },
+          "guide": {
+            "description": "How to interpret the response:\n- result.total_items and result.results are exactly what a scan saved with these filters would return right now. Results are live; a later run will differ.\n- Nothing was persisted: there is no scan_id, the preview does not appear in get_scans, and there is nothing to clean up.\n- result.filters_applied echoes the filters as parsed: enum filters carry their filter_type_enum; expression filters echo FILTER_TYPE_CUSTOM with the expression.\n- Columns you passed appear as keys in each result row's columns map \u2014 under the canonical standard name when an expression matched a standard column's form. An empty cell means the datapoint is undefined for that instrument; the row still matched the filters.\n\nWhen presenting:\n- Render results as a table and state total_items.\n- Make clear this was a preview \u2014 nothing was saved. If the user is happy with the results, offer create_scan with the same filters, expressions included: create_scan is the tool that saves them (update_scan_filters does not accept expressions).\n\nError handling:\n- \"expression cannot be combined with filter_type\" / \"FILTER_TYPE_CUSTOM requires an expression\" / \"interval/length/plot are not used with an expression\" \u2192 fix the filter shape and retry; these are local checks, no market-data query was spent.\n- A market-data validation error (quotes the rejected expression and the reason, e.g. an unknown function or an out-of-range argument) \u2192 fix the expression and preview again. Do not attempt a save until a preview succeeds.\n- Each preview costs the same rate-limit budget as run_scan \u2014 fix everything you can between attempts rather than iterating one field at a time.",
             "type": "string"
           }
         },
