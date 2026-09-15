@@ -5,11 +5,14 @@
 # secret and this file is committed. Export WORKSPACE_TOKEN (and
 # WORKSPACE_BASE_URL) before starting Codex; see docs/WORKSPACE_ACCESS.md.
 #
-# Codex reads ~/.codex/config.toml. If it does not pick this file up from the
-# repository, copy the block into that file. Whether Codex expands ${VAR} in
-# `url` is not verified — if the connection fails, replace the URL with the
-# literal https://<service>.up.railway.app/mcp.
+# Codex reads this repo-local file and it OVERRIDES ~/.codex/config.toml
+# (observed 2026-09-15, codex-cli 0.144.6: `codex mcp get` returns this entry
+# from inside the repo and the global one from $HOME).
+#
+# Codex does NOT expand ${VAR} in `url` — it passes the raw string through, so
+# the URL is written literally here. The hostname is not a secret; the bearer
+# token is, and it stays out of the file via bearer_token_env_var.
 
 [mcp_servers.swingtrader_workspace]
-url = "${WORKSPACE_BASE_URL}/mcp"
+url = "https://workspace-production-6e7b.up.railway.app/mcp"
 bearer_token_env_var = "WORKSPACE_TOKEN"
