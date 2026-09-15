@@ -273,6 +273,7 @@ gate's. Tracked as a candidate follow-up.
 | `PHASE6_EXECUTION_ENABLED` | `false` | Off ⇒ `propose_order` is not registered and every approval callback is refused. |
 | `ALLOW_LIVE_TRADING` | `false` | Required, on top of the flag, for any **live** placement. |
 | `EXECUTION_MODE` | `paper` | `live` reaches Robinhood Agentic; `paper` reaches Alpaca paper (same lifecycle). |
+| *(no variable)* | — | A **live Robinhood** entry additionally requires a recorded protective-exit probe (§6). It is a `broker_stop_probes` row, not a flag, and there is deliberately no environment variable that turns the requirement off. |
 | `EXECUTION_APPROVAL_SECRET` | *(unset)* | HMAC key for the signed approval reference. Unset ⇒ no card can be minted or verified — nothing can be approved. |
 | `RISK_FRACTION_HARD_CAP` | `0.01` | A `risk_fraction` above this is refused, not clamped. |
 | `RISK_FRACTION_PERCENTAGE_FLOOR` | `0.05` | A `risk_fraction` at/above this is refused as a percentage typed as a fraction. |
@@ -311,32 +312,88 @@ is the fact Spec L §5.1 flags as the Phase 6 live probe: that a `gtc`
 `stop_market` placed through the MCP is visible in `get_equity_orders` the next
 session and triggers when touched.
 
-The probe is an owner action. Do not run it from a build session. Runbook:
+The probe is an owner action, placed **by hand in the Robinhood app**. Do not
+run it from a build session, and do not run it through `propose_order`: the
+system's first live placement must not be the one that tests whether the
+system's protection works. (Until 2026-09-15 this runbook did say to propose and
+approve it. It cannot any more — the gate below refuses a live Robinhood entry
+until the probe is on record, and a runbook that asks the system to place the
+order that authorises the system is a circle. Placing it by hand was always the
+safer half of that choice; now it is the only one.)
+
+Runbook:
 
 1. Fund the Agentic account with a minimal budget (`ROBINHOOD_ACCOUNT_BUDGET`).
-2. Set `PHASE6_EXECUTION_ENABLED=true`, `ALLOW_LIVE_TRADING=true`,
-   `EXECUTION_MODE=live`, `EXECUTION_APPROVAL_SECRET=<a strong secret>`; confirm
-   `/live_kill off`.
-3. From an attached agent session, `propose_order` a **one-share** limit entry of
-   minimal size in a liquid name, at a limit near the touch, and **uncited**.
-   Read the card: it should show `budget=discretionary` (the reason being
-   `no_citation`), one whole share, and the caps. The probe is about the broker,
-   not the sizing rule — cite nothing, so nothing about the evidence gate can
-   change what is placed.
-4. Approve on Telegram. Watch the logs: entry submitted → filled → stop placed →
-   **stop read back** → `protected`.
-5. In the Robinhood app (or `get_equity_orders`), confirm the `stop_market`,
-   `gtc`, `regular_hours` order is present and shows the right stop price.
-6. **Confirm it survives the next session** — the unstated-GTC-horizon question.
-   Leave it overnight and re-check `get_equity_orders`. The daily
-   `replace_missing_stops` job re-places a stop that has vanished; note whether
-   it had to.
-7. Close the probe position by hand, record the result in
-   `docs/ROBINHOOD_INTEGRATION_PLAN.md`, and turn the flags back off until real
-   use.
+2. Confirm `/live_kill off`. No execution flag needs to be on for the probe
+   itself — nothing in this repository places it.
+3. **In the Robinhood app**, buy one share of a liquid name at or near the
+   touch, then place a standalone **`stop_market`, `gtc`, regular-hours** sell
+   order for that one share, well below the market. One share, so the position
+   is the price of a coffee and the stop is the only thing being tested.
+4. Confirm the app shows the stop as working, and that
+   `python -m scripts.robinhood_stop_probe --list` sees the same order through
+   `get_equity_orders` — the read path the protection check actually uses.
+5. **Confirm it survives the next session** — the unstated-GTC-horizon question,
+   and the whole reason for the probe. Leave it overnight and re-run `--list`.
+6. **Record the observation**, so the code knows the probe passed:
+
+   ```
+   python -m scripts.robinhood_stop_probe --record --order-id <id> \
+       --note "hand-placed <date>, survived overnight, re-checked <date>"
+   python -m scripts.robinhood_stop_probe --status
+   ```
+
+   That script **places nothing**. It reads the order back out of
+   `get_equity_orders`, refuses anything that is not a `gtc` `stop_market` in
+   the configured account, and writes one `broker_stop_probes` row.
+7. Cancel the stop and close the probe position by hand, and record the result
+   in `docs/ROBINHOOD_INTEGRATION_PLAN.md`.
+
+**What this version of the probe does not establish, stated plainly.** A
+hand-placed stop proves that a `gtc` `stop_market` survives at Robinhood and is
+readable through `get_equity_orders` — the fact Spec L §5.1 names. It does *not*
+exercise `place_equity_order` through the MCP with the stop payload. That
+residual is covered as far as it can be without spending a live order on it: the
+tool schema has been captured twice (`docs/robinhood/tool_schemas.json`,
+2026-09-08 and 2026-09-14, `place_equity_order` byte-identical), the adapter's
+request shape is asserted against its own builder, and the first real live entry
+still reads its stop back inside `PROTECTION_WINDOW_SECONDS` and pages,
+marks `unprotected` and blocks every further entry if it cannot. What changes
+with the probe recorded is that the *survival* of that stop is no longer a guess.
+
+### And now it is enforced
 
 Until this probe passes, live entries stay closed (Spec L §5.1: "Until the probe
-passes, live entries stay closed").
+passes, live entries stay closed"). That sentence was aspiration until
+`0015_broker_stop_probes`; it is now `live_gate_refusal`'s third condition.
+
+* **A row, not a flag.** `ROBINHOOD_STOP_PROBE_PASSED=true` would record an
+  assertion — a human writing down that something is so, which is what
+  `ALLOW_LIVE_TRADING` and `EXECUTION_MODE` already are. The row records a
+  verification: the order id that was read back and the moment it was seen.
+* **Keyed to `(broker, account)`.** A probe is evidence about the account it ran
+  in. A record for another Robinhood account does not authorise this one; the
+  key is a SHA-256 of the account number, because a masked `****1234` can
+  collide and a collision in a gate reads as permission.
+* **Absence means not probed.** So does a row with no order id or no observation
+  timestamp, and so does a gate with no database session to read from (Spec Q
+  §12 invariant 1). There is no bypass flag, deliberately: one would be the
+  permissive default wearing a different name.
+* **Only Robinhood live entries.** `BROKER_PRIMARY` is what routes a live
+  placement (`execution/brokers/factory.py::_build_primary`), so it is what the
+  gate reads. Paper routes to Alpaca paper and needs no Robinhood stop, and a
+  Strategy Lab paper arm may reach only Alpaca paper (Spec Q §11). Neither is
+  gated, in either state.
+* **One place.** The check is inside `live_gate_refusal`, not beside it, for the
+  reason that function's docstring gives: two copies of "what makes live legal"
+  is the drift this path cannot afford. All three of its callers — the approval
+  path, the Phase 5 pre-placement gate, and the promotion deployment check —
+  get it by passing their session through.
+
+The refusal codes are `robinhood_stop_probe_not_recorded`,
+`robinhood_stop_probe_account_unknown` and `robinhood_stop_probe_unverifiable`,
+and each message names the remedy. `tests/test_robinhood_stop_probe_gate.py`
+holds the rows.
 
 ---
 
@@ -373,10 +430,12 @@ observer injected, this service behaves exactly as Phase 6 shipped it:
   `filled_quantity` rather than the requested size, so nothing about what is
   placed changed. The distinction is reported so the §12 machine can resize
   protection when the remainder fills later.
-* **`live_gate_refusal(settings)`** — the live-flag conjunction, extracted from
-  `_require_live_gates` so Phase 5 can run the same one a step earlier, before a
-  live card is minted. Two copies of "what makes live legal" is the kind of
-  drift this path cannot afford.
+* **`live_gate_refusal(settings, session)`** — the live conjunction, extracted
+  from `_require_live_gates` so Phase 5 can run the same one a step earlier,
+  before a live card is minted. Two copies of "what makes live legal" is the
+  kind of drift this path cannot afford, which is also why §6's protective-exit
+  probe was added to this function rather than checked beside it. `session` is
+  how the probe record is read; a caller with none gets a refusal, never a pass.
 
 One defect was fixed rather than added to. `_reconcile_unknown` previously
 returned `None` when an ambiguous placement's `ref_id` **was** found at the

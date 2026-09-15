@@ -27,6 +27,7 @@ migrations/
     0012_notify_email_cards.py       the notification delivery log and the stored card (notify/)
     0013_merge_notify_owner.py       merge point: 0012_notify_email_cards + 0012_owner_control_surface (no schema change)
     0014_securities_asset_class.py   securities.asset_class: equity | fund, so a benchmark ETF is never a universe member (spec N §5.2)
+    0015_broker_stop_probes.py       broker_stop_probes: the recorded live protective-exit probe that gates live Robinhood entries (spec L §5.1)
 ```
 
 `0009_execution_lifecycle` branches from the single head `0008_merge_strategy_lab`
@@ -95,6 +96,18 @@ nothing. If you find yourself wanting a column on `memos`, `trades`, `tickers` o
 anything else `0001_baseline` created, check
 `tests/test_schema_discipline.py::test_a_baseline_era_database_is_still_adopted_after_a_new_table_lands`
 first: it will tell you.
+
+`0015_broker_stop_probes` follows `0014_securities_asset_class` and adds one
+table, `broker_stop_probes`: one row per `(broker, account)` recording that a
+`gtc` `stop_market` was **observed** surviving at that broker, which
+`execution/lifecycle.py::live_gate_refusal` now requires before a live Robinhood
+entry. A table rather than an environment variable on purpose — a flag records a
+human's assertion, a row written by `scripts/robinhood_stop_probe.py` from a
+read-back order records a verification. It adds no column to any existing table,
+for the reason `0012_owner_control_surface` gives above. `downgrade()` drops it,
+and the loss is in the safe direction: the record disappears and live Robinhood
+entries are refused again, because absence means *not probed* (Spec Q §12
+invariant 1).
 
 `0011_comparable_subject_ticker` is also the first revision whose `downgrade()`
 can **refuse**. Two answers

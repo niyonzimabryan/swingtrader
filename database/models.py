@@ -3013,3 +3013,90 @@ class NotificationSend(Base):
     #: The card this delivery carried, when there was one.
     card_uid = Column(String(64), nullable=False, default="")
     created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+
+
+# --------------------------------------------------------------------------- #
+# The live protective-exit probe (Spec L §5.1, docs/EXECUTION_LIFECYCLE.md §6)
+# --------------------------------------------------------------------------- #
+#
+# `ROBINHOOD_CAPABILITIES.can_place_standalone_gtc_stop=True` is a *declaration*
+# — a constant in the adapter — and the whole of Phase 6's protective-exit
+# contract rests on it. The one empirical fact behind it has never been checked
+# against the live server: that a `gtc` `stop_market` placed through the MCP is
+# visible in `get_equity_orders` the next session. If it is not, a live position
+# has no automated exit.
+#
+# The docs have said "until this probe passes, live entries stay closed" since
+# Phase 6 shipped, and nothing enforced it. This table is what makes the
+# sentence true, and its shape is the whole argument for it being a table:
+#
+# * An environment variable is an **assertion** — a human writing down that
+#   something is so. `ROBINHOOD_STOP_PROBE_PASSED=true` would be a second
+#   `EXECUTION_MODE`, one more flag to flip on the way to an unprotected order.
+# * A row here is a **verification**: it is written only from an observation,
+#   by `scripts/robinhood_stop_probe.py`, which reads a real `gtc` `stop_market`
+#   back out of `get_equity_orders` and records the order id and the moment it
+#   saw it. The script places nothing (non-negotiable 1); the probe itself is an
+#   owner action performed by hand.
+#
+# Keyed to `(broker, account_fingerprint)` because a probe proves something
+# about the account it ran in and nothing about any other: a verified stop in
+# the funded Agentic account does not authorise a second Robinhood account.
+# The fingerprint is a SHA-256 of the account number rather than the number
+# itself — the key has to be exact (a masked `****1234` could collide, and a
+# collision here reads as permission), and the number itself has no business
+# being in a table that gets dumped into backups and log lines. `account_masked`
+# is carried alongside purely so a human can tell which account a row is about.
+#
+# Spec Q §12 invariant 1: absence or invalidity of this record means **not
+# probed**, never permission. `portfolio/stop_probe.py` is the only reader.
+
+
+class BrokerStopProbe(Base):
+    """One recorded observation that a broker's protective stop really works.
+
+    Written by `scripts/robinhood_stop_probe.py` from a `gtc` `stop_market`
+    read back out of the live broker, never by an agent and never by a
+    placement path. A row is *evidence*; its absence is not an opinion.
+    """
+
+    __tablename__ = "broker_stop_probes"
+    __table_args__ = (
+        UniqueConstraint(
+            "broker", "account_fingerprint", name="uq_broker_stop_probes_account"
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    #: The broker this probe is about, lowercase — `robinhood`.
+    broker = Column(String(32), nullable=False)
+
+    #: SHA-256 hex of the normalized account number. The match key.
+    account_fingerprint = Column(String(64), nullable=False)
+
+    #: `****1234`, for a human reading the row. Never the key.
+    account_masked = Column(String(16), nullable=False, default="")
+
+    #: The broker's id for the `gtc` `stop_market` that was read back. This is
+    #: the observation: a row without one is not evidence of anything.
+    observed_order_id = Column(String(64), nullable=False, default="")
+
+    #: The symbol and stop price the observed order carried, so the record can
+    #: be checked against the broker's own history later.
+    observed_symbol = Column(String(32), nullable=False, default="")
+    observed_stop_price = Column(Float, nullable=True)
+
+    #: When the script actually saw the order at the broker. A row with no
+    #: observation timestamp records no observation, and does not authorise.
+    observed_at = Column(UtcDateTime, nullable=True)
+
+    #: Who ran the recording script, and anything they wanted to say about it —
+    #: "survived overnight, re-checked 2026-09-16" belongs here.
+    recorded_by = Column(String(64), nullable=False, default="")
+    note = Column(Text, nullable=False, default="")
+
+    created_at = Column(UtcDateTime, nullable=False, default=utcnow_naive)
+    updated_at = Column(
+        UtcDateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive
+    )

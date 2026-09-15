@@ -70,6 +70,7 @@ from execution.brokers.base import BrokerOrderRequest
 from portfolio import approvals as approvals_mod
 from portfolio import killswitch
 from portfolio import proposals as proposals_mod
+from portfolio import stop_probe
 from portfolio.paging import log_pager
 from utils.logger import get_logger
 from utils.timeutils import utcnow_naive
@@ -102,8 +103,8 @@ ON_STOP_REPLACED = "stop_replaced"
 ON_RISK_REJECTED = "risk_rejected"
 
 
-def live_gate_refusal(settings) -> tuple[str, str] | None:
-    """``(code, reason)`` when the *live* flags are not all on, else ``None``.
+def live_gate_refusal(settings, session=None) -> tuple[str, str] | None:
+    """``(code, reason)`` when live is not fully authorized, else ``None``.
 
     Spec Q §12 invariant 1: absence or invalidity of a flag must never mean
     live. So this is an explicit conjunction of positive checks, and it is a
@@ -111,6 +112,22 @@ def live_gate_refusal(settings) -> tuple[str, str] | None:
     same conjunction one step earlier — before a live Strategy Lab card is even
     minted — and two copies of "what makes live legal" is exactly the kind of
     drift this repository cannot afford.
+
+    That last sentence is why the protective-exit probe is checked *here* rather
+    than beside the flags in a gate of its own. Two of these conditions are
+    environment variables — a human asserting something — and the third is not:
+    for a live placement that routes to Robinhood,
+    :func:`portfolio.stop_probe.refusal` requires a recorded **observation**
+    that a ``gtc`` ``stop_market`` survives at that exact account.
+    ``docs/EXECUTION_LIFECYCLE.md`` §6 and Spec L §5.1 have both said "until
+    this probe passes, live entries stay closed" since Phase 6 shipped; until
+    this line, nothing enforced it.
+
+    ``session`` is how that record is read. It is optional only so a caller with
+    nothing to read from still gets an answer — and that answer is a refusal,
+    never a pass, because an unestablished fact is not permission. Paper is
+    untouched either way: the probe gate applies only when the primary broker is
+    Robinhood, and a paper fill needs no Robinhood stop.
     """
     if not bool(getattr(settings, "allow_live_trading", False)):
         return (
@@ -125,7 +142,7 @@ def live_gate_refusal(settings) -> tuple[str, str] | None:
             "EXECUTION_MODE is not 'live'. A proposal recorded as live may "
             "only be placed when the service is in live mode too.",
         )
-    return None
+    return stop_probe.refusal(settings, session)
 
 
 class ExecutionRefused(Exception):
@@ -240,17 +257,23 @@ class ExecutionService:
                 "executes until it is turned on.",
             )
 
-    def _require_live_gates(self, proposal: Proposal) -> None:
+    def _require_live_gates(self, session, proposal: Proposal) -> None:
         """The extra gates a *live* placement needs, on top of everything else.
 
         Spec Q §12 invariant 1: absence or invalidity of a flag must never mean
         live. So this is an explicit conjunction of positive checks, and a
         proposal whose recorded ``execution_mode`` is not ``live`` never reaches
         a live broker even if the flags happen to be on.
+
+        ``session`` is passed through so that conjunction can include the one
+        condition that is evidence rather than assertion — the recorded
+        protective-exit probe. It is the session this approval is already
+        running in, so the record is read inside the same transaction as every
+        other check.
         """
         if proposal.execution_mode != "live":
             return
-        refusal = live_gate_refusal(self.settings)
+        refusal = live_gate_refusal(self.settings, session)
         if refusal is not None:
             raise ExecutionRefused(*refusal)
 
@@ -308,7 +331,7 @@ class ExecutionService:
                 code, reason = block
                 raise ExecutionRefused(code, reason)
 
-            self._require_live_gates(proposal)
+            self._require_live_gates(session, proposal)
 
             # Re-run every risk check from FRESH state (Spec L §6.2). Never the
             # stored numbers. A breach here is terminal for this approval.
