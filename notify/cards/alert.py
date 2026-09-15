@@ -32,6 +32,11 @@ _CRITICAL = frozenset(
         "unknown_placement",
         "portfolio_mass_deletion_blocked",
         "reconciliation_required",
+        # A live position the ledger disagrees with, and a live broker that
+        # could not be asked at all. Both mean a real position is not where the
+        # system thinks it is — or is not known to be.
+        "broker_ledger_mismatch",
+        "broker_ledger_unreachable",
     }
 )
 

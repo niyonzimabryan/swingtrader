@@ -454,8 +454,34 @@ async def main():
     # monitor at the wrong broker.
     order_monitor = OrderMonitor(pipeline.paper_broker, notifications, settings)
 
-    # Initialize position monitor (60-sec live price checks during market hours)
-    position_monitor = PositionMonitor(pipeline.paper_broker, notifications, settings)
+    # Initialize position monitor (60-sec live price checks during market hours).
+    #
+    # It holds an Alpaca client for the same reason the order monitor does, and
+    # its docstring records what that costs and how it is paid: rather than
+    # teach it a second broker, it takes injected reconcilers. Nothing was
+    # injected here, so under EXECUTION_MODE=live a Robinhood position opened by
+    # an owner approval was watched by nothing at all. `live_ledger_reconcilers`
+    # returns one read-only reconciler for the live broker — it asks that broker
+    # what it holds, compares it to the `trades` ledger and pages on divergence —
+    # and returns nothing at all in paper mode, where the pass above already
+    # covers every position.
+    from execution.ledger_reconciler import live_ledger_reconcilers
+
+    ledger_reconcilers = live_ledger_reconcilers(pipeline, settings)
+    position_monitor = PositionMonitor(
+        pipeline.paper_broker,
+        notifications,
+        settings,
+        execution_reconcilers=ledger_reconcilers,
+    )
+    # One line saying what is actually watched, so coverage is read off the
+    # deploy log rather than inferred from two monitors' constructor arguments.
+    log.info(
+        "monitor_coverage",
+        order_monitor="alpaca",
+        position_alerts="alpaca",
+        ledger_reconciled=[r.broker_name for r in ledger_reconcilers],
+    )
 
     # Reliability watchdog: exits(1) if a monitor loop stalls during market hours
     # so Railway's ON_FAILURE policy restarts a fresh container (Spec B1).

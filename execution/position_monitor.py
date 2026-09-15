@@ -9,6 +9,8 @@ Handles:
 - Time expiring / expired warnings
 - Peak price tracking for drawdown detection
 - Direction-aware (long and short positions)
+- Running the injected execution reconcilers, which are how a position at a
+  broker this monitor does not speak is watched at all (see below)
 """
 
 import asyncio
@@ -74,10 +76,17 @@ class PositionMonitor:
         #: whole job is to ask a broker whether it agrees with the execution
         #: ledger and to fail closed when it does not.
         #:
+        #: Phase 6 supplies ``execution.ledger_reconciler.LedgerReconciler`` for
+        #: the live broker, which is how a Robinhood position opened by an owner
+        #: approval is watched at all.
+        #:
         #: Empty by default, so nothing about this monitor changes until
         #: something is injected. Each call is isolated: a reconciler that raises
         #: is logged and the tick continues, because a failed comparison must
-        #: never stop the position alerts that are this loop's first job.
+        #: never stop the position alerts that are this loop's first job. The
+        #: whole set runs off the event loop under
+        #: ``monitor_broker_call_timeout_s`` (see :meth:`_run_reconcilers`),
+        #: because a reconciler's broker call is a broker call like any other.
         self.execution_reconcilers = tuple(execution_reconcilers or ())
         self._running = False
         self._task = None
@@ -191,6 +200,21 @@ class PositionMonitor:
                     await self.nm.portfolio_drawdown_warning(drawdown_pct)
                     log.warning("portfolio_drawdown_warning", drawdown_pct=drawdown_pct)
 
+    async def _run_reconcilers(self) -> None:
+        """Run the injected reconcilers off-loop, under the broker-call timeout.
+
+        A reconciler talks to a broker, and a sync broker call from this loop
+        goes through ``_broker_call`` or it can freeze the loop into a watchdog
+        ``exit(1)`` restart cycle. A timeout here is a tick that concluded
+        nothing — said loudly, and never mistaken for "nothing diverged".
+        """
+        if not self.execution_reconcilers:
+            return
+        try:
+            await self._broker_call(self._run_execution_reconcilers)
+        except Exception as e:
+            log.error("execution_reconcilers_stalled", error=str(e))
+
     def _run_execution_reconcilers(self) -> None:
         """Run each injected execution reconciler, isolating its failures."""
         for reconciler in self.execution_reconcilers:
@@ -209,6 +233,14 @@ class PositionMonitor:
 
     async def _check_positions(self):
         """Check all open positions against their stored parameters."""
+        # First, and unconditionally. The reconcilers cover brokers this monitor
+        # does not speak, and an Alpaca account that is empty — or unreachable,
+        # which raises out of the call below — says nothing about whether a
+        # position exists at one of them. Running them after the early return is
+        # how a live position on a flat paper account ended up watched by
+        # nothing.
+        await self._run_reconcilers()
+
         positions = await self._broker_call(self.alpaca.get_positions_detail)
         if not positions:
             return
@@ -218,7 +250,6 @@ class PositionMonitor:
             execution_mode="paper",
             source="position_monitor",
         )
-        self._run_execution_reconcilers()
 
         with get_session() as session:
             for pos in positions:
