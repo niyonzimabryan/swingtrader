@@ -152,7 +152,7 @@ def external_refusals(session, settings, *, to_mode, adapters=None) -> tuple[str
                 "STRATEGY_LAB_LIVE_ENABLED is false. Absence or invalidity of a "
                 "flag never means live (Spec Q §12 invariant 1)."
             )
-        refusal = p6.live_gate_refusal(settings)
+        refusal = p6.live_gate_refusal(settings, session)
         if refusal is not None:
             out.append(f"{refusal[0]}: {refusal[1]}")
         blocked = killswitch.entry_block(session)
