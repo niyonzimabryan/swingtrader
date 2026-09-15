@@ -275,7 +275,16 @@ def patched_main(settings, *, patch_telegram: bool = True):
         patch(mock.patch.object(main_module, "init_db", lambda url: None))
         patch(mock.patch.object(main_module, "seed_universe", lambda: None))
         patch(mock.patch.object(main_module, "TradingPipeline", make_pipeline))
-        patch(mock.patch.object(main_module, "_reconcile_startup_positions", lambda *a: None))
+        # Awaited by `main()` since the startup reconciliation moved off the
+        # event loop; a plain lambda here would make `main()` await `None`.
+        async def _no_startup_reconciliation(*args, **kwargs):
+            return None
+
+        patch(
+            mock.patch.object(
+                main_module, "_reconcile_startup_positions", _no_startup_reconciliation
+            )
+        )
         patch(mock.patch.object(main_module, "OrderMonitor", make_monitor))
         patch(mock.patch.object(main_module, "PositionMonitor", make_monitor))
         patch(mock.patch.object(main_module, "MonitorWatchdog", make_monitor))

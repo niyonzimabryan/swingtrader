@@ -22,6 +22,11 @@ MASS_DELETION_BLOCKED = "portfolio_mass_deletion_blocked"
 SYNC_ACCOUNT_FAILED = "portfolio_sync_account_failed"
 SYNC_FAILED = "portfolio_sync_failed"
 RECONCILIATION_REQUIRED = "reconciliation_required"
+#: Startup could not read what the broker actually holds. The ledger is not
+#: wrong after this — it is *blank*, and blank reads as no exposure to anything
+#: that forgets to check freshness. Same string the runtime already logged, so
+#: an existing alert rule keeps matching.
+STARTUP_RECONCILIATION_FAILED = "startup_position_reconciliation_failed"
 
 
 def log_pager(event: str, detail: dict) -> None:

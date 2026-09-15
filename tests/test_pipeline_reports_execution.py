@@ -334,10 +334,16 @@ class ReportingSchemaTests(unittest.TestCase):
             paper_broker=_PaperBroker(),
             broker=SimpleNamespace(active=_RobinhoodBroker()),
         )
-        settings = SimpleNamespace(execution_mode="live")
-        log = SimpleNamespace(info=lambda *args, **kwargs: None, warning=lambda *args, **kwargs: None)
+        settings = SimpleNamespace(execution_mode="live", monitor_broker_call_timeout_s=30)
+        log = SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        )
 
-        _reconcile_startup_positions(pipeline, settings, log)
+        asyncio.run(
+            _reconcile_startup_positions(pipeline, settings, log, pager=lambda *a: None)
+        )
 
         with get_session() as session:
             aapl = session.query(Trade).join(Ticker).filter(Ticker.symbol == "AAPL", Trade.status == "open").first()

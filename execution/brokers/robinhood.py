@@ -771,6 +771,33 @@ class RobinhoodMCPBroker:
         return args
 
     def _call_tool_sync(self, name: str, arguments: dict) -> dict:
+        """One MCP tool call, from a thread with no running event loop.
+
+        The `asyncio.run` is deliberate and its precondition is now checked
+        rather than assumed. Bridging a running loop here — running the
+        coroutine on a private loop in a worker thread — would change the
+        threading of *every* Robinhood call in the process, and
+        `database/token_store.py` is not known to be safe under that: it takes
+        no lock around the read-modify-write of the encrypted blob, and
+        `_write_blob` stages through one fixed path (`<store>.tmp`), so two
+        concurrent refreshes would race on the same temp file. A caller on a
+        loop is therefore told to move the call off it; it is not silently
+        rethreaded onto the owner's credential store.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            # Raise before the coroutine object exists: constructing it and then
+            # letting `asyncio.run` reject it is what produced the "coroutine
+            # '_call_tool' was never awaited" warnings in the boot logs.
+            raise RobinhoodMCPError(
+                f"Robinhood MCP {name} was called from a running event loop. "
+                "This adapter is synchronous; run it off the loop with "
+                "`utils.async_call.call_with_timeout`, as the monitors and the "
+                "startup reconciliation do."
+            )
         try:
             return asyncio.run(self._call_tool(name, arguments))
         except ImportError as exc:
@@ -778,8 +805,9 @@ class RobinhoodMCPBroker:
         except RobinhoodMCPError:
             raise
         except Exception as exc:
-            log.error("robinhood_mcp_call_failed", tool=name, error=str(exc))
-            raise RobinhoodMCPError(f"Robinhood MCP {name} failed: {exc}") from exc
+            cause = _describe_exception(exc)
+            log.error("robinhood_mcp_call_failed", tool=name, error=cause)
+            raise RobinhoodMCPError(f"Robinhood MCP {name} failed: {cause}") from exc
 
     async def _call_tool(self, name: str, arguments: dict) -> dict:
         from mcp import ClientSession, types
@@ -879,6 +907,34 @@ class RobinhoodMCPBroker:
 #: two levels down. Three is generous for that shape and keeps the walk
 #: obviously terminating.
 _MAX_ENVELOPE_DEPTH = 3
+
+#: A malformed leaf message should not be able to fill a log line or a ledger
+#: column. Long enough to carry an HTTP status and a server message.
+_CAUSE_MAX_CHARS = 300
+
+
+def _describe_exception(exc: BaseException, _depth: int = 0) -> str:
+    """``"TypeName: message"``, reaching through exception groups to the leaves.
+
+    The MCP transport runs inside an anyio task group, so anything that goes
+    wrong under it arrives as a ``BaseExceptionGroup`` whose ``str()`` is the
+    constant ``"unhandled errors in a TaskGroup (1 sub-exception)"``. Formatting
+    that into the error message is how the ledger came to hold
+    ``last_sync_error = "RobinhoodMCPError: Robinhood MCP get_equity_tax_lots
+    failed: unhandled errors in a TaskGroup (1 sub-exception)"`` — a message
+    naming no cause, in the one field an operator reads to find out why the
+    owner's portfolio is blank. The sub-exceptions are the diagnosis; this walks
+    to them and reports every one.
+    """
+    if isinstance(exc, BaseExceptionGroup) and _depth < _MAX_ENVELOPE_DEPTH:
+        leaves = [_describe_exception(sub, _depth + 1) for sub in exc.exceptions]
+        leaves = [leaf for leaf in leaves if leaf]
+        if leaves:
+            return f"{type(exc).__name__}[{'; '.join(leaves)}]"
+    message = str(exc).strip()
+    if len(message) > _CAUSE_MAX_CHARS:
+        message = message[:_CAUSE_MAX_CHARS] + "..."
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
 def _extract_list(raw: Any, preferred_keys: tuple[str, ...], _depth: int = 0) -> list[dict]:
