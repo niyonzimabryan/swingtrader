@@ -163,20 +163,30 @@ def _status(settings) -> int:
             if account_number
             else None
         )
-        refusal = stop_probe.refusal(settings, session)
+        # `finding`, not `refusal`: --status reports what is on record, which is
+        # the same answer in both modes. `refusal` would hide the finding behind
+        # the advisory flag and log a warning for a question nobody is placing on.
+        finding = stop_probe.finding(settings, session)
+    enforced = stop_probe.required(settings)
 
     print(f"broker_primary: {getattr(settings, 'broker_primary', '') or '(unset)'}")
     print(f"account:        {stop_probe.mask(account_number) if account_number else '(unset)'}")
+    print(f"enforced:       {'yes' if enforced else 'no (ROBINHOOD_STOP_PROBE_REQUIRED is not true)'}")
     if found is None:
         print("probe record:   NONE — absence means not probed, never permission.")
     else:
         for key, value in found.as_dict().items():
             print(f"  {key}: {value}")
-    if refusal is None:
+    if finding is None:
         print("live gate:      the probe condition is satisfied for this account.")
+    elif enforced:
+        print(f"live gate:      REFUSES [{finding[0]}]")
+        print(f"                {finding[1]}")
     else:
-        print(f"live gate:      REFUSES [{refusal[0]}]")
-        print(f"                {refusal[1]}")
+        print(f"live gate:      WARNS ONLY [{finding[0]}] — a live Robinhood entry")
+        print("                would proceed unprobed. Set")
+        print("                ROBINHOOD_STOP_PROBE_REQUIRED=true to refuse it.")
+        print(f"                {finding[1]}")
     return 0
 
 
@@ -240,9 +250,11 @@ def main(argv: list[str] | None = None) -> int:
     for key, value in written.as_dict().items():
         print(f"  {key}: {value}")
     print(
-        "\nLive Robinhood entries are no longer refused for this account on probe "
-        "grounds. Every other gate — PHASE6_EXECUTION_ENABLED, ALLOW_LIVE_TRADING, "
-        "EXECUTION_MODE, the kill switch, the risk re-evaluation — is unchanged."
+        "\nThe probe condition is now satisfied for this account: it no longer "
+        "refuses under ROBINHOOD_STOP_PROBE_REQUIRED=true, and no longer warns "
+        "under the default. Every other gate — PHASE6_EXECUTION_ENABLED, "
+        "ALLOW_LIVE_TRADING, EXECUTION_MODE, the kill switch, the risk "
+        "re-evaluation — is unchanged."
     )
     return 0
 

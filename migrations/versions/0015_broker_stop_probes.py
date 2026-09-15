@@ -40,9 +40,11 @@ keyed by a masked external id, which is precisely the ambiguity this table
 refuses to depend on.
 
 ``downgrade()`` drops the table. Lossy in exactly one direction, and the safe
-one: the record of a passed probe disappears, so the gate refuses live
-Robinhood entries again until it is re-recorded. Absence means *not probed*
-(Spec Q §12 invariant 1), which is the correct reading of a dropped table.
+one: the record of a passed probe disappears, so the gate goes back to warning
+about live Robinhood entries — or refusing them, under
+``ROBINHOOD_STOP_PROBE_REQUIRED=true`` — until it is re-recorded. Absence means
+*not probed* (Spec Q §12 invariant 1), which is the correct reading of a
+dropped table.
 """
 from alembic import op
 import sqlalchemy as sa

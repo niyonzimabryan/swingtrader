@@ -117,17 +117,20 @@ def live_gate_refusal(settings, session=None) -> tuple[str, str] | None:
     than beside the flags in a gate of its own. Two of these conditions are
     environment variables — a human asserting something — and the third is not:
     for a live placement that routes to Robinhood,
-    :func:`portfolio.stop_probe.refusal` requires a recorded **observation**
+    :func:`portfolio.stop_probe.refusal` looks for a recorded **observation**
     that a ``gtc`` ``stop_market`` survives at that exact account.
-    ``docs/EXECUTION_LIFECYCLE.md`` §6 and Spec L §5.1 have both said "until
-    this probe passes, live entries stay closed" since Phase 6 shipped; until
-    this line, nothing enforced it.
+
+    That third condition is **advisory by default** (owner ruling 2026-09-15).
+    With ``ROBINHOOD_STOP_PROBE_REQUIRED`` unset, a missing probe logs a loud
+    warning and this function returns ``None`` for it; set it ``true`` and the
+    same missing probe refuses. The first two conditions are unaffected either
+    way, and so is everything else in the conjunction.
 
     ``session`` is how that record is read. It is optional only so a caller with
-    nothing to read from still gets an answer — and that answer is a refusal,
-    never a pass, because an unestablished fact is not permission. Paper is
-    untouched either way: the probe gate applies only when the primary broker is
-    Robinhood, and a paper fill needs no Robinhood stop.
+    nothing to read from still gets an answer — and that answer is never "the
+    probe is on record", because an unestablished fact is not permission. Paper
+    is untouched in both modes: the probe check applies only when the primary
+    broker is Robinhood, and a paper fill needs no Robinhood stop.
     """
     if not bool(getattr(settings, "allow_live_trading", False)):
         return (

@@ -3027,8 +3027,10 @@ class NotificationSend(Base):
 # has no automated exit.
 #
 # The docs have said "until this probe passes, live entries stay closed" since
-# Phase 6 shipped, and nothing enforced it. This table is what makes the
-# sentence true, and its shape is the whole argument for it being a table:
+# Phase 6 shipped, and nothing checked it at all. This table is what the check
+# reads; whether an absent row refuses or merely warns is
+# `ROBINHOOD_STOP_PROBE_REQUIRED`, which defaults to warning (owner ruling
+# 2026-09-15). The table's shape is the whole argument for it being a table:
 #
 # * An environment variable is an **assertion** — a human writing down that
 #   something is so. `ROBINHOOD_STOP_PROBE_PASSED=true` would be a second

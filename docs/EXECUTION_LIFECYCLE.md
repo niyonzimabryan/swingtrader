@@ -273,7 +273,7 @@ gate's. Tracked as a candidate follow-up.
 | `PHASE6_EXECUTION_ENABLED` | `false` | Off ⇒ `propose_order` is not registered and every approval callback is refused. |
 | `ALLOW_LIVE_TRADING` | `false` | Required, on top of the flag, for any **live** placement. |
 | `EXECUTION_MODE` | `paper` | `live` reaches Robinhood Agentic; `paper` reaches Alpaca paper (same lifecycle). |
-| *(no variable)* | — | A **live Robinhood** entry additionally requires a recorded protective-exit probe (§6). It is a `broker_stop_probes` row, not a flag, and there is deliberately no environment variable that turns the requirement off. |
+| `ROBINHOOD_STOP_PROBE_REQUIRED` | `false` | Off ⇒ a **live Robinhood** entry with no recorded protective-exit probe (§6) proceeds, and logs a `robinhood_stop_probe_not_enforced` WARNING naming what is unverified. On ⇒ the same entry is refused. The *evidence* is a `broker_stop_probes` row either way; this variable only decides what its absence costs. Owner ruling 2026-09-15. |
 | `EXECUTION_APPROVAL_SECRET` | *(unset)* | HMAC key for the signed approval reference. Unset ⇒ no card can be minted or verified — nothing can be approved. |
 | `RISK_FRACTION_HARD_CAP` | `0.01` | A `risk_fraction` above this is refused, not clamped. |
 | `RISK_FRACTION_PERCENTAGE_FLOOR` | `0.05` | A `risk_fraction` at/above this is refused as a percentage typed as a fraction. |
@@ -316,10 +316,12 @@ The probe is an owner action, placed **by hand in the Robinhood app**. Do not
 run it from a build session, and do not run it through `propose_order`: the
 system's first live placement must not be the one that tests whether the
 system's protection works. (Until 2026-09-15 this runbook did say to propose and
-approve it. It cannot any more — the gate below refuses a live Robinhood entry
-until the probe is on record, and a runbook that asks the system to place the
-order that authorises the system is a circle. Placing it by hand was always the
-safer half of that choice; now it is the only one.)
+approve it. It says by hand now for two reasons, and only the first depends on
+enforcement being on: under `ROBINHOOD_STOP_PROBE_REQUIRED=true`, a runbook that
+asks the system to place the order that authorises the system is a circle; and
+in either mode, asking the untested protection path to protect the very order
+that tests it is backwards. Placing it by hand was always the safer half of that
+choice.)
 
 Runbook:
 
@@ -361,39 +363,69 @@ still reads its stop back inside `PROTECTION_WINDOW_SECONDS` and pages,
 marks `unprotected` and blocks every further entry if it cannot. What changes
 with the probe recorded is that the *survival* of that stop is no longer a guess.
 
-### And now it is enforced
+### Strongly recommended, checked in code, and advisory by default
 
-Until this probe passes, live entries stay closed (Spec L §5.1: "Until the probe
-passes, live entries stay closed"). That sentence was aspiration until
-`0015_broker_stop_probes`; it is now `live_gate_refusal`'s third condition.
+**Run this probe.** It is still the only way to establish that a `gtc`
+`stop_market` survives at Robinhood and is readable back through
+`get_equity_orders` — the fact the whole protective-exit contract rests on, and
+the one thing standing between a live fill and a position with no automated
+exit. Nothing below makes it optional as a piece of engineering; it makes it
+optional as a *blocker*.
 
-* **A row, not a flag.** `ROBINHOOD_STOP_PROBE_PASSED=true` would record an
-  assertion — a human writing down that something is so, which is what
-  `ALLOW_LIVE_TRADING` and `EXECUTION_MODE` already are. The row records a
-  verification: the order id that was read back and the moment it was seen.
+**Live entries do not stay closed until it passes.** Spec L §5.1 and this
+section used to say they did, and for a while nothing in the code agreed with
+them. Since `0015_broker_stop_probes` the check exists — `live_gate_refusal`'s
+third condition, reading a `broker_stop_probes` row — but Bryan ruled on
+2026-09-15, having been shown what it protects against, that it must not block
+him. So:
+
+* **Default (`ROBINHOOD_STOP_PROBE_REQUIRED` unset or `false`)** — a live
+  Robinhood entry with no probe on record **proceeds**, and every time it does,
+  `portfolio/stop_probe.py` logs a WARNING (`robinhood_stop_probe_not_enforced`)
+  carrying the refusal code it would have used, the masked account, what a
+  record would have contained, and the variable that turns enforcement on. The
+  warning is not suppressible: advisory-and-silent would be the original defect
+  — a safety claim nobody enforces and nobody prints — in a new costume.
+* **`ROBINHOOD_STOP_PROBE_REQUIRED=true`** — the same finding refuses instead,
+  with the same code and the same message. Set it once the probe is recorded if
+  you want it to stay that way, or before it is, if you would rather be blocked
+  than warned.
+
+The finding itself does not move with the flag. Only the consequence does:
+
+* **A row, not a flag, is what counts as evidence.**
+  `ROBINHOOD_STOP_PROBE_PASSED=true` would record an assertion — a human writing
+  down that something is so, which is what `ALLOW_LIVE_TRADING` and
+  `EXECUTION_MODE` already are. The row records a verification: the order id
+  that was read back and the moment it was seen.
+  `ROBINHOOD_STOP_PROBE_REQUIRED` is not that assertion in disguise — it cannot
+  say the probe passed, only whether an absent one is fatal.
 * **Keyed to `(broker, account)`.** A probe is evidence about the account it ran
   in. A record for another Robinhood account does not authorise this one; the
   key is a SHA-256 of the account number, because a masked `****1234` can
   collide and a collision in a gate reads as permission.
-* **Absence means not probed.** So does a row with no order id or no observation
-  timestamp, and so does a gate with no database session to read from (Spec Q
-  §12 invariant 1). There is no bypass flag, deliberately: one would be the
-  permissive default wearing a different name.
+* **Absence is never read as "probed".** Neither is a row with no order id or no
+  observation timestamp, nor a gate with no database session to read from (Spec
+  Q §12 invariant 1). In the default mode all four warn; under
+  `ROBINHOOD_STOP_PROBE_REQUIRED=true` all four refuse. What none of them ever
+  does is pass silently.
 * **Only Robinhood live entries.** `BROKER_PRIMARY` is what routes a live
   placement (`execution/brokers/factory.py::_build_primary`), so it is what the
-  gate reads. Paper routes to Alpaca paper and needs no Robinhood stop, and a
+  check reads. Paper routes to Alpaca paper and needs no Robinhood stop, and a
   Strategy Lab paper arm may reach only Alpaca paper (Spec Q §11). Neither is
-  gated, in either state.
+  gated and neither warns, in either state and either mode.
 * **One place.** The check is inside `live_gate_refusal`, not beside it, for the
   reason that function's docstring gives: two copies of "what makes live legal"
   is the drift this path cannot afford. All three of its callers — the approval
   path, the Phase 5 pre-placement gate, and the promotion deployment check —
   get it by passing their session through.
 
-The refusal codes are `robinhood_stop_probe_not_recorded`,
+The codes are `robinhood_stop_probe_not_recorded`,
 `robinhood_stop_probe_account_unknown` and `robinhood_stop_probe_unverifiable`,
-and each message names the remedy. `tests/test_robinhood_stop_probe_gate.py`
-holds the rows.
+and each message names the remedy whether it is refused or logged.
+`tests/test_robinhood_stop_probe_gate.py` holds the rows for both modes —
+including that the default really is `false`, and that it passes loudly rather
+than quietly.
 
 ---
 
@@ -435,7 +467,9 @@ observer injected, this service behaves exactly as Phase 6 shipped it:
   before a live card is minted. Two copies of "what makes live legal" is the
   kind of drift this path cannot afford, which is also why §6's protective-exit
   probe was added to this function rather than checked beside it. `session` is
-  how the probe record is read; a caller with none gets a refusal, never a pass.
+  how the probe record is read; a caller with none is never told the probe is on
+  record — it is refused under `ROBINHOOD_STOP_PROBE_REQUIRED=true` and warned
+  about by default.
 
 One defect was fixed rather than added to. `_reconcile_unknown` previously
 returned `None` when an ambiguous placement's `ref_id` **was** found at the

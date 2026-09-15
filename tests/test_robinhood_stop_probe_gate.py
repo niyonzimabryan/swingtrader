@@ -1,18 +1,28 @@
-"""The Robinhood protective-exit probe, as an enforced gate rather than a claim.
+"""The Robinhood protective-exit probe: what it finds, and what that costs.
 
 ``docs/EXECUTION_LIFECYCLE.md`` §6 and Spec L §5.1 both say "until this probe
 passes, live entries stay closed". Before this module nothing said it to the
 code, and these are the rows that make the sentence testable:
 
-* a live Robinhood entry is **refused** when no probe is on record;
+* a live Robinhood entry is **refused** when no probe is on record — under
+  ``ROBINHOOD_STOP_PROBE_REQUIRED=true``, the mode that behaviour describes;
 * it is **allowed** when one is, for that broker and that account;
 * a record for a **different account** does not authorise this one;
-* **paper is unaffected** in both states, and so is a Strategy Lab paper arm;
+* **paper is unaffected** in both states and both modes, and so is a Strategy
+  Lab paper arm;
 * the refusal carries a **distinct code** and a message naming the remedy;
 * absence *and invalidity* mean not probed (Spec Q §12 invariant 1);
 * the migration applies and rolls back cleanly;
 * the recording script has **no placement path at all** — it verifies and
   records what the owner did by hand (non-negotiable 1).
+
+Owner ruling 2026-09-15: the gate is **advisory by default**. The finding does
+not move with the flag; what moves is whether it refuses or warns. So
+:class:`AdvisoryDefaultTests` asserts the default is ``False``, that an unprobed
+live Robinhood entry then passes, and — the part that matters — that it passes
+*loudly*. A silent pass is the failure mode this whole module exists to prevent:
+a safety claim nobody enforces and nobody prints is invisible, which is exactly
+what §6 used to be.
 """
 
 from __future__ import annotations
@@ -20,6 +30,7 @@ from __future__ import annotations
 import inspect as pyinspect
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 from alembic import command
 from sqlalchemy import create_engine, inspect
@@ -41,12 +52,20 @@ OTHER_ACCOUNT = "TESTACCT0002"
 
 
 def live_settings(**overrides):
-    """Every live flag on, Robinhood primary — the configuration under test."""
+    """Every live flag on, Robinhood primary — the configuration under test.
+
+    ``robinhood_stop_probe_required=True`` because every assertion built on this
+    helper is about what the gate does when it *refuses*, and after the owner's
+    2026-09-15 ruling that is the enforcing mode rather than the default one.
+    The behaviour asserted downstream is unchanged; only the mode it is asserted
+    in is named. :class:`AdvisoryDefaultTests` covers the default.
+    """
     base = dict(
         execution_mode="live",
         allow_live_trading=True,
         broker_primary="robinhood",
         robinhood_account_number=PROBED_ACCOUNT,
+        robinhood_stop_probe_required=True,
     )
     base.update(overrides)
     return pf.settings(**base)
@@ -162,6 +181,136 @@ class GateTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# 1b. The advisory default (owner ruling 2026-09-15)
+# --------------------------------------------------------------------------- #
+
+
+class AdvisoryDefaultTests(unittest.TestCase):
+    """Off by default, but never silent.
+
+    The owner ruled that a missing probe must not block him. What it must still
+    do is say so: these rows assert the pass *and* the warning, because a pass
+    nobody can see is the same invisible safety claim §6 used to make.
+    """
+
+    def setUp(self):
+        self.db = TestDatabase("stop_probe_advisory")
+        self.addCleanup(self.db.cleanup)
+        from database.db import init_db
+
+        init_db(self.db.url)
+
+    def advisory_settings(self, **overrides):
+        """The live Robinhood configuration with the flag left at its default."""
+        return live_settings(robinhood_stop_probe_required=False, **overrides)
+
+    def gate(self, settings):
+        """``(result, warning calls)`` for one call through the real gate."""
+        with patch.object(stop_probe, "log") as fake_log:
+            with get_session() as session:
+                result = live_gate_refusal(settings, session)
+        return result, fake_log.warning.call_args_list
+
+    def test_the_setting_defaults_to_false(self):
+        from config.settings import Settings
+
+        self.assertFalse(
+            Settings.model_fields["robinhood_stop_probe_required"].default
+        )
+
+    def test_a_settings_object_without_the_field_is_advisory(self):
+        """An older settings object predating the flag warns rather than refuses."""
+        bare = pf.settings(
+            execution_mode="live",
+            allow_live_trading=True,
+            broker_primary="robinhood",
+            robinhood_account_number=PROBED_ACCOUNT,
+        )
+        self.assertFalse(stop_probe.required(bare))
+        result, warnings = self.gate(bare)
+        self.assertIsNone(result)
+        self.assertEqual(len(warnings), 1)
+
+    def test_an_unprobed_live_robinhood_entry_is_not_refused(self):
+        result, _ = self.gate(self.advisory_settings())
+        self.assertIsNone(result)
+
+    def test_and_it_is_not_silent(self):
+        """The assertion that matters: a silent pass is the failure mode."""
+        _, warnings = self.gate(self.advisory_settings())
+        self.assertEqual(len(warnings), 1, warnings)
+        event, kwargs = warnings[0][0][0], warnings[0][1]
+        self.assertEqual(event, stop_probe.NOT_ENFORCED)
+        self.assertEqual(kwargs["code"], stop_probe.NOT_RECORDED)
+        self.assertEqual(kwargs["broker"], stop_probe.ROBINHOOD)
+        self.assertEqual(kwargs["account"], "****0001")
+        self.assertFalse(kwargs["enforced"])
+        # It names what is happening...
+        self.assertIn(
+            "live Robinhood entry is proceeding with no recorded "
+            "protective-exit probe",
+            kwargs["detail"],
+        )
+        # ...what a record would have contained...
+        self.assertIn("get_equity_orders", kwargs["would_record"])
+        self.assertIn("gtc stop_market", kwargs["would_record"])
+        # ...and how to make it refuse instead.
+        self.assertIn("ROBINHOOD_STOP_PROBE_REQUIRED=true", kwargs["enforce_with"])
+
+    def test_the_warning_carries_the_same_reason_the_refusal_would(self):
+        """Advisory and enforcing differ in consequence, never in the finding."""
+        enforcing, _ = self.gate(live_settings())
+        code, reason = enforcing
+        _, warnings = self.gate(self.advisory_settings())
+        self.assertEqual(warnings[0][1]["code"], code)
+        self.assertIn(reason, warnings[0][1]["detail"])
+        self.assertIn("scripts/robinhood_stop_probe.py", warnings[0][1]["detail"])
+
+    def test_a_recorded_probe_passes_and_says_nothing(self):
+        record_probe()
+        result, warnings = self.gate(self.advisory_settings())
+        self.assertIsNone(result)
+        self.assertEqual(warnings, [])
+
+    def test_the_other_two_findings_also_only_warn(self):
+        """``account_unknown`` and ``unverifiable`` follow the same flag."""
+        result, warnings = self.gate(
+            self.advisory_settings(robinhood_account_number="")
+        )
+        self.assertIsNone(result)
+        self.assertEqual(warnings[0][1]["code"], stop_probe.ACCOUNT_UNKNOWN)
+        self.assertEqual(warnings[0][1]["account"], "(unset)")
+
+        with patch.object(stop_probe, "log") as fake_log:
+            self.assertIsNone(live_gate_refusal(self.advisory_settings(), None))
+        self.assertEqual(
+            fake_log.warning.call_args[1]["code"], stop_probe.UNVERIFIABLE
+        )
+
+    def test_turning_it_on_restores_exactly_today_s_refusal(self):
+        """Same code, same message, and no warning instead of the refusal."""
+        with get_session() as session:
+            expected = stop_probe.finding(self.advisory_settings(), session)
+        result, warnings = self.gate(live_settings())
+        self.assertEqual(result, expected)
+        self.assertEqual(result[0], stop_probe.NOT_RECORDED)
+        self.assertEqual(warnings, [])
+
+    def test_a_non_robinhood_deployment_neither_refuses_nor_warns(self):
+        result, warnings = self.gate(self.advisory_settings(broker_primary="alpaca"))
+        self.assertIsNone(result)
+        self.assertEqual(warnings, [])
+
+    def test_the_flags_are_still_refused_ahead_of_the_probe(self):
+        """The advisory flag relaxes the probe condition and nothing else."""
+        result, warnings = self.gate(
+            self.advisory_settings(allow_live_trading=False)
+        )
+        self.assertEqual(result[0], "live_trading_disabled")
+        self.assertEqual(warnings, [])
+
+
+# --------------------------------------------------------------------------- #
 # 2. The gate where it bites: approval to placement
 # --------------------------------------------------------------------------- #
 
@@ -252,6 +401,28 @@ class ApprovalPathTests(unittest.TestCase):
         result = self._approve(proposal_id, signature, paper_settings)
         self.assertEqual(result.status, "protected", result.message)
 
+    def test_the_advisory_default_lets_the_same_live_approval_through(self):
+        """The owner's ruling, through the real approval path: it places, loudly."""
+        advisory = live_settings(robinhood_stop_probe_required=False)
+        proposal_id, signature = self._proposal(advisory)
+        with patch.object(stop_probe, "log") as fake_log:
+            result = self._approve(proposal_id, signature, advisory)
+        self.assertEqual(result.status, "protected", result.message)
+        fake_log.warning.assert_called_once()
+        self.assertEqual(fake_log.warning.call_args[0][0], stop_probe.NOT_ENFORCED)
+
+    def test_a_paper_proposal_warns_about_nothing_in_the_advisory_default(self):
+        paper_settings = live_settings(
+            execution_mode="paper",
+            allow_live_trading=False,
+            robinhood_stop_probe_required=False,
+        )
+        proposal_id, signature = self._proposal(paper_settings)
+        with patch.object(stop_probe, "log") as fake_log:
+            result = self._approve(proposal_id, signature, paper_settings)
+        self.assertEqual(result.status, "protected", result.message)
+        fake_log.warning.assert_not_called()
+
 
 # --------------------------------------------------------------------------- #
 # 3. A Strategy Lab paper arm, in both states
@@ -274,15 +445,16 @@ class StrategyLabPaperTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
 
-    def _dispatch(self):
-        return self.fixture.dispatch(
-            settings=self.fixture.settings_for(
-                execution_mode="live",
-                allow_live_trading=True,
-                broker_primary="robinhood",
-                robinhood_account_number=PROBED_ACCOUNT,
-            )
+    def _dispatch(self, **overrides):
+        params = dict(
+            execution_mode="live",
+            allow_live_trading=True,
+            broker_primary="robinhood",
+            robinhood_account_number=PROBED_ACCOUNT,
+            robinhood_stop_probe_required=True,
         )
+        params.update(overrides)
+        return self.fixture.dispatch(settings=self.fixture.settings_for(**params))
 
     def test_a_paper_arm_dispatches_with_no_probe_on_record(self):
         summary = self._dispatch()
@@ -294,6 +466,14 @@ class StrategyLabPaperTests(unittest.TestCase):
         summary = self._dispatch()
         self.assertEqual(summary.proposed, 2, summary.skipped)
         self.fixture.assertNoOrders()
+
+    def test_a_paper_arm_is_equally_untouched_in_the_advisory_default(self):
+        """Paper is ungated in both modes, so it must not warn either."""
+        with patch.object(stop_probe, "log") as fake_log:
+            summary = self._dispatch(robinhood_stop_probe_required=False)
+        self.assertEqual(summary.proposed, 2, summary.skipped)
+        self.fixture.assertNoOrders()
+        fake_log.warning.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #

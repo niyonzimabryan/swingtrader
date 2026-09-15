@@ -26,10 +26,20 @@ ran in. A verified stop in the funded probe account says nothing about a second
 Robinhood account, so the key is ``(broker, account_fingerprint)`` and a row for
 one account never authorises another.
 
-**Why absence refuses.** Spec Q §12 invariant 1: absence or invalidity of a
-record must mean *not probed*, never permission. Every function here is a
-positive check, and every path that cannot reach an answer returns a refusal
-rather than ``None``.
+**Why absence is never read as probed.** Spec Q §12 invariant 1: absence or
+invalidity of a record must mean *not probed*, never permission. Every function
+here is a positive check, and every path that cannot reach an answer reports
+"not probed" rather than silently passing.
+
+**What "not probed" then costs is the owner's call.** Bryan ruled on 2026-09-15
+that this gate is *advisory by default*: with
+``ROBINHOOD_STOP_PROBE_REQUIRED`` unset (``False``), an unprobed live Robinhood
+entry proceeds and :func:`refusal` logs a loud warning naming exactly what is
+unverified and what a record would have contained. With it ``true``, the same
+condition refuses, with the same codes and the same messages. The *finding* does
+not move with the flag — only what is done about it — which is the whole reason
+the warning is not optional. A claim nobody enforces and nobody prints is
+invisible, and invisible was the defect this module was written to fix.
 
 This module lives in ``portfolio/`` for the reason ``portfolio/owner_actions.py``
 does: both the runtime and a recording script must import it, and ``portfolio/``
@@ -45,7 +55,10 @@ from datetime import datetime
 from sqlalchemy import select
 
 from database.models import BrokerStopProbe
+from utils.logger import get_logger
 from utils.timeutils import utcnow_naive
+
+log = get_logger("stop_probe")
 
 #: The broker whose protective exit is unverified. Alpaca paper is not gated —
 #: a paper fill needs no Robinhood stop, and a Strategy Lab paper arm reaches
@@ -57,6 +70,19 @@ ROBINHOOD = "robinhood"
 NOT_RECORDED = "robinhood_stop_probe_not_recorded"
 ACCOUNT_UNKNOWN = "robinhood_stop_probe_account_unknown"
 UNVERIFIABLE = "robinhood_stop_probe_unverifiable"
+
+#: The structlog event emitted when the gate found a reason to refuse and the
+#: owner has it advisory. Stable: an alert rule may match on it.
+NOT_ENFORCED = "robinhood_stop_probe_not_enforced"
+
+#: What a probe record carries, said in one line for the advisory warning. The
+#: point of printing it is that "no record" is otherwise indistinguishable from
+#: "nothing to record".
+WOULD_RECORD = (
+    "a broker_stop_probes row carrying the broker's order id for a gtc "
+    "stop_market read back out of get_equity_orders, its symbol and stop price, "
+    "and the moment it was observed"
+)
 
 _REMEDY = (
     "Run the probe by hand (docs/EXECUTION_LIFECYCLE.md §6), then record what "
@@ -159,12 +185,61 @@ def find(session, *, broker: str, account_number: str) -> ProbeRecord | None:
     )
 
 
+def required(settings) -> bool:
+    """Whether an unprobed live Robinhood entry is refused or merely warned.
+
+    Defaults to ``False`` — the owner's ruling of 2026-09-15 — so a settings
+    object that predates ``ROBINHOOD_STOP_PROBE_REQUIRED`` is advisory, which is
+    also what the owner asked the default to be.
+    """
+    return bool(getattr(settings, "robinhood_stop_probe_required", False))
+
+
 def refusal(settings, session) -> tuple[str, str] | None:
+    """``(code, reason)`` when a live Robinhood entry must be refused.
+
+    :func:`finding` is what decides whether the probe is missing; this decides
+    what that costs. When :func:`required` is on, the finding is returned
+    unchanged and the entry is refused. When it is off — the default — the
+    finding is logged at WARNING and ``None`` is returned, so the entry
+    proceeds.
+
+    The warning is not optional in the advisory mode, and that is the point: the
+    defect this module was written for was a safety claim that nothing enforced
+    *and* nothing printed. Advisory-and-loud is a decision the owner can see in
+    the logs every time it is taken; advisory-and-silent is the same invisible
+    claim wearing a flag.
+    """
+    finding_ = finding(settings, session)
+    if finding_ is None:
+        return None
+    if required(settings):
+        return finding_
+
+    code, reason = finding_
+    account_number = str(getattr(settings, "robinhood_account_number", "") or "").strip()
+    log.warning(
+        NOT_ENFORCED,
+        code=code,
+        broker=ROBINHOOD,
+        account=mask(account_number) if account_number else "(unset)",
+        enforced=False,
+        detail=(
+            "a live Robinhood entry is proceeding with no recorded "
+            "protective-exit probe. " + reason
+        ),
+        would_record=WOULD_RECORD,
+        enforce_with="ROBINHOOD_STOP_PROBE_REQUIRED=true",
+    )
+    return None
+
+
+def finding(settings, session) -> tuple[str, str] | None:
     """``(code, reason)`` when a live Robinhood entry has no probe behind it.
 
     ``None`` means either "this is not a gated placement" or "a probe is on
-    record for this exact account". Everything else refuses, including the two
-    ways of not being able to answer the question:
+    record for this exact account". Everything else is a finding, including the
+    two ways of not being able to answer the question:
 
     * ``session`` is ``None`` — a caller that cannot read the record cannot
       establish the fact, and an unestablished fact is not permission;
