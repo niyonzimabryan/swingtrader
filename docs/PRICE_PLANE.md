@@ -360,6 +360,22 @@ a number comfortably under the host's actual memory ceiling; the guard only
 samples between tickers, so it cannot catch a spike mid-ticker, though one
 ticker's history is small enough that this has not been a practical problem.
 
+**Three zips, not 470 requests.** A `--bulk` run downloads `stocks`,
+`actions` *and* `tickers`. The security master used to come from
+`security_master` 30 tickers at a time — roughly 470 requests for a
+whole-market run, plus one `actions` slice for every delisted name to get its
+reason category — and Sharadar answered `HTTP 429 ... Request count quota
+exceeded. Slow down or use bulk downloads for large extracts.` The `tickers`
+table only publishes a full snapshot (`docs/vendors/sharadar.md`), so
+`SharadarPricePlane.iter_security_master_bulk` reads that one zip as a stream
+and resolves every name from it, taking delisting reasons from the `actions`
+zip already in hand. The per-request `security_master` is unchanged and still
+what `--tickers`, the delisting audit and `daily_bars` use: one request beats
+470, but 470 beats a whole-market download when you want three names. Both
+paths build their rows through the same `_master_row_from_tickers_row`, so a
+`security_uid` or an `asset_class` cannot differ between them
+(`tests/test_sharadar_tickers_bulk.py` asserts it row for row).
+
 `load_bulk_bars`/`load_bulk_actions` still exist and still return a
 whole-market dict — for the test suite, mainly — but `backfill_bulk` does not
 call them; it drives `SharadarPricePlane.open_bulk_bar_stream` directly. See

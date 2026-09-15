@@ -837,6 +837,27 @@ class SharadarBulkDownloadTests(unittest.TestCase):
             archive.writestr(name, csv_text)
         return buffer.getvalue()
 
+    @classmethod
+    def _tickers_zip_bytes(cls, rows) -> bytes:
+        """The `tickers` rows the stub serves over HTTP, as the bulk snapshot.
+
+        `backfill_bulk` resolves its security master from this one zip rather
+        than from `security_master` 30 tickers at a time (~470 requests on a
+        whole-market run, which the vendor answered with a 429). Built from
+        the very rows the HTTP stub holds, so the assertions below — that the
+        stored `security_uid` is the real permaticker-derived one — bind the
+        bulk path exactly as they bound the per-request one.
+        """
+        from data.prices.sharadar import TICKERS_COLUMNS as _BULK_TICKERS_COLUMNS
+
+        lines = [",".join(_BULK_TICKERS_COLUMNS)]
+        for row in rows:
+            lines.append(",".join(
+                str(row.get(column, "")).replace(",", " ")
+                for column in _BULK_TICKERS_COLUMNS
+            ))
+        return cls._zip_bytes("SHARADAR_TICKERS.csv", "\n".join(lines) + "\n")
+
     def test_bulk_download_streams_the_zip_to_disk(self):
         content = self._zip_bytes("stocks.csv", "ticker,date\nBBBY,2023-05-02\n")
         client = _StubClient(streams={"stocks": _StubStream(content=content)})
@@ -936,18 +957,20 @@ class SharadarBulkDownloadTests(unittest.TestCase):
             "2023-04-24,bankruptcy,BBBY,\n"
             "2022-01-10,dividend,BBBY,0.10\n",
         )
+        tickers_rows = [
+            {"table": "stocks", "permaticker": "199059", "ticker": "BBBY",
+             "name": "Bed Bath & Beyond Inc", "exchange": "NASDAQ", "isdelisted": "Y",
+             "firstpricedate": "1992-07-28", "lastpricedate": "2023-05-02"},
+            {"table": "stocks", "permaticker": "320193", "ticker": "AAPL",
+             "name": "Apple Inc", "exchange": "NASDAQ", "isdelisted": "N",
+             "firstpricedate": "1980-12-12", "lastpricedate": "2023-05-02"},
+        ]
         client = _StubClient(
-            tables=_sharadar_tables(tickers=[
-                {"table": "stocks", "permaticker": "199059", "ticker": "BBBY",
-                 "name": "Bed Bath & Beyond Inc", "exchange": "NASDAQ", "isdelisted": "Y",
-                 "firstpricedate": "1992-07-28", "lastpricedate": "2023-05-02"},
-                {"table": "stocks", "permaticker": "320193", "ticker": "AAPL",
-                 "name": "Apple Inc", "exchange": "NASDAQ", "isdelisted": "N",
-                 "firstpricedate": "1980-12-12", "lastpricedate": "2023-05-02"},
-            ]),
+            tables=_sharadar_tables(tickers=tickers_rows),
             streams={
                 "stocks": _StubStream(content=stocks_csv),
                 "actions": _StubStream(content=actions_csv),
+                "tickers": _StubStream(content=self._tickers_zip_bytes(tickers_rows)),
             },
         )
         plane = SharadarPricePlane(api_key="test-key", client=client)
@@ -955,6 +978,13 @@ class SharadarBulkDownloadTests(unittest.TestCase):
         from database.db import get_session
 
         summary = backfill_bulk(plane, "10", None, since=None, until=None, check=True)
+        # The security master came from the `tickers` zip, not from ~470
+        # `tickers` requests — the request count that earned a 429 in
+        # production. Nor did any delisted name cost an `actions` slice.
+        self.assertEqual([t for t, *_ in client.calls], [])
+        self.assertEqual(
+            sorted(t for t, *_ in client.stream_calls), ["actions", "stocks", "tickers"],
+        )
         self.assertEqual(summary["tickers_with_bars"], 2)
         self.assertEqual(summary["bars_written"], 5)
         self.assertEqual(summary["actions_written"], 2)
@@ -997,15 +1027,17 @@ class SharadarBulkDownloadTests(unittest.TestCase):
             "AAPL,2023-05-01,170.0,171.0,169.0,170.5,5000000,170.5\n",
         )
         actions_csv = self._zip_bytes("SHARADAR_ACTIONS.csv", "date,action,ticker,value\n")
+        tickers_rows = [
+            {"table": "stocks", "permaticker": "199059", "ticker": "BBBY",
+             "name": "Bed Bath & Beyond Inc", "exchange": "NASDAQ", "isdelisted": "Y",
+             "firstpricedate": "1992-07-28", "lastpricedate": "2023-05-02"},
+        ]
         client = _StubClient(
-            tables=_sharadar_tables(tickers=[
-                {"table": "stocks", "permaticker": "199059", "ticker": "BBBY",
-                 "name": "Bed Bath & Beyond Inc", "exchange": "NASDAQ", "isdelisted": "Y",
-                 "firstpricedate": "1992-07-28", "lastpricedate": "2023-05-02"},
-            ]),
+            tables=_sharadar_tables(tickers=tickers_rows),
             streams={
                 "stocks": _StubStream(content=stocks_csv),
                 "actions": _StubStream(content=actions_csv),
+                "tickers": _StubStream(content=self._tickers_zip_bytes(tickers_rows)),
             },
         )
         plane = SharadarPricePlane(api_key="test-key", client=client)

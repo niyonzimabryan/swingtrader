@@ -126,6 +126,13 @@ MASTER_TICKER_PARAM_MAX_CHARS = 190
 #: `docs/vendors/sharadar.md`.
 MASTER_TICKER_PARAM_MAX_COUNT = 30
 
+#: Master rows held before an upsert on the `--bulk` path, which reads the
+#: whole `tickers` snapshot as a stream rather than 30 tickers per request.
+#: Unrelated to the two limits above: nothing is in a URL here, this is only
+#: how much of the snapshot is in memory at once between `store.upsert_
+#: securities` calls.
+MASTER_UPSERT_BATCH_ROWS = 1_000
+
 #: `--max-rss-mb` default. Chosen well under the bot container's 8 GB cgroup
 #: limit — the platform SIGKILLed at 3.4 GB in production, so this guard is
 #: meant to abort long before either ceiling, leaving room to actually see the
@@ -377,6 +384,17 @@ def backfill_bulk(
     storing the placeholder would silently orphan every bulk-loaded bar from
     its security-master row.
 
+    That security master is itself read from a **third bulk zip**, the
+    `tickers` snapshot, rather than from `security_master` 30 tickers at a
+    time: the per-request loop was ~470 requests for a whole-market run and
+    Sharadar answered `HTTP 429 ... Request count quota exceeded. Slow down or
+    use bulk downloads for large extracts.` The per-request path is unchanged
+    and still what `backfill` (`--tickers`), `data/prices/audit.py` and
+    `daily_bars` use — it is the cheaper of the two for a short list. Delisted
+    names take their reason category from the `actions` zip already in hand
+    instead of one `actions` slice request each, through the same
+    `_delisting_reason_from_actions` mapping.
+
     Each ticker is stored in **one transaction** and checkpointed immediately
     after (`checkpoint_path`, default a fixed path under the OS temp
     directory) — a run killed at any point resumes with `resume=True` (or the
@@ -468,10 +486,35 @@ def backfill_bulk(
                 ticker_list = stream.tickers()
                 uid_by_ticker: dict[str, str] = {}
                 securities_written = 0
-                for batch in _master_batches(ticker_list):
-                    master_rows = plane.security_master(batch)
-                    securities_written += store.upsert_securities(session, master_rows)
-                    uid_by_ticker.update({row.ticker: row.security_uid for row in master_rows})
+                staged = set(ticker_list)
+                # One request for the whole security master, not one per 30
+                # tickers. See `iter_security_master_bulk`: ~470 requests for
+                # a whole-market run is what earned the vendor's
+                # "Request count quota exceeded. Slow down or use bulk
+                # downloads for large extracts." The snapshot is filtered back
+                # down to the staged tickers so what gets written is exactly
+                # what the per-request loop wrote.
+                with tempfile.TemporaryDirectory(prefix="sharadar_bulk_master_") as tmp:
+                    tickers_zip = plane.bulk_download(
+                        "tickers", years, Path(tmp) / "tickers.zip",
+                    )
+                    batch: list = []
+
+                    def _flush(rows: list) -> int:
+                        uid_by_ticker.update({r.ticker: r.security_uid for r in rows})
+                        return store.upsert_securities(session, rows)
+
+                    for master_row in plane.iter_security_master_bulk(
+                        tickers_zip, actions_by_ticker=actions_by_ticker,
+                    ):
+                        if master_row.ticker not in staged:
+                            continue
+                        batch.append(master_row)
+                        if len(batch) >= MASTER_UPSERT_BATCH_ROWS:
+                            securities_written += _flush(batch)
+                            batch = []
+                    if batch:
+                        securities_written += _flush(batch)
                 session.commit()
                 state["securities_written"] += securities_written
                 _save_bulk_checkpoint(state)
