@@ -714,12 +714,44 @@ class RobinhoodMCPBroker:
         """The declared capability set, recorded on ``brokerage_accounts``."""
         return ROBINHOOD_CAPABILITIES
 
-    def get_tax_lots(self, account_number: str | None = None) -> list[dict]:
+    def get_tax_lots(self, account_number: str | None = None, symbol: str | None = None) -> list[dict]:
+        """Tax lots for **one** symbol in one account.
+
+        The vendor tracks lots per instrument: ``get_equity_tax_lots`` declares
+        ``symbol`` as required in its own inputSchema ("one symbol per call"),
+        and calling it with only ``account_number`` is refused with ``invalid
+        params: missing properties: ["symbol"]``. That refusal was the reason
+        no portfolio sync had ever completed (found 2026-09-15, once #103 stopped
+        the exception group's constant message from erasing it).
+
+        Two shape facts from the outputSchema: rows are at ``data.tax_lots``,
+        and they carry **no** ``symbol`` — it sits once at ``data.symbol``. So
+        the symbol is injected into every row here, or ``_tax_lot`` would drop
+        each one as symbol-less. ``data.next`` is a pagination cursor; followed
+        with a bound, so a large position cannot silently truncate its lots.
+
+        No symbol means there is no instrument to ask about, and the answer is
+        an empty list rather than a refused call.
+        """
         account = account_number or self.account_number
-        if not account:
+        if not account or not symbol:
             return []
-        raw = self._call_tool_sync("get_equity_tax_lots", {"account_number": account})
-        return _extract_list(raw, preferred_keys=("tax_lots", "lots", "results"))
+        wanted = symbol.upper()
+        rows: list[dict] = []
+        cursor = None
+        for _ in range(_TAX_LOT_MAX_PAGES):
+            args: dict = {"account_number": account, "symbol": wanted}
+            if cursor:
+                args["cursor"] = cursor
+            raw = self._call_tool_sync("get_equity_tax_lots", args)
+            page = _extract_list(raw, preferred_keys=("tax_lots", "lots", "results"))
+            for row in page:
+                row.setdefault("symbol", wanted)
+            rows.extend(page)
+            cursor = _tax_lot_next_cursor(raw)
+            if not cursor:
+                break
+        return rows
 
     def get_option_positions(self, account_number: str | None = None) -> list[dict]:
         """Option positions, read so they are never silently omitted.
@@ -798,7 +830,13 @@ class RobinhoodMCPBroker:
             if option is not None:
                 holdings.append(option)
 
-        lots = [_tax_lot(row, record.booking_method) for row in self.get_tax_lots(number)]
+        # Lots are per instrument at the vendor, so ask per held equity symbol —
+        # and with nothing held, ask nothing. An account-wide call is refused.
+        lots = []
+        for held in sorted({h.symbol for h in holdings if h.instrument_type == "equity"}):
+            lots.extend(
+                _tax_lot(row, record.booking_method) for row in self.get_tax_lots(number, held)
+            )
         lots = [lot for lot in lots if lot is not None]
 
         portfolio = _select_account_object(
@@ -1008,6 +1046,24 @@ def _describe_exception(exc: BaseException, _depth: int = 0) -> str:
     if len(message) > _CAUSE_MAX_CHARS:
         message = message[:_CAUSE_MAX_CHARS] + "..."
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+
+
+#: Upper bound on ``get_equity_tax_lots`` pages followed for one symbol. The
+#: vendor paginates with ``data.next``; twenty pages is far beyond any real
+#: position and keeps the loop obviously terminating.
+_TAX_LOT_MAX_PAGES = 20
+
+
+def _tax_lot_next_cursor(raw: Any) -> str | None:
+    """``data.next`` from a ``get_equity_tax_lots`` response, or ``None``."""
+    if not isinstance(raw, dict):
+        return None
+    for envelope in (raw.get("data"), (raw.get("structured") or {}).get("data") if isinstance(raw.get("structured"), dict) else None, raw):
+        if isinstance(envelope, dict):
+            nxt = envelope.get("next")
+            if isinstance(nxt, str) and nxt.strip():
+                return nxt.strip()
+    return None
 
 
 def _extract_list(raw: Any, preferred_keys: tuple[str, ...], _depth: int = 0) -> list[dict]:
