@@ -290,7 +290,7 @@ class StrategyExecutionService:
         active live champion. A promotion is not a standing licence: an arm that
         has since been paused, retired, or replaced as champion is not live.
         """
-        refusal = p6.live_gate_refusal(self.settings)
+        refusal = p6.live_gate_refusal(self.settings, session)
         if refusal is not None:
             return refusal
         if (arm.status or "") != "active":

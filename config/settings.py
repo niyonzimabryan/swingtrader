@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     robinhood_blocked_symbols: str = ""
     robinhood_order_type: str = "market"  # market for small-dollar fractional, limit for whole-share control
     robinhood_market_hours: str = "regular_hours"
+    # Owner ruling 2026-09-15: the protective-exit probe (docs/EXECUTION_LIFECYCLE.md
+    # §6) is advisory by default. False ⇒ a live Robinhood entry with no recorded
+    # probe proceeds and logs a loud warning naming what is unverified. True ⇒
+    # `portfolio.stop_probe.refusal` refuses that entry instead. Nothing else about
+    # the record changes: the row, the script and the (broker, account) keying are
+    # the same in both modes, and paper is ungated in both.
+    robinhood_stop_probe_required: bool = False
 
     # --- Alpaca Paper Trading Safety ---
     alpaca_enabled: bool = True
