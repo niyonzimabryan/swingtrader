@@ -1,6 +1,6 @@
 """Broker position reconciliation for DB trade tracking.
 
-Two reconciliations live here, and they answer different questions.
+Three reconciliations live here, and they answer different questions.
 
 :func:`reconcile_broker_positions` is the original one: *the broker holds this,
 does a ``trades`` row exist for it?* It creates or updates rows so a position
@@ -30,6 +30,14 @@ A flow this function cannot evaluate — a mode it does not know, an execution
 whose ticker cannot be resolved — is reported as ``unsupported`` and fails
 closed, because "I could not check" and "it is fine" must never be the same
 answer here.
+
+:func:`reconcile_ledger_positions` asks the §12 question of the *other* ledger:
+the ``trades`` rows a Phase 6 approval — or a manual entry — writes. Same four
+answers, same fail-closed ``unsupported``, and it likewise only reports. It
+exists because with ``EXECUTION_MODE=live`` an owner-approved entry becomes a
+real position at a broker neither monitor speaks, and the monitors' answer to a
+second broker is an injected reconciler rather than a second client
+(``execution/ledger_reconciler.py``).
 """
 
 from __future__ import annotations
@@ -238,6 +246,10 @@ class ExecutionFinding:
 
     kind: str
     execution_id: str = ""
+    #: The ``trades`` row a ledger finding is about. Zero for an execution-ledger
+    #: finding, which names its execution instead, and zero for a finding about a
+    #: broker position no row accounts for.
+    trade_id: int = 0
     ticker: str = ""
     expected_quantity: float = 0.0
     broker_quantity: float = 0.0
@@ -251,6 +263,7 @@ class ExecutionFinding:
         return {
             "kind": self.kind,
             "execution_id": self.execution_id,
+            "trade_id": self.trade_id,
             "ticker": self.ticker,
             "expected_quantity": self.expected_quantity,
             "broker_quantity": self.broker_quantity,
@@ -426,3 +439,146 @@ def open_execution_tickers(session, *, mode: str) -> set[str]:
         if ticker:
             out.add(ticker)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Ledger reconciliation: does the broker agree with the `trades` ledger?
+# --------------------------------------------------------------------------- #
+
+
+def reconcile_ledger_positions(
+    session,
+    *,
+    positions,
+    broker: str,
+    broker_account_id: str | None = None,
+) -> ExecutionReconciliation:
+    """Compare every active ``trades`` row for ``broker`` against ``positions``.
+
+    The third reconciliation in this module, and the one the position monitor
+    runs for a broker it does not itself speak. :func:`reconcile_executions`
+    asks the same question of the Strategy Lab's ``strategy_trades``; this asks
+    it of the Phase 6 / manual ledger, which is where an owner-approved live
+    entry lands.
+
+    It **reports**, and it writes nothing — not to the broker, and not to the
+    database. The caller decides what a mismatch means; here it is a finding
+    with the same kinds :func:`reconcile_executions` uses, so one pager and one
+    log line serve both.
+
+    Rows are grouped by symbol before comparison: two active rows for the same
+    name at the same broker are one position as far as the broker is concerned,
+    and reporting each against the whole quantity would invent a mismatch.
+    """
+    report = ExecutionReconciliation()
+
+    by_symbol: dict[str, float] = {}
+    for raw in positions or []:
+        normalized = _normalize_position(raw)
+        if not normalized["symbol"]:
+            continue
+        by_symbol[normalized["symbol"]] = by_symbol.get(normalized["symbol"], 0.0) + normalized["qty"]
+
+    broker_name = (broker or "").lower()
+    query = (
+        session.query(Trade)
+        .join(Ticker)
+        .filter(Trade.status.in_(ACTIVE_TRADE_STATUSES))
+    )
+    if broker_name == "alpaca":
+        query = query.filter(or_(Trade.broker == "alpaca", Trade.broker.is_(None)))
+    else:
+        query = query.filter(Trade.broker == broker_name)
+    if broker_account_id:
+        query = query.filter(
+            or_(Trade.broker_account_id == broker_account_id, Trade.broker_account_id.is_(None))
+        )
+
+    ledger: dict[str, list[Trade]] = {}
+    for trade in query.order_by(Trade.id.asc()).all():
+        symbol = (getattr(trade.ticker, "symbol", "") or "").upper()
+        if not symbol:
+            # Fail closed, exactly as the execution pass does: a row whose ticker
+            # cannot be resolved cannot be checked, and "cannot be checked" is
+            # not "fine".
+            report.findings.append(
+                ExecutionFinding(
+                    kind=UNSUPPORTED,
+                    trade_id=trade.id or 0,
+                    detail=(
+                        f"trade {trade.id} at {broker_name} has no resolvable ticker, "
+                        "so its broker position cannot be reconciled."
+                    ),
+                )
+            )
+            continue
+        ledger.setdefault(symbol, []).append(trade)
+
+    for symbol, trades in sorted(ledger.items()):
+        expected = float(sum(t.shares or 0 for t in trades))
+        actual = by_symbol.get(symbol, 0.0)
+        rows = f"trade {trades[0].id}" if len(trades) == 1 else f"{len(trades)} open trades"
+        if actual <= 0:
+            report.findings.append(
+                ExecutionFinding(
+                    kind=MISSING_AT_BROKER,
+                    trade_id=trades[0].id or 0,
+                    ticker=symbol,
+                    expected_quantity=expected,
+                    broker_quantity=0.0,
+                    detail=(
+                        f"the ledger holds {rows} open at {broker_name} expecting "
+                        f"{expected:g} shares of {symbol}, but the broker reports no "
+                        "position."
+                    ),
+                )
+            )
+        elif abs(actual - expected) > _QUANTITY_TOLERANCE:
+            report.findings.append(
+                ExecutionFinding(
+                    kind=QUANTITY_MISMATCH,
+                    trade_id=trades[0].id or 0,
+                    ticker=symbol,
+                    expected_quantity=expected,
+                    broker_quantity=actual,
+                    detail=(
+                        f"the ledger holds {rows} open at {broker_name} expecting "
+                        f"{expected:g} shares of {symbol}; the broker reports "
+                        f"{actual:g}."
+                    ),
+                )
+            )
+        else:
+            report.findings.append(
+                ExecutionFinding(
+                    kind=MATCHED,
+                    trade_id=trades[0].id or 0,
+                    ticker=symbol,
+                    expected_quantity=expected,
+                    broker_quantity=actual,
+                )
+            )
+
+    for symbol, quantity in sorted(by_symbol.items()):
+        if symbol in ledger:
+            continue
+        report.findings.append(
+            ExecutionFinding(
+                kind=UNEXPECTED_AT_BROKER,
+                ticker=symbol,
+                broker_quantity=quantity,
+                detail=(
+                    f"{broker_name} reports {quantity:g} shares of {symbol} that no "
+                    "open trade accounts for."
+                ),
+            )
+        )
+
+    if report.mismatches:
+        log.warning(
+            "ledger_reconciliation_mismatch",
+            broker=broker_name,
+            kinds=sorted({f.kind for f in report.mismatches}),
+            count=len(report.mismatches),
+        )
+    return report
