@@ -37,11 +37,65 @@ jobs:
       - name: Scan git history for secrets
         run: gitleaks git --redact --verbose .
 
+  changes:
+    # Decides whether the test shards need to run at all. A change confined to
+    # prose and client configuration — docs, Markdown, the committed MCP client
+    # files — cannot change what the suite would say, so it skips the ~8-minute
+    # shard matrix and keeps only the secret scan and lint. Anything else, and
+    # anything under docs/robinhood/ (data a test may read), runs everything.
+    #
+    # Fails open: with no reliable base to diff against — a first push, a
+    # force-push, a workflow_dispatch — it runs the full suite rather than
+    # guessing.
+    name: Classify changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify
+        id: classify
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then
+            echo "no reliable base (${base:-empty}); running the full suite"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$base" "${{ github.sha }}")
+          echo "-- changed files --"; echo "$changed"
+          code=false
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              docs/robinhood/*) code=true ;;
+              docs/*|*.md|.codex/*|.cursor/*|.mcp.json|specs/*|research/*) ;;
+              *) code=true ;;
+            esac
+          done <<< "$changed"
+          echo "code=$code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   test:
     # The suite runs identically on both engines DATABASE_URL can select:
-    # SQLite (local dev and the current Railway deploy) and Postgres (the
-    # target of the Phase 0b cutover). The SQLite entry stays until the
-    # Postgres migration is confirmed in production — spec K section 3.2.
+    # SQLite (local dev) and Postgres (production since the 2026-09-12 cutover).
+    #
+    # Pull requests run SQLite only; pushes to main and manual dispatches run
+    # both. Across every PR of the week this was introduced the two engines
+    # never disagreed once, so the Postgres matrix is the merge-time gate, not
+    # the PR-time one — it halves the wall-clock of every review cycle. The
+    # Postgres service container still starts on every entry: a handful of
+    # tests need it whichever engine the suite targets (TEST_POSTGRES_URL).
     #
     # Each engine is split into SHARD_COUNT shards (scripts/ci_shard.py) so the
     # ~1,469-test suite runs in parallel instead of serially. The split is a
@@ -50,13 +104,15 @@ jobs:
     # file has never seen (freshly added) still runs — it just lands wherever
     # the balancer puts a module of median weight, never silently skipped.
     name: Python tests (${{ matrix.engine }}, shard ${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
     strategy:
       fail-fast: false
       matrix:
-        engine: [sqlite, postgres]
+        engine: ${{ fromJSON(github.event_name == 'pull_request' && '["sqlite"]' || '["sqlite", "postgres"]') }}
         shard: [0, 1, 2, 3]
 
     env:
@@ -168,15 +224,15 @@ jobs:
 
   test-count-check:
     name: Verify sharded test counts (${{ matrix.engine }})
-    needs: test
-    if: always()
+    needs: [changes, test]
+    if: always() && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     strategy:
       fail-fast: false
       matrix:
-        engine: [sqlite, postgres]
+        engine: ${{ fromJSON(github.event_name == 'pull_request' && '["sqlite"]' || '["sqlite", "postgres"]') }}
 
     steps:
       - name: Check out repository
