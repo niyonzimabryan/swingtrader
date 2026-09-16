@@ -45,8 +45,10 @@ from execution.position_monitor import PositionMonitor
 from bot.daily_digest import DailyDigest
 from bot.weekly_report import WeeklyReport
 from tracking.position_reconciliation import reconcile_broker_positions
+from portfolio import paging
 from research_workspace import paging as research_paging
 from utils import billing_alerts
+from utils.async_call import call_with_timeout
 from utils.lifecycle import MonitorWatchdog
 from utils.logger import setup_logging, get_logger
 
@@ -91,14 +93,45 @@ def _init_langfuse(settings):
         return None
 
 
-def _reconcile_startup_positions(pipeline, settings, log):
-    """Backfill DB trade rows for any broker positions already open at startup."""
+async def _reconcile_startup_positions(pipeline, settings, log, *, pager=None):
+    """Backfill DB trade rows for any broker positions already open at startup.
+
+    **Async, and the broker call goes off-loop.** `get_positions_detail()` is
+    synchronous for every adapter, and the Robinhood one reaches
+    `RobinhoodMCPBroker._call_tool_sync`, which calls `asyncio.run()`. Called
+    directly from `main()`'s running loop that is illegal, so every boot since
+    `BROKER_PRIMARY=robinhood` raised "asyncio.run() cannot be called from a
+    running event loop" and the process started with no view of the account.
+    `call_with_timeout` is the idiom both monitors already use for exactly this
+    (`utils/async_call.py`), and it adds the bound the bare call never had: a
+    broker that hangs here would otherwise hang the boot before the monitors
+    ever start.
+
+    **The failure is loud, not fatal.** Refusing to boot would take the monitors
+    and the approval poller down with it — the two things that watch an open
+    live position and act on the owner's decisions — and Railway's ON_FAILURE
+    policy would turn one unreachable broker into a crash loop. So this pages
+    instead: `portfolio.paging.STARTUP_RECONCILIATION_FAILED` on whatever
+    channel the deployment configured, an `error` log line rather than a
+    `warning`, and a banner on stdout. The propose path is what actually keeps
+    an unseen book from sizing a trade — `check_ledger_fresh` refuses on a
+    never-synced ledger (`portfolio/freshness.py`) — and that guard does not
+    need this function to have succeeded.
+    """
+    if pager is None:
+        from portfolio.paging import pager_for
+
+        pager = pager_for(settings)
+
+    timeout_s = float(getattr(settings, "monitor_broker_call_timeout_s", 30) or 30)
+    execution_mode_setting = str(getattr(settings, "execution_mode", "paper")).lower()
+
     brokers = []
     paper = getattr(pipeline, "paper_broker", None)
     active = getattr(getattr(pipeline, "broker", None), "active", None)
     for broker, execution_mode in (
         (paper, "paper"),
-        (active, str(getattr(settings, "execution_mode", "paper")).lower()),
+        (active, execution_mode_setting),
     ):
         if broker and all(id(broker) != id(existing[0]) for existing in brokers):
             brokers.append((broker, execution_mode))
@@ -107,7 +140,9 @@ def _reconcile_startup_positions(pipeline, settings, log):
         broker_name = getattr(broker, "name", "alpaca")
         broker_account_id = getattr(broker, "account_number", "") or None
         try:
-            positions = broker.get_positions_detail()
+            positions = await call_with_timeout(
+                broker.get_positions_detail, timeout_s=timeout_s
+            )
             result = reconcile_broker_positions(
                 positions,
                 broker_name=broker_name,
@@ -118,7 +153,45 @@ def _reconcile_startup_positions(pipeline, settings, log):
             if result["created"] or result["updated"]:
                 log.info("startup_positions_reconciled", broker=broker_name, **result)
         except Exception as e:
-            log.warning("startup_position_reconciliation_failed", broker=broker_name, error=str(e))
+            error = (
+                f"timed out after {timeout_s:.0f}s"
+                if isinstance(e, asyncio.TimeoutError)
+                else f"{type(e).__name__}: {e}"
+            )
+            detail = {
+                "broker": broker_name,
+                "execution_mode": execution_mode,
+                "error": error,
+                "detail": (
+                    "the process started with no view of this broker's open "
+                    "positions. Unseen exposure reads as no exposure to anything "
+                    "that does not check ledger freshness."
+                ),
+                "recovery": (
+                    "Run `python -m scripts.portfolio_sync --dry-run` to see the "
+                    "underlying broker error, then restart the service. Until a "
+                    "sync completes, treat the ledger's exposure figures as "
+                    "unknown rather than as zero."
+                ),
+            }
+            log.error(paging.STARTUP_RECONCILIATION_FAILED, **detail)
+            try:
+                pager(paging.STARTUP_RECONCILIATION_FAILED, detail)
+            except Exception as page_error:  # pragma: no cover - channel-specific
+                log.error(
+                    "startup_reconciliation_page_failed",
+                    broker=broker_name,
+                    error=str(page_error),
+                )
+            # stdout as well as the structured log: a deploy is watched in the
+            # Railway log pane, and "live, and blind to the account" is not a
+            # line that should have to be grepped for.
+            print(
+                f"\n⚠️  startup position reconciliation FAILED for {broker_name} "
+                f"(execution_mode={execution_mode}): {error}"
+                f"\n   {detail['detail']}"
+                f"\n   {detail['recovery']}\n"
+            )
 
 
 def _channel_names(settings, telegram_enabled: bool) -> list[str]:
@@ -256,7 +329,7 @@ async def main():
     # Initialize pipeline
     pipeline = TradingPipeline(settings)
     log.info("pipeline_ready")
-    _reconcile_startup_positions(pipeline, settings, log)
+    await _reconcile_startup_positions(pipeline, settings, log)
 
     # The process-level shelf for the services more than one caller needs.
     # `app.bot_data` was that shelf; it is a view of this now (orchestrator/runtime.py).
