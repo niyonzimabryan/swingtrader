@@ -246,16 +246,77 @@ class RobinhoodMCPBroker:
         return _extract_list(raw, preferred_keys=("orders", "results"))
 
     def get_quotes(self, symbols: list[str]) -> dict[str, dict]:
+        """Last traded price per symbol, keyed by uppercase ticker.
+
+        **The contract.** ``{SYMBOL: {"symbol": SYMBOL, "last_price": float |
+        None, "raw": <the server's untouched row>}}``. ``symbol`` and
+        ``last_price`` are the shape :meth:`FakeBroker.get_quotes
+        <execution.brokers.fake.FakeBroker.get_quotes>` already promises, so
+        code written against the fake reads the same fields here.
+        ``last_price`` is a ``float`` or ``None`` — never the server's decimal
+        *string*, and never ``0.0`` standing in for "no value". A symbol that
+        was asked for but did not come back is **absent** from the mapping;
+        callers must handle the missing key rather than read a default.
+
+        **What this method must not do is hand back the server's row.** The
+        live row nests everything: it carries ``quote`` and ``close`` and no
+        top-level ``symbol`` or ``last_trade_price`` at all (production,
+        2026-09-14; the same shape ``docs/robinhood/tool_schemas.json``
+        declares for ``get_equity_quotes``). Keying that row by symbol would
+        make ``quotes["F"].get("last_trade_price")`` return ``None`` — a
+        missing price that reads as a present one. Non-negotiable 2: a number
+        this adapter cannot source is ``None``, loudly, not a plausible zero.
+
+        ``has_traded is False`` is the vendor saying its own price fields are
+        meaningless for that instrument, so ``last_price`` is ``None`` there
+        too. ``raw`` keeps the whole row either way, so choosing a narrow
+        contract costs a caller nothing it cannot get back.
+        """
         raw = self._call_tool_sync("get_equity_quotes", {"symbols": [s.upper() for s in symbols]})
-        quotes = _extract_list(raw, preferred_keys=("quotes", "results"))
-        out = {}
-        for quote in quotes:
-            symbol = str(quote.get("symbol") or "").upper()
-            if symbol:
-                out[symbol] = quote
+        rows = _extract_list(raw, preferred_keys=("quotes", "results"))
+        out: dict[str, dict] = {}
+        for row in rows:
+            symbol = str(_layered_first_present(row, ("symbol", "ticker")) or "").strip().upper()
+            if not symbol:
+                # Logged rather than dropped in silence: an unkeyable row is how
+                # this method came to return `{}` for every symbol in the first
+                # place, and it did so without leaving a trace.
+                log.warning(
+                    "robinhood_quote_row_without_symbol",
+                    row_keys=sorted(str(key) for key in row),
+                )
+                continue
+            out[symbol] = {
+                "symbol": symbol,
+                "last_price": _quote_last_price(row),
+                "raw": row,
+            }
         return out
 
     def get_tradability(self, symbol: str) -> dict:
+        """Whether this account may trade ``symbol``, and in fractional size.
+
+        ``tradable`` **fails closed**: a row this adapter cannot read yields
+        ``False``, not ``True``. It used to default ``True``, which meant a
+        pre-trade check that learned nothing reported permission — and
+        :meth:`review_order` is the caller, so "we could not parse the
+        response" and "Robinhood says yes" were the same answer.
+
+        The vendor's field is spelled ``tradeable`` (``docs/robinhood/
+        tool_schemas.json``, ``get_equity_tradability``, where it is a
+        *required* boolean). None of the three names this method looked for
+        existed, so the ``True`` default was not a fallback — it was the
+        answer, every time. The live response shape has **not** been observed;
+        the spelling comes from the committed schema dump, and the aliases it
+        replaced are kept alongside it so no shape that resolved before stops
+        resolving.
+
+        ``fractional`` is left exactly as it was — already fail-closed, and its
+        vendor spelling (``fractional_tradability``, a *string*) is not wired
+        up. That is deliberately not fixed here: loosening a check on an
+        unobserved shape is the opposite of what the ``tradable`` change is
+        for. It is reported instead.
+        """
         if not self.account_number:
             return {"symbol": symbol, "tradable": False, "error": "ROBINHOOD_ACCOUNT_NUMBER is not set."}
         raw = self._call_tool_sync(
@@ -264,15 +325,27 @@ class RobinhoodMCPBroker:
         )
         rows = _extract_list(raw, preferred_keys=("results", "tradability", "instruments"))
         row = rows[0] if rows else raw
-        return {
+        tradable_value = _first_present(row, ("tradeable", "tradable", "is_tradable", "can_trade"))
+        result = {
             "symbol": symbol.upper(),
-            "tradable": _truthy(_first_present(row, ("tradable", "is_tradable", "can_trade")), default=True),
+            "tradable": _truthy(tradable_value, default=False),
             "fractional": _truthy(
                 _first_present(row, ("fractional", "fractional_trading", "supports_fractional")),
                 default=False,
             ),
             "raw": raw,
         }
+        if tradable_value is None:
+            result["error"] = (
+                "Robinhood get_equity_tradability returned no tradability field; "
+                "treating as not tradable."
+            )
+            log.warning(
+                "robinhood_tradability_unreadable_failing_closed",
+                symbol=symbol.upper(),
+                row_keys=sorted(str(key) for key in row) if isinstance(row, dict) else [],
+            )
+        return result
 
     def review_order(self, order: BrokerOrderRequest) -> BrokerOrderReview:
         warnings = []
@@ -1106,6 +1179,64 @@ def _first_present(raw: dict, keys: tuple[str, ...]) -> Any:
     for key in keys:
         if key in raw:
             return raw[key]
+    return None
+
+
+#: Sub-objects a ``get_equity_quotes`` row hides its fields in, outermost
+#: first. The live server puts everything here — the row itself carries only
+#: ``quote`` and ``close`` — while the recorded fixtures and every older shape
+#: keep the fields flat, which is why the row itself is always searched first.
+_QUOTE_LAYERS = ("quote", "close")
+
+#: Field names a quote row may carry the traded price under, most specific
+#: first. ``last_trade_price`` is what the live server sends; ``price`` is last
+#: because in the ``close`` layer it is the official settled close, which is a
+#: different thing from a live trade and only worth having if nothing else
+#: resolved.
+_QUOTE_PRICE_KEYS = (
+    "last_trade_price",
+    "last_non_reg_trade_price",
+    "last_price",
+    "current_price",
+    "price",
+)
+
+
+def _layered_first_present(row: dict, keys: tuple[str, ...]) -> Any:
+    """:func:`_first_present` over a quote row and its nested sub-objects.
+
+    The row wins over ``quote``, and ``quote`` over ``close``, so a flat row
+    resolves exactly as it did before this function existed.
+    """
+    if not isinstance(row, dict):
+        return None
+    value = _first_present(row, keys)
+    if value is not None:
+        return value
+    for layer_key in _QUOTE_LAYERS:
+        layer = row.get(layer_key)
+        if isinstance(layer, dict):
+            value = _first_present(layer, keys)
+            if value is not None:
+                return value
+    return None
+
+
+def _quote_last_price(row: dict) -> float | None:
+    """The last traded price on one quote row, or ``None`` when there isn't one.
+
+    ``None`` rather than a number in two cases that would otherwise produce a
+    confident wrong answer: ``has_traded`` explicitly ``False``, which the
+    vendor documents as "price fields are meaningless"; and a parsed value of
+    zero or less, which is what the server sends for a field it has no value
+    for. Neither is a price, and a caller cannot tell either from one.
+    """
+    if _layered_first_present(row, ("has_traded",)) is False:
+        return None
+    for key in _QUOTE_PRICE_KEYS:
+        price = _to_float(_layered_first_present(row, (key,)))
+        if price is not None and price > 0:
+            return price
     return None
 
 
