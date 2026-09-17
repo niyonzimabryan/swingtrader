@@ -70,7 +70,7 @@ that belongs in a research tool, not bolted onto a Telegram trading bot.
 ## Successor
 
 The research-partner half of this — reading filings, building a thesis,
-learning the material — continues in a new, much smaller repo: **researchbench**.
+learning the material — continues in a new, much smaller repo: [**research-bench**](https://github.com/niyonzimabryan/research-bench).
 No database, no hosted service, no MCP server. Markdown and a couple of CLIs,
 with Claude as a tutor rather than a workspace client.
 
