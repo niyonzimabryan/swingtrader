@@ -12,7 +12,11 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A run on main is never cancelled by the next push landing minutes later —
+  # main is the one branch where losing a completed CI result is worse than
+  # the wall-clock this would save. Every other ref still cancels its
+  # in-flight run when superseded, same as before.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   secrets:
@@ -38,11 +42,11 @@ jobs:
         run: gitleaks git --redact --verbose .
 
   changes:
-    # Decides whether the test shards need to run at all. A change confined to
+    # Decides whether the test job needs to run at all. A change confined to
     # prose and client configuration — docs, Markdown, the committed MCP client
-    # files — cannot change what the suite would say, so it skips the ~8-minute
-    # shard matrix and keeps only the secret scan and lint. Anything else, and
-    # anything under docs/robinhood/ (data a test may read), runs everything.
+    # files — cannot change what the suite would say, so it skips the test job
+    # and keeps only the secret scan and lint. Anything else, and anything
+    # under docs/robinhood/ (data a test may read), runs the suite.
     #
     # Fails open: with no reliable base to diff against — a first push, a
     # force-push, a workflow_dispatch — it runs the full suite rather than
@@ -87,42 +91,30 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
   test:
-    # The suite runs identically on both engines DATABASE_URL can select:
-    # SQLite (local dev) and Postgres (production since the 2026-09-12 cutover).
+    # This is a frozen repo, so CI is sized for "does a rare, small push still
+    # pass" rather than for review-cycle throughput: one engine, one shard.
     #
-    # Pull requests run SQLite only; pushes to main and manual dispatches run
-    # both. Across every PR of the week this was introduced the two engines
-    # never disagreed once, so the Postgres matrix is the merge-time gate, not
-    # the PR-time one — it halves the wall-clock of every review cycle. The
-    # Postgres service container still starts on every entry: a handful of
-    # tests need it whichever engine the suite targets (TEST_POSTGRES_URL).
+    # SQLite runs on every event, pull request or push. Production ran on
+    # Postgres, but the two engines never disagreed once across the week this
+    # matrix was in use, and nothing here pushes often enough to justify a
+    # second engine's wall-clock. The Postgres service container still starts
+    # regardless: a handful of tests need it whichever engine the suite
+    # targets (TEST_POSTGRES_URL).
     #
-    # Each engine is split into SHARD_COUNT shards (scripts/ci_shard.py) so the
-    # ~1,469-test suite runs in parallel instead of serially. The split is a
-    # greedy load-balance over scripts/test_shard_weights.json, a committed
-    # snapshot of measured per-module wall-clock time; a module the weights
-    # file has never seen (freshly added) still runs — it just lands wherever
-    # the balancer puts a module of median weight, never silently skipped.
-    name: Python tests (${{ matrix.engine }}, shard ${{ matrix.shard }})
+    # SHARD_COUNT=1 means scripts/ci_shard.py hands this single job the whole
+    # suite (~1,469 tests) rather than splitting it across parallel jobs — the
+    # split existed to shorten review cycles, and a frozen repo doesn't have
+    # those.
+    name: Python tests (sqlite)
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
-    strategy:
-      fail-fast: false
-      matrix:
-        engine: ${{ fromJSON(github.event_name == 'pull_request' && '["sqlite"]' || '["sqlite", "postgres"]') }}
-        shard: [0, 1, 2, 3]
-
     env:
-      SHARD_COUNT: 4
+      SHARD_COUNT: 1
 
     services:
-      # Started for both matrix entries; the SQLite entry simply never
-      # connects to it. GitHub Actions cannot make a service conditional on a
-      # matrix value, and a ~5s container start is cheaper than duplicating
-      # the whole job.
       postgres:
         image: postgres:16
         env:
@@ -163,23 +155,13 @@ jobs:
             scoring screening scripts strategy_lab tests tracking utils \
             workspace main.py
 
-      - name: Resolve the target database URL
-        id: db
-        run: |
-          if [ "${{ matrix.engine }}" = "postgres" ]; then
-            echo "url=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/swingtrader_test" >> "$GITHUB_OUTPUT"
-          else
-            echo "url=sqlite:///$RUNNER_TEMP/ci_swing_trader.db" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: alembic upgrade head on an empty database
         # Exercises the CLI path (alembic.ini + DATABASE_URL) that the in-process
         # ensure_schema() does not cover, and proves the baseline applies cleanly
         # from nothing on this engine. Test coverage for schema equivalence lives
-        # in tests/test_schema_discipline.py. Every shard does this independently
-        # against its own empty database, exactly as the unsharded job did.
+        # in tests/test_schema_discipline.py.
         env:
-          DATABASE_URL: ${{ steps.db.outputs.url }}
+          DATABASE_URL: sqlite:///${{ runner.temp }}/ci_swing_trader.db
         run: |
           python -m alembic upgrade head
           python -m alembic current
@@ -188,95 +170,17 @@ jobs:
         id: modules
         run: |
           python -m scripts.ci_shard \
-            --shard-index ${{ matrix.shard }} --shard-count "$SHARD_COUNT" \
+            --shard-index 0 --shard-count "$SHARD_COUNT" \
             --show-totals > shard_modules.txt
-          echo "-- modules in shard ${{ matrix.shard }} --"
+          echo "-- modules in this shard --"
           cat shard_modules.txt
 
       - name: Run unit tests
         env:
-          # Unset for SQLite: tests/dbfixture.py falls back to temporary files.
-          TEST_DATABASE_URL: ${{ matrix.engine == 'postgres' && steps.db.outputs.url || '' }}
-          # Set on BOTH entries. A handful of tests need Postgres whichever
-          # engine the suite targets — the SQLite->Postgres migration
-          # round-trip needs both at once, and the concurrent-startup advisory
-          # lock has no SQLite equivalent. Without this they skip, and a
-          # skipped cutover test is not a passing one (spec K section 3.2).
+          # A handful of tests need Postgres regardless of the primary engine
+          # under test — the SQLite->Postgres migration round-trip needs both
+          # at once, and the concurrent-startup advisory lock has no SQLite
+          # equivalent. Without this they skip, and a skipped cutover test is
+          # not a passing one (spec K section 3.2).
           TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/swingtrader_test
-        run: |
-          set +e
-          python -m unittest -v $(cat shard_modules.txt) > test_output.log 2>&1
-          status=$?
-          set -e
-          cat test_output.log
-          grep -oP 'Ran \K[0-9]+(?= tests?)' test_output.log | tail -1 > test_count.txt || echo 0 > test_count.txt
-          echo "This shard ran $(cat test_count.txt) tests."
-          exit "$status"
-
-      - name: Publish this shard's test count
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-count-${{ matrix.engine }}-${{ matrix.shard }}
-          path: test_count.txt
-          if-no-files-found: warn
-          retention-days: 3
-
-  test-count-check:
-    name: Verify sharded test counts (${{ matrix.engine }})
-    needs: [changes, test]
-    if: always() && needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    strategy:
-      fail-fast: false
-      matrix:
-        engine: ${{ fromJSON(github.event_name == 'pull_request' && '["sqlite"]' || '["sqlite", "postgres"]') }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-
-      - name: Download this engine's shard counts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: test-count-${{ matrix.engine }}-*
-          path: shard-counts
-          merge-multiple: false
-
-      - name: Sum shard counts and compare against the unsharded total
-        # The authoritative total is computed the same way `unittest discover`
-        # would collect it — no test runs, so this needs no database and no
-        # TEST_DATABASE_URL/TEST_POSTGRES_URL: a skipped test is still a
-        # *collected* test (the skip happens at run time), so the count is the
-        # same whichever engine the shards targeted.
-        run: |
-          expected=$(python -c "
-          import unittest
-          suite = unittest.TestLoader().discover('tests', pattern='test_*.py')
-          print(suite.countTestCases())
-          ")
-          actual=0
-          for f in shard-counts/test-count-${{ matrix.engine }}-*/test_count.txt; do
-            n=$(cat "$f")
-            echo "  $f: $n"
-            actual=$((actual + n))
-          done
-          echo "sharded total (${{ matrix.engine }}): $actual"
-          echo "unsharded total:                 $expected"
-          if [ "$actual" -ne "$expected" ]; then
-            echo "::error::sharded test count ($actual) does not match the unsharded count ($expected) for ${{ matrix.engine }}"
-            exit 1
-          fi
+        run: python -m unittest -v $(cat shard_modules.txt)

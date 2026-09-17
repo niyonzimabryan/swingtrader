@@ -5,9 +5,9 @@
 This PRD is the source of truth for the automated swing trading system: product direction lives in §2 (kept current), and §§3–16 are the detailed build spec (largely implemented; superseded details are noted in place rather than rewritten). It is designed to be consumed by both human developers and AI coding agents (Claude Code).
 
 Companion documents:
-- **Current system state & the questions it can answer:** [`docs/SYSTEM_CAPABILITIES.md`](docs/SYSTEM_CAPABILITIES.md)
-- **July 2026 audit + remediation:** [`docs/audits/2026-07-04-system-audit.md`](docs/audits/2026-07-04-system-audit.md), specs in [`specs/audit-2026-07-04/`](specs/audit-2026-07-04/README.md)
-- **Task tracking:** Linear team BRY + `todoscratchpad.md`
+- **Current system state & the questions it can answer:** [`docs/SYSTEM_CAPABILITIES.md`](../SYSTEM_CAPABILITIES.md)
+- **July 2026 audit + remediation:** [`docs/audits/2026-07-04-system-audit.md`](../audits/2026-07-04-system-audit.md), specs in [`specs/audit-2026-07-04/`](../../specs/audit-2026-07-04/README.md)
+- **Task tracking:** Linear team BRY + `todoscratchpad.md` (now `docs/archive/todoscratchpad.md`)
 
 ---
 
