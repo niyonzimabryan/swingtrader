@@ -1,7 +1,9 @@
 # Simplification plan — from trading agent to research tutor
 
-Status: **proposal v2, not ratified.** 2026-09-17, `claude/gh-minutes-simplify-kamdrh`.
-v1 is in this file's history. Nothing is spawned until the owner answers §6.
+Status: **v3, direction ratified 2026-09-17** (freeze `swingtrader`; new research repo;
+teaching via the `teach` skill). Waiting on: repo creation, the EDGAR variable,
+the AlphaSense skill file. Briefs are in `briefs/`; the local-agent prompt in
+`LOCAL_AGENT_PROMPT.md`.
 
 ## 1. Evidence
 
@@ -184,11 +186,70 @@ New repo, all independent unless marked:
 - A `compare_setups` autopsy. If it ever matters, a notebook over the
   Sharadar export answers it more cheaply than the engine did.
 
-## 6. Owner decisions
+## 6. Teaching design (v3)
 
-1. `swingtrader`: freeze, or restore-and-run the Telegram digests?
-2. Which EDGAR key is it (SEC needs none; sec-api.io / EDGAR Online do)?
-3. Where does the AlphaSense prompt-generator skill live, and is there API
-   access or web-UI only?
-4. New repo name and visibility; who creates it (creating a repo is an owner
-   action from this session's scope).
+Built on the synced `teach` skill (MISSION, RESOURCES, learning-records,
+lessons and reference as HTML, NOTES), because its heuristics are exactly the
+"don't overteach" rules:
+
+- **Mission first.** `learning/MISSION.md` says why: to read a 10-K and a
+  business model well enough to form and defend a thesis. Every lesson ties
+  to it or is not written.
+- **Zone of proximal development.** The session reads `learning-records/`
+  before teaching anything; it teaches the next thing, not the whole thing.
+- **One lesson per research session at most, and only when the research
+  hits it.** Research is the trigger; a concept that came up (say, deferred
+  revenue at a company that just changed its billing) becomes the lesson. No
+  scheduled curriculum, no lesson because the calendar said so.
+- **Knowledge is cheap, skill is effortful.** The explanation stays short and
+  cited; the retrieval practice (a quiz, "find this line in the filing
+  yourself") is where difficulty is allowed.
+- **Reference over lessons.** Lessons are rarely reread; `reference/*.html`
+  (glossary, ratio cheat-sheet, "how to read segment notes") is what gets
+  revisited and is kept current.
+- **Sources, never parametric knowledge.** `RESOURCES.md` grows first; a
+  lesson without a primary source is not shipped.
+
+Layout in the research repo: `learning/{MISSION.md,RESOURCES.md,NOTES.md,
+learning-records/,lessons/,reference/,assets/}`. The old `concepts.md` idea is
+replaced by learning-records, which are the same thing with a format.
+
+**Artifacts.** This account has the Slides, Docs, Design and Design System
+artifact types today (verified from this session). Lessons stay HTML files in
+the repo (the skill's unit, and git is the record), and the session may also
+publish a lesson as an Artifact page, a reference doc as a Docs artifact, or a
+walk-through as Slides when that reads better than a file. Publishing is
+additive; the repo file is canonical.
+
+## 7. Credentials and owner actions
+
+- **Railway:** no token or CLI in this environment. `LOCAL_AGENT_PROMPT.md`
+  is a paste-ready prompt for a local agent with the Railway CLI: stop the
+  bot service, read the SEC variable, run the final research export.
+- **EDGAR:** no SEC/EDGAR variable is visible from this session. The code
+  needs only `SEC_USER_AGENT` (a contact string; the SEC issues no key). If
+  the thing set up is a sec-api.io or similar key, it is an optional
+  full-text backend in the edgar CLI.
+- **AlphaSense skill:** owner adds the file later; brief 4 stays open.
+- **New repo:** owner creates it (out of this session's repository scope).
+  Proposed name below.
+
+## 8. Repo name
+
+Needs "research" in it, must not corner a later generalization past stocks.
+Recommendation: **`researchbench`** — a bench is where you do the work and
+learn the craft, and nothing in it says finance. Alternates: `research-desk`,
+`loupe-researcher`. First `README` line: "A research partner that teaches while
+it works. Currently scoped to public companies."
+
+## 9. On the frozen codebase
+
+Would a reader think it is bad? Not bad: over-built. It is documented,
+tested, and honest about what is unverified (`SYSTEM_OVERVIEW.md` §9 is a
+strength most repos lack). What reads poorly is scope judgment: 150k lines
+and a K–Q spec series for one person's bot, root-level clutter
+(`todoscratchpad.md` full of nightly reconcile logs,
+`ARCHITECTURE_EVOLUTION_TRIGGERS.md`, `swing-trader-prd.md`). The freeze PR
+owns that in the README ("what worked, what I over-built, what I would do
+differently") and tidies the root. A repo that says that about itself reads as
+judgment, not as a mess.
