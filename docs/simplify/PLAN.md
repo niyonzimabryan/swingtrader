@@ -237,7 +237,7 @@ additive; the repo file is canonical.
 ## 8. Repo name
 
 Needs "research" in it, must not corner a later generalization past stocks.
-Recommendation: **`researchbench`** — a bench is where you do the work and
+Recommendation: **`research-bench`** — a bench is where you do the work and
 learn the craft, and nothing in it says finance. Alternates: `research-desk`,
 `loupe-researcher`. First `README` line: "A research partner that teaches while
 it works. Currently scoped to public companies."

@@ -1,6 +1,6 @@
 # Worker briefs
 
-One brief per PR. `<RR>` = the research repo (`researchbench` unless renamed).
+One brief per PR. `<RR>` = the research repo (`niyonzimabryan/research-bench`).
 Standing rules for every worker: read the target repo's AGENTS.md / README
 first; commit and push after each coherent unit; never weaken a test; no
 secrets in the repo; open the PR as soon as the work is pushed and validated
