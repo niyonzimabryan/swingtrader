@@ -2,363 +2,103 @@
 
 [![CI](https://github.com/niyonzimabryan/swingtrader/actions/workflows/ci.yml/badge.svg)](https://github.com/niyonzimabryan/swingtrader/actions/workflows/ci.yml)
 
-Swing Trader turns a ticker into a Telegram trade memo, then lets you approve or reject a paper trade with human control in the loop.
+**Status: frozen.** This repo is not maintained. It is kept public as a record of
+what I built and what I learned building it. Read on for why, or skip to
+[Running the legacy bot](#running-the-legacy-bot) if you just want to see it work.
 
-Important: this is paper-trading research software, not financial advice. Use Alpaca paper keys only unless you have personally reviewed the code, strategy, broker integration, and risk controls. Every trade needs human review.
+Read before touching any of the trading code: [Financial disclaimer](DISCLAIMER.md),
+[MIT license](LICENSE).
 
-Read these before setup:
+## What this is
 
-- [Financial disclaimer](DISCLAIMER.md)
-- [MIT license](LICENSE)
+Two things, tagged together at `workspace-final`.
 
-![Swing Trader Telegram memo preview](docs/assets/telegram-memo-preview.svg)
+The first, and the one worth reading, is a **paper-trading swing bot**: a
+scheduled scan finds candidate US equities, a set of research agents
+(catalyst, fundamental, pattern, macro, web-research) build a case on each
+one, a scoring engine ranks them, and a Telegram bot sends you the memo and
+waits for a tap — approve, reject, or watchlist. Approved trades route to
+Alpaca paper by default. Nothing places an order without a human in the loop.
 
-## Why it exists
+The second is an **investment research workspace** built on top of it from
+2026-09-05: a hosted FastAPI + MCP service (Specs K–Q, `specs/investment-workspace/`)
+so any coding-agent session — Claude Code, Codex, Cursor — could attach over
+MCP and ask "what do I own, what's my thesis, how have setups like this
+performed," backed by a real ledger, a comparable-setups engine, and a
+point-in-time evidence store. It shipped almost entirely behind flags that
+default off, so it never actually ran unattended in production.
 
-Most trading bots hide the thinking and jump straight to execution. Swing Trader does the opposite: it gathers evidence, writes a memo, shows the trade plan in Telegram, and waits for you to approve.
+`docs/SYSTEM_OVERVIEW.md` is the full write-up — architecture, data model, the
+honesty section on what was and wasn't verified in production. This README is
+the summary and the verdict; that document is where the detail lives.
 
-It is built for people who want to test an AI-assisted swing-trading workflow without giving an agent unsupervised live-broker authority.
+## What worked
 
-## Quickstart: first Telegram memo in under 15 minutes
+The core loop — scan, research, score, memo, human approval — is the part I'd
+keep. It's legible: you can read a memo and see why the bot thinks what it
+thinks, and nothing executes until you say so. The Alpaca paper integration
+was solid and the Telegram approval flow was genuinely pleasant to use. The
+point-in-time discipline in the evidence store (`known_at_utc` vs. `valid_at`,
+never scoring a setup on data that wasn't actually knowable yet) was the right
+instinct, even where it ended up over-engineered for what I needed.
 
-You need Python 3.11+, a Telegram account, and API keys for Anthropic, Alpaca paper trading, and market-data providers. The setup wizard walks through the required keys and writes your local .env file.
+## What I over-built
 
-1. Clone and enter the repo.
+The honest read: I never gave myself a stopping rule. This repo grew to about
+150,000 lines of Python, 49,000 of them tests, across roughly a week of
+orchestrated-build sessions that ran CI 273 times. The investment workspace —
+Specs K through Q, a bitemporal ledger, a comparable-setups statistical
+engine, a strategy lab with promotion tiers and shadow/paper/live arms — is
+real, tested, and mostly correct, and none of it was necessary for one
+person's paper-trading bot. Velocity compounds if nothing checks it: each PR
+made the next one easier to justify, and the size of the thing stopped being a
+signal I was paying attention to. The root of the repo shows the same pattern
+in miniature — a PRD, an architecture-triggers doc, a running scratchpad —
+artifacts of moving fast with no one asking "does this still need to exist."
+
+## What I'd do differently
+
+Scope the research workspace to the two or three questions I actually asked
+in practice, before writing the general engine that could answer any of them.
+Put a size or cost budget on an orchestrated build up front, the same way the
+trading code puts a cap on position risk — "stop and reassess at N PRs" would
+have caught this weeks earlier than reading the CI bill did. And separate
+"interesting infrastructure to build" from "infrastructure this project
+needs" earlier and more ruthlessly; the comparable-setups engine is good work
+that belongs in a research tool, not bolted onto a Telegram trading bot.
+
+## Successor
+
+The research-partner half of this — reading filings, building a thesis,
+learning the material — continues in a new, much smaller repo: [**research-bench**](https://github.com/niyonzimabryan/research-bench).
+No database, no hosted service, no MCP server. Markdown and a couple of CLIs,
+with Claude as a tutor rather than a workspace client.
+
+## Running the legacy bot
 
 ```bash
 git clone https://github.com/niyonzimabryan/swingtrader.git
 cd swingtrader
-```
-
-2. Create a virtualenv and install dependencies.
-
-```bash
 python -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-```
-
-3. Run the setup wizard.
-
-```bash
-.venv/bin/python -m scripts.setup_wizard
-```
-
-Open this URL when the wizard starts:
-
-```text
-http://localhost:8765
-```
-
-The wizard will:
-
-- create .env
-- validate required keys
-- discover TELEGRAM_CHAT_ID after you message your bot
-- send a Telegram setup test message
-- keep Gemini and Langfuse as optional add-ons
-
-4. Run the doctor.
-
-```bash
+.venv/bin/python -m scripts.setup_wizard        # writes .env, needs Anthropic + Alpaca paper + a Telegram bot
 .venv/bin/python -m scripts.doctor --skip-live
-```
-
-When .env is filled in, run the live checks too:
-
-```bash
-.venv/bin/python -m scripts.doctor
-```
-
-5. Start the bot with the scheduler paused.
-
-```bash
 SCHEDULER_ENABLED=false .venv/bin/python main.py
 ```
 
-Do not run this locally while another deployed instance is polling the same Telegram bot. Telegram only allows one polling connection.
+Then message your bot: `/eval AAPL Strong services growth and buyback support`.
+Don't run this locally against a Telegram bot that's already polling elsewhere
+— Telegram allows one polling connection per bot, and if `TELEGRAM_ENABLED`
+is on, a second process steals it.
 
-6. In Telegram, send your bot a test request.
-
-```text
-/eval AAPL Strong services growth and buyback support
-```
-
-You should receive a research memo with the setup, score, risks, suggested paper-trade parameters, and action buttons.
-
-## What it does
-
-Swing Trader has two jobs: produce better trade memos, and keep paper-trade operations from drifting after approval.
-
-1. Discovery finds candidates.
-   - Scheduled scans look across the configured universe.
-   - Ad-hoc `/eval TICKER thesis` skips the broad scan and researches one idea.
-
-2. Research builds the case.
-   - Catalyst, fundamental, pattern, macro, and web-research agents collect evidence.
-   - The pipeline scores the evidence and asks a stronger model for the final judgment when needed.
-
-3. Memo delivery turns research into an operator decision.
-   - Telegram receives the memo.
-   - You approve, reject, or watchlist.
-   - Approved trades go to Alpaca paper trading by default, or to Robinhood Agentic Trading when you explicitly select Robinhood live mode.
-
-After approval, the order monitor polls the active broker, tracks fills, watches stops and targets where supported, and keeps trade state in SQLite.
-
-## Cost expectations
-
-These numbers come from the Langfuse evidence pass for BRY-66. Caveat: Langfuse had no traces from 2026-05-01 through 2026-05-15, so the baseline uses available data from 2026-03-01 through 2026-04-30.
-
-Observed API cost:
-
-| Run type | Observed runs | Average | p50 | p95 |
-|---|---:|---:|---:|---:|
-| Scheduled scan | 11 | $1.34/scan | $0.78 | $3.26 |
-| Ad-hoc `/eval` memo | 13 | $0.18/eval | $0.09 | $0.47 |
-
-Planning numbers:
-
-- 10 ad-hoc `/eval` runs cost about $1.76 at the observed average.
-- 3 scheduled scans per weekday means about 66 scans/month.
-- At the observed average, that is about $88.76/month.
-- At observed p95 cost every time, budget about $215.04/month.
-
-Main cost driver: web research. It was 66.4% of observed Langfuse spend, averaging $0.21 per web-research call. The BRY-66 code defaults now cap web research at 5 searches per call and reuse same-day ticker/catalyst results through the SQLite web-research cache.
-
-These are model/provider costs only. They do not include broker fees, market-data subscription upgrades, hosting, or your local machine.
-
-## Limitations
-
-- Paper trading first. The default mode is Alpaca paper trading.
-- Robinhood live trading requires a dedicated Agentic account, `BROKER_PRIMARY=robinhood`, `EXECUTION_MODE=live`, `ALLOW_LIVE_TRADING=true`, and `ROBINHOOD_ACCOUNT_NUMBER`.
-- Robinhood OAuth setup is optional and documented in [Robinhood Integration Guide](docs/ROBINHOOD_INTEGRATION_PLAN.md) and [Robinhood OAuth Token Store](docs/ROBINHOOD_TOKEN_STORE.md).
-- US equities only.
-- Phase 1 is long-only. Short-side parameters are not production-ready.
-- Swing horizon, roughly days to weeks. This is not a day-trading scalper.
-- Human approval is required. The bot should not be treated as an unattended live trader.
-- The Strategy Lab is off by default and its paper and live tiers are off separately. No agent, scheduled job, or code path promotes a strategy, approves an entry, or chooses a quantity; promotion and approval are owner-only, signed, expiring and single-use.
-- Model output can be wrong, stale, incomplete, or overconfident.
-- Scheduled-scan cost telemetry still has gaps. Use Langfuse or add a DB run ledger before making spend-sensitive changes.
-
-## Architecture
-
-```mermaid
-flowchart TD
-    A[Telegram command or scheduled scan] --> B[Discovery]
-    B --> C[Catalyst research]
-    C --> D[Parallel research agents]
-    D --> D1[Fundamentals]
-    D --> D2[Pattern history]
-    D --> D3[Web research]
-    D1 --> E[Scoring engine]
-    D2 --> E
-    D3 --> E
-    E --> F[Final model review]
-    F --> G[Memo generator]
-    G --> H[Telegram memo]
-    H --> I{Human decision}
-    I -->|Approve| J[Alpaca paper order]
-    I -->|Watchlist| K[Watchlist]
-    I -->|Pass| L[No trade]
-    J --> M[Order monitor]
-    M --> N[SQLite trade state]
-```
-
-The Strategy Lab (Spec Q) sits beside that flow rather than inside it, and is off
-by default. A scan's output becomes a snapshot; every active arm of every *enabled*
-tier decides from that one snapshot; what happens to a decision then depends on the
-arm's immutable mode:
-
-```mermaid
-flowchart TD
-    S[Scan: scored candidates] --> SN[MarketSnapshot, one cutoff]
-    SN --> AR[Every active arm of every enabled tier]
-    AR --> D[strategy_decisions: reproducible, no portfolio state]
-    D --> M{Arm mode, immutable}
-    M -->|shadow| SH[Simulated fill from stored bars<br/>no broker import exists]
-    M -->|paper| PA[Explicit-mode entry point<br/>venue = alpaca_paper only]
-    M -->|live| LI[Explicit-mode entry point<br/>venue = robinhood_live only]
-    PA --> PR[proposed execution + signed approval card]
-    LI --> PR
-    PR --> OW{Owner taps Approve}
-    OW -->|yes| PL[Place entry, then read the stop back]
-    OW -->|no / expired| TERM[Terminal, nothing placed, nothing reserved]
-    SH --> SC[Scorecard: after costs, with sample size and uncertainty]
-    PL --> SC
-    SC --> PROM{Owner promotion?}
-    PROM -->|confirmed| NEWARM[A new inactive arm at the next tier is activated<br/>append-only promotion_events]
-    PROM -->|no| SC
-```
-
-Three things that diagram is making explicit: the mode is carried by the arm and
-never inferred from a global setting; a promotion activates a *different* arm
-rather than changing one; and neither a promotion nor a dispatch places an
-order — only an owner's per-entry approval does.
-
-Important code paths:
-
-- agents/: catalyst, fundamental, pattern, macro, discovery, web research, deep research
-- orchestrator/pipeline.py: scan and ad-hoc pipeline
-- orchestrator/scheduler.py: scheduled scans
-- memo/generator.py and memo/templates/: memo assembly
-- bot/: Telegram handlers, formatting, keyboards, notifications
-- execution/: Alpaca paper order execution and monitoring
-- database/: SQLAlchemy models, engine-neutral column types, and session handling
-- migrations/: Alembic revisions; the schema is Alembic-owned from `0001_baseline`
-- workspace/: the workspace API and MCP endpoint — a **separate** process from
-  the bot, off by default (`WORKSPACE_API_ENABLED=false`), and structurally
-  unable to reach a broker (`tests/test_no_execute_scope.py`).
-  See [docs/WORKSPACE_ACCESS.md](docs/WORKSPACE_ACCESS.md).
-- research_workspace/: dossiers, theses, invalidators, the decision journal, and
-  the `research/` Markdown mirror — off by default
-  (`RESEARCH_WORKSPACE_ENABLED=false`). A triggered invalidator pages and moves
-  a thesis to `weakened`; it never creates an order or a proposal.
-  See [docs/RESEARCH_WORKSPACE.md](docs/RESEARCH_WORKSPACE.md).
-- strategy_lab/: versioned strategies, immutable experiment arms, the decision and
-  execution split, replay and the scorecard — off by default
-  (`STRATEGY_LAB_ENABLED=false`). It imports no broker, no database session
-  outside its own registry, and no model client at all. An arm's **mode**
-  (`shadow` / `paper` / `live`) is immutable and is what selects the broker
-  adapter; a paper arm reaches Alpaca paper whatever `EXECUTION_MODE` says, and a
-  tier change is an owner-confirmed, append-only `promotion_events` row.
-  See [docs/STRATEGY_LAB.md](docs/STRATEGY_LAB.md) and the operator runbook,
-  [docs/STRATEGY_LAB_RUNBOOK.md](docs/STRATEGY_LAB_RUNBOOK.md).
-
-## Configuration knobs
-
-Use the setup wizard first. Edit .env directly only after you understand the flow.
-
-Core required settings:
-
-| Variable | Why it matters |
-|---|---|
-| ANTHROPIC_API_KEY | Core analysis, scoring, memo writing, and Anthropic web search fallback |
-| TELEGRAM_BOT_TOKEN | Telegram bot access |
-| TELEGRAM_CHAT_ID | Restricts bot commands to your chat |
-| ALPACA_API_KEY | Alpaca paper broker key |
-| ALPACA_SECRET_KEY | Alpaca paper broker secret |
-| ALPACA_BASE_URL | Keep this on https://paper-api.alpaca.markets for paper trading |
-| FINNHUB_API_KEY | News, earnings, recommendations, price targets |
-| FMP_API_KEY | Fundamentals and fallback pattern data |
-| ALPHA_VANTAGE_API_KEY | Backup financial data provider |
-| FRED_API_KEY | Macro rates, yield curve, credit spreads |
-| DATABASE_URL | Local default: sqlite:///swing_trader.db. Postgres is supported with the same schema: postgresql+psycopg://user:pass@host:5432/db. See [docs/DATABASE_ENGINES.md](docs/DATABASE_ENGINES.md) |
-| SCHEDULER_ENABLED | Start with false; set true only after `/eval` works |
-| PRICE_PLANE_ENABLED | Off by default. The Spec N price backbone (three price series, point-in-time universes, the delisting audit). See [docs/PRICE_PLANE.md](docs/PRICE_PLANE.md) |
-| COMPARABLE_SETUPS_ENABLED | Off by default. The Spec N cohort engine and its two read-only MCP tools (`compare_setups`, `cohort_detail`). Off means the tools are not registered at all. See [docs/COMPARABLE_SETUPS.md](docs/COMPARABLE_SETUPS.md) |
-
-Strategy Lab (Spec Q) — every one of these defaults to off, and each tier requires
-every tier below it. See [docs/STRATEGY_LAB_RUNBOOK.md](docs/STRATEGY_LAB_RUNBOOK.md)
-before changing any of them:
-
-| Variable | Default | Why it matters |
-|---|---:|---|
-| STRATEGY_LAB_ENABLED | false | Master switch: the read surface and the owner-only commands. Off means the commands answer "disabled" rather than reading a table |
-| STRATEGY_LAB_SHADOW_ENABLED | false | The post-scan shadow pass and the nightly maturation job. Shadow sends **no** broker order — structurally, not conditionally |
-| STRATEGY_LAB_UNIVERSE_ENABLED | false | The one cross-sectional snapshot per cutoff. Needs `PRICE_PLANE_ENABLED` and a populated `universe_membership` |
-| STRATEGY_LAB_PAPER_ENABLED | false | The paper dispatcher and the three execution jobs. A paper arm can reach only the Alpaca paper adapter, and a dispatch *proposes* — the placement needs your Approve |
-| STRATEGY_LAB_LIVE_ENABLED | false | The Strategy Lab's own live gate, on top of `ALLOW_LIVE_TRADING`, `EXECUTION_MODE=live`, the kill switch, a verified protective-exit capability, and an owner promotion of the one global champion |
-| STRATEGY_LAB_LIVE_RISK_BUDGET | 0.0 | A live champion's sizing. Zero is deliberate: the champion can exist and still place nothing until you set a number |
-
-Broker controls:
-
-| Variable | Default | Why it matters |
-|---|---:|---|
-| BROKER_PRIMARY | alpaca | Selects the live/review broker; set to robinhood for Agentic Trading |
-| EXECUTION_MODE | paper | `review_only`, `paper`, or `live` |
-| ALLOW_LIVE_TRADING | false | Hard gate before any live broker placement |
-| ROBINHOOD_ACCOUNT_NUMBER | blank | Dedicated Agentic account used by Robinhood MCP tools |
-| ROBINHOOD_MAX_ORDER_NOTIONAL | 5 | Per-order Robinhood micro-trading cap |
-| ROBINHOOD_MAX_DAILY_NOTIONAL | 10 | Daily Robinhood live notional cap |
-| TOKEN_ENCRYPTION_KEY | blank | Enables encrypted Robinhood OAuth token storage |
-
-Telegram broker commands:
-
-```text
-/broker
-/broker accounts
-/broker robinhood ACCOUNT_NUMBER
-/broker robinhood 1
-/broker alpaca
-/mode review
-/mode paper
-/mode live
-/orders
-/attr
-```
-
-Robinhood OAuth bootstrap:
-
-```bash
-.venv/bin/python -m scripts.robinhood_auth --gen-key
-.venv/bin/python -m scripts.robinhood_auth
-.venv/bin/python -m scripts.robinhood_auth --status
-```
-
-`robinhood_token.enc` is local runtime state and must never be committed.
-
-Cost and research controls:
-
-| Variable | Default | Why it matters |
-|---|---:|---|
-| WEB_SEARCH_PROVIDER | gemini | Routes search-heavy stages to Gemini when configured |
-| GEMINI_API_KEY | blank | Optional, recommended for grounded search-heavy stages |
-| DISCOVERY_MAX_SEARCHES | 8 | Caps discovery search breadth |
-| WEB_RESEARCH_MAX_SEARCHES | 5 | Biggest spend lever; caps per-call search breadth |
-| WEB_RESEARCH_CACHE_ENABLED | true | Reuses same-day ticker/catalyst web research from SQLite before calling the provider |
-| WEB_RESEARCH_CACHE_TTL_HOURS | 24 | Cache expiry window; keep at 24 for same-day reuse |
-| LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY | blank | Optional observability and cost tracing |
-
-Risk controls:
-
-| Variable or setting | Default shown in app | Why it matters |
-|---|---:|---|
-| drawdown_circuit_breaker_pct | 10% | Stops trading after severe drawdown |
-| daily_loss_halt_pct | 3% | Stops trading after daily loss limit |
-| max_concurrent_positions | 8 | Caps portfolio concentration by count |
-| max_position_pct | 10% | Caps single-position exposure |
-| max_stop_loss_pct | 8% | Caps allowed stop distance |
-
-See .env.example for the full list.
-
-## Development and tests
-
-Run the same checks as CI:
-
-```bash
-.venv/bin/python -m pip check
-.venv/bin/python -m compileall -q agents backtest bot config data database evals execution memo migrations orchestrator scanning scoring screening scripts tests tracking utils workspace main.py
-.venv/bin/python -m unittest discover -s tests -p "test_*.py"
-```
-
-The suite runs on SQLite by default and on Postgres when `TEST_DATABASE_URL`
-points at one. A few cutover tests need a Postgres whichever engine is
-selected — set `TEST_POSTGRES_URL` for those, or they skip. See
-[docs/DATABASE_ENGINES.md](docs/DATABASE_ENGINES.md).
-
-For onboarding or credential changes, also run:
-
-```bash
-.venv/bin/python -m scripts.doctor --skip-live
-```
-
-Public pull requests should not require secrets. Prefer deterministic unit tests with fake provider responses.
-
-## Contributing
-
-Read CONTRIBUTING.md before opening a pull request.
-
-Good first areas:
-
-- setup and onboarding clarity
-- deterministic tests around provider parsing and fallbacks
-- Telegram memo formatting and chunking
-- paper-trading safety checks
-- cost observability and run logging
-
-Do not submit changes that make live trading unattended or hide the human approval step.
+Everything else — the workspace layer, the strategy lab, environment
+variables, cost expectations, the architecture diagrams, the operations
+runbook, and the honesty section on what was and wasn't verified in
+production — is in [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md).
+Older working notes are archived under [`docs/archive/`](docs/archive/).
 
 ## License and disclaimer
 
-Swing Trader is released under the MIT License. See LICENSE.
-
-This project is not financial, investment, tax, or legal advice. It is research and paper-trading software. You are responsible for your own trading decisions and losses. Read DISCLAIMER.md before using it.
+MIT License, see [LICENSE](LICENSE). This is not financial, investment, tax,
+or legal advice — it's paper-trading research software that I built for
+myself. Read [DISCLAIMER.md](DISCLAIMER.md) before using any of it.
