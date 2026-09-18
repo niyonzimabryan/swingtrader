@@ -1,7 +1,7 @@
 # System Capabilities — What SwingTrader Can Answer
 
 *Updated 2026-07-14, after the July audit-remediation cycle (specs A–J, PRs #20–#37).
-Companion docs: [`swing-trader-prd.md`](../swing-trader-prd.md) (product direction +
+Companion docs: [`swing-trader-prd.md`](archive/swing-trader-prd.md) (product direction +
 detailed spec), [`docs/audits/2026-07-04-system-audit.md`](audits/2026-07-04-system-audit.md)
 (what was broken and why), [`specs/audit-2026-07-04/`](../specs/audit-2026-07-04/README.md)
 (the remediation specs).*
