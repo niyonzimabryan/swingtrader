@@ -1,9 +1,24 @@
 # Simplification plan — from trading agent to research tutor
 
-Status: **v3, direction ratified 2026-09-17** (freeze `swingtrader`; new research repo;
-teaching via the `teach` skill). Waiting on: repo creation, the EDGAR variable,
-the AlphaSense skill file. Briefs are in `briefs/`; the local-agent prompt in
-`LOCAL_AGENT_PROMPT.md`.
+Status: **v3, direction ratified 2026-09-17.** Briefs in `briefs/`; local-agent
+prompt in `LOCAL_AGENT_PROMPT.md`. Research repo: `niyonzimabryan/research-bench`.
+
+Progress (2026-09-18):
+- Done: Railway bot service stopped (owner, via CLI). swingtrader PR #107
+  (freeze) merged. research-bench PR #1 (skeleton) merged; PR #2 (Robinhood
+  read-only snapshot, built in Cursor) merged.
+- In flight: brief 2 (edgar CLI), worker on sonnet, branch `claude/edgar-cli`.
+- Blocked: brief 5 (research export). The local agent's first attempt saw a
+  Postgres with no matching schema; most likely it never reached production
+  (private `railway.internal` host), unverified. Diagnosis prompt issued;
+  no stamp or migrate is to be run. If production holds no dossiers, brief 5
+  closes as a no-op.
+- Waiting on owner: brief 4 (AlphaSense skill file); one local `rh_auth`
+  re-run (the copied token's refresh returned 404); Railway workspace and
+  Postgres teardown after the export question settles; GitHub archive of
+  swingtrader.
+- Not started: a first real research session in research-bench (the
+  acceptance test for the whole build).
 
 ## 1. Evidence
 
