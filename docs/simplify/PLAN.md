@@ -3,23 +3,22 @@
 Status: **v3, direction ratified 2026-09-17.** Briefs in `briefs/`; local-agent
 prompt in `LOCAL_AGENT_PROMPT.md`. Research repo: `niyonzimabryan/research-bench`.
 
-Progress (2026-09-18):
+Progress (2026-09-18, 01:00Z):
 - Done: Railway bot service stopped (owner, via CLI). swingtrader PR #107
-  (freeze) merged. research-bench PR #1 (skeleton) merged; PR #2 (Robinhood
-  read-only snapshot, built in Cursor) merged.
-- Done: research-bench PR #3 (edgar CLI) merged 2026-09-18. All worker
-  sessions archived.
-- Brief 5 (research export): diagnosis confirmed the first attempt never
-  reached production (private `railway.internal` host); production Postgres
-  is healthy at revision 0015 and holds **one dossier and zero theses**. The
-  export is being done by the owner's local agent inside the workspace
-  container, then carried into research-bench as a PR — no worker needed.
-- Waiting on owner: brief 4 (AlphaSense skill file); one local `rh_auth`
-  re-run (the copied token's refresh returned 404); Railway workspace and
-  Postgres teardown after the export question settles; GitHub archive of
-  swingtrader.
-- Not started: a first real research session in research-bench (the
-  acceptance test for the whole build).
+  (freeze) and #108 (this plan) merged. research-bench PRs merged: #1
+  skeleton, #2 Robinhood read-only snapshot (Cursor), #3 edgar CLI, #4 the
+  one BE dossier carried over from production Postgres (owner's local agent,
+  in-container export; the database held one dossier and zero theses), #5
+  money rounding + digit-run guard after the first live snapshot exposed a
+  float artefact. First live Robinhood snapshot taken: one position, BE.
+- Remaining build item: brief 4 (AlphaSense workflow), waiting on the
+  owner's skill file.
+- Owner actions now unblocked: tear down the Railway `workspace` and
+  `Postgres` services (nothing reads them any more); archive `swingtrader`
+  on GitHub.
+- Not verified: no live SEC call through the edgar CLI yet. Not started: the
+  first real research session in research-bench, which is the acceptance
+  test for the whole build.
 
 ## 1. Evidence
 
