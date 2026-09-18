@@ -7,12 +7,13 @@ Progress (2026-09-18):
 - Done: Railway bot service stopped (owner, via CLI). swingtrader PR #107
   (freeze) merged. research-bench PR #1 (skeleton) merged; PR #2 (Robinhood
   read-only snapshot, built in Cursor) merged.
-- In flight: brief 2 (edgar CLI), worker on sonnet, branch `claude/edgar-cli`.
-- Blocked: brief 5 (research export). The local agent's first attempt saw a
-  Postgres with no matching schema; most likely it never reached production
-  (private `railway.internal` host), unverified. Diagnosis prompt issued;
-  no stamp or migrate is to be run. If production holds no dossiers, brief 5
-  closes as a no-op.
+- Done: research-bench PR #3 (edgar CLI) merged 2026-09-18. All worker
+  sessions archived.
+- Brief 5 (research export): diagnosis confirmed the first attempt never
+  reached production (private `railway.internal` host); production Postgres
+  is healthy at revision 0015 and holds **one dossier and zero theses**. The
+  export is being done by the owner's local agent inside the workspace
+  container, then carried into research-bench as a PR — no worker needed.
 - Waiting on owner: brief 4 (AlphaSense skill file); one local `rh_auth`
   re-run (the copied token's refresh returned 404); Railway workspace and
   Postgres teardown after the export question settles; GitHub archive of
