@@ -10,6 +10,48 @@ log = get_logger("anthropic_client")
 SONNET_FALLBACK = "claude-sonnet-5"
 RAW_PARSE_ERROR_LIMIT = 20_000
 
+# Claude 5-family / 4.7+ reject non-default temperature/top_p/top_k with HTTP 400
+# (seen in prod on claude-sonnet-5, 2026-08-05). Older models still accept them
+# unless thinking is on.
+_NO_SAMPLING_PREFIXES = (
+    "claude-sonnet-5",
+    "claude-opus-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable-",
+    "claude-mythos-",
+)
+
+
+def rejects_sampling(model: str) -> bool:
+    token = (model or "").lower()
+    return any(token.startswith(prefix) for prefix in _NO_SAMPLING_PREFIXES)
+
+
+def sampling_kwargs(model: str, temperature: float | None, thinking: bool = False) -> dict:
+    """Return create() sampling args the target model will accept."""
+    if temperature is None:
+        return {}
+    if thinking or rejects_sampling(model):
+        return {}
+    return {"temperature": temperature}
+
+
+def text_from_message(response) -> str:
+    """Join visible text blocks, skipping thinking blocks.
+
+    Opus 5 / Sonnet 5 turn adaptive thinking on by default, so content[0] may
+    be a thinking block with an empty `thinking` field when display is omitted.
+    """
+    parts = []
+    for block in getattr(response, "content", None) or []:
+        if getattr(block, "type", None) == "thinking":
+            continue
+        text = getattr(block, "text", None)
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
 
 def is_billing_error(exc: BaseException) -> bool:
     """
@@ -84,11 +126,11 @@ class AnthropicClient:
         response = self.client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            temperature=temperature,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
+            **sampling_kwargs(model, temperature),
         )
-        text = response.content[0].text
+        text = text_from_message(response)
         log.info(
             "claude_api_response",
             model=model,
@@ -194,31 +236,32 @@ class AnthropicClient:
         The model reasons in a thinking block before producing output.
         Returns only the final text (thinking is logged but not returned).
 
-        Note: Extended thinking requires temperature=1 (API-enforced).
+        Adaptive thinking is requested explicitly. Sampling params are omitted:
+        Claude 5-family / 4.7+ reject temperature even at 1.
         max_tokens must be >= budget_tokens.
         """
         effective_max = max(max_tokens, budget_tokens + 4096)
         log.info("claude_thinking_call", model=model, budget=budget_tokens,
                  prompt_len=len(user_prompt))
 
-        response = self.client.messages.create(
-            model=model,
-            max_tokens=effective_max,
-            temperature=1,  # Required for extended thinking
-            thinking={
-                "type": "adaptive",
-            },
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
+        create_kwargs = {
+            "model": model,
+            "max_tokens": effective_max,
+            "thinking": {"type": "adaptive"},
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        create_kwargs.update(sampling_kwargs(model, 1, thinking=True))
+        response = self.client.messages.create(**create_kwargs)
 
         # Extract text blocks (skip thinking blocks)
         text_parts = []
         thinking_tokens = 0
         for block in response.content:
-            if hasattr(block, "thinking"):
-                thinking_tokens = len(block.thinking) // 4  # Rough token estimate
-            elif hasattr(block, "text"):
+            if getattr(block, "type", None) == "thinking" or hasattr(block, "thinking"):
+                thinking_text = getattr(block, "thinking", "") or ""
+                thinking_tokens = len(thinking_text) // 4  # Rough token estimate
+            elif hasattr(block, "text") and block.text:
                 text_parts.append(block.text)
 
         log.info(
@@ -328,10 +371,7 @@ class AnthropicClient:
             response = self.client.messages.create(
                 model=model,
                 max_tokens=effective_max,
-                temperature=1,  # Required for extended thinking
-                thinking={
-                    "type": "adaptive",
-                },
+                thinking={"type": "adaptive"},
                 system=system_prompt,
                 tools=tools,
                 messages=messages,
@@ -347,11 +387,7 @@ class AnthropicClient:
             )
 
             if response.stop_reason == "end_turn":
-                text_parts = []
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        text_parts.append(block.text)
-                return "\n".join(text_parts)
+                return text_from_message(response)
 
             messages.append({"role": "assistant", "content": response.content})
 
@@ -361,13 +397,7 @@ class AnthropicClient:
                 ]})
 
         log.warning("thinking_tool_rounds_exhausted", model=model, max_rounds=max_tool_rounds)
-        if response:
-            text_parts = []
-            for block in response.content:
-                if hasattr(block, "text"):
-                    text_parts.append(block.text)
-            return "\n".join(text_parts) if text_parts else ""
-        return ""
+        return text_from_message(response) if response else ""
 
     def analyze_with_tools_json_thinking(
         self,
@@ -434,10 +464,10 @@ class AnthropicClient:
             response = self.client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                temperature=temperature,
                 system=system_prompt,
                 tools=tools,
                 messages=messages,
+                **sampling_kwargs(model, temperature),
             )
 
             log.info(
@@ -451,11 +481,7 @@ class AnthropicClient:
 
             # If model is done (no more tool calls), extract final text
             if response.stop_reason == "end_turn":
-                text_parts = []
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        text_parts.append(block.text)
-                return "\n".join(text_parts)
+                return text_from_message(response)
 
             # Model wants to use tools — append assistant response
             # For web_search_20250305, the server handles search execution
@@ -471,13 +497,7 @@ class AnthropicClient:
 
         # Exhausted rounds — return whatever we have
         log.warning("tool_rounds_exhausted", model=model, max_rounds=max_tool_rounds)
-        if response:
-            text_parts = []
-            for block in response.content:
-                if hasattr(block, "text"):
-                    text_parts.append(block.text)
-            return "\n".join(text_parts) if text_parts else ""
-        return ""
+        return text_from_message(response) if response else ""
 
     def analyze_with_tools_json(
         self,

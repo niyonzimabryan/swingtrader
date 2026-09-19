@@ -408,7 +408,7 @@ class Settings(BaseSettings):
 
     # --- Model Selection ---
     # Override scoring tier model (default: opus)
-    scoring_model: str = "claude-opus-4-6"
+    scoring_model: str = "claude-opus-5"
     analyst_model: str = "claude-sonnet-5"
     filter_model: str = "claude-haiku-4-5-20251001"
 
