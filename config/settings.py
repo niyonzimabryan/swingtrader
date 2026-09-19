@@ -425,15 +425,16 @@ class Settings(BaseSettings):
 
     # --- Gemini Flash Screening (Tier 2) ---
     gemini_api_key: str = ""
-    gemini_flash_model: str = "gemini-2.5-flash"
-    # gemini-3.1-pro-preview refuses to invoke Google Search whenever JSON output
-    # is requested (verified 2026-07-09/11 with side-by-side probes: 0 queries vs
-    # 3 queries/7-13 sources on 2.5-flash for identical prompts — BRY-300). All
-    # three stages below combine grounding with JSON output, so they pin the GA
-    # flash model. Revisit when a GA pro model passes the same probe.
-    gemini_search_model: str = "gemini-2.5-flash"
-    gemini_discovery_model: str = "gemini-2.5-flash"
-    gemini_web_research_model: str = "gemini-2.5-flash"
+    gemini_flash_model: str = "gemini-3.8-flash"
+    # gemini-3.1-pro-preview issued 0 Google Search queries when JSON was in the
+    # prompt (BRY-300, 2026-07). gemini-3.8-flash was live-probed 2026-09-19 with
+    # this repo's generateContent + google_search + prompt-JSON path (no
+    # response_mime_type): 2 search queries, 6 sources, parseable JSON, finish=STOP.
+    # Keep prompt-JSON + extraction; do not add response_mime_type. Gemini 3
+    # search is billed per query, not per prompt.
+    gemini_search_model: str = "gemini-3.8-flash"
+    gemini_discovery_model: str = "gemini-3.8-flash"
+    gemini_web_research_model: str = "gemini-3.8-flash"
     gemini_flash_escalation_threshold: float = 0.50  # Tickers scoring above this escalate to Sonnet
     # Grounded tier-2 responses carry a prose preamble before the JSON; 512/2048 truncate
     # mid-JSON (finish=MAX_TOKENS). 4096 fits reliably. NOTE: Google Search grounding is

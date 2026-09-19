@@ -325,8 +325,8 @@ ENV_FIELDS = [
         description="Gemini model used by generic grounded search when a stage does not specify its own model.",
         required=False,
         secret=False,
-        default="gemini-2.5-flash",
-        placeholder="gemini-2.5-flash",
+        default="gemini-3.8-flash",
+        placeholder="gemini-3.8-flash",
     ),
     EnvField(
         name="GEMINI_DISCOVERY_MODEL",
@@ -335,8 +335,8 @@ ENV_FIELDS = [
         description="Gemini Pro model used to search for fresh trade ideas.",
         required=False,
         secret=False,
-        default="gemini-2.5-flash",
-        placeholder="gemini-2.5-flash",
+        default="gemini-3.8-flash",
+        placeholder="gemini-3.8-flash",
     ),
     EnvField(
         name="GEMINI_WEB_RESEARCH_MODEL",
@@ -345,8 +345,8 @@ ENV_FIELDS = [
         description="Gemini Pro model used to scrutinize catalyst-qualified tickers.",
         required=False,
         secret=False,
-        default="gemini-2.5-flash",
-        placeholder="gemini-2.5-flash",
+        default="gemini-3.8-flash",
+        placeholder="gemini-3.8-flash",
     ),
     EnvField(
         name="GEMINI_FLASH_MODEL",
@@ -355,8 +355,8 @@ ENV_FIELDS = [
         description="Optional add-on setting used when Gemini is configured.",
         required=False,
         secret=False,
-        default="gemini-2.5-flash",
-        placeholder="gemini-2.5-flash",
+        default="gemini-3.8-flash",
+        placeholder="gemini-3.8-flash",
     ),
     EnvField(
         name="LANGFUSE_PUBLIC_KEY",

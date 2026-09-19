@@ -264,8 +264,8 @@ class WebSearchClient:
         if requested_model and not requested_model.startswith("claude-"):
             return requested_model
         if self.settings:
-            return getattr(self.settings, "gemini_search_model", "gemini-3.1-pro-preview")
-        return "gemini-3.1-pro-preview"
+            return getattr(self.settings, "gemini_search_model", "gemini-3.8-flash")
+        return "gemini-3.8-flash"
 
     def _with_search_directive(self, user_prompt: str, max_searches: int) -> str:
         return (
