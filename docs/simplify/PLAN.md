@@ -3,22 +3,73 @@
 Status: **v3, direction ratified 2026-09-17.** Briefs in `briefs/`; local-agent
 prompt in `LOCAL_AGENT_PROMPT.md`. Research repo: `niyonzimabryan/research-bench`.
 
-Progress (2026-09-18, 01:00Z):
-- Done: Railway bot service stopped (owner, via CLI). swingtrader PR #107
-  (freeze) and #108 (this plan) merged. research-bench PRs merged: #1
-  skeleton, #2 Robinhood read-only snapshot (Cursor), #3 edgar CLI, #4 the
-  one BE dossier carried over from production Postgres (owner's local agent,
-  in-container export; the database held one dossier and zero theses), #5
-  money rounding + digit-run guard after the first live snapshot exposed a
-  float artefact. First live Robinhood snapshot taken: one position, BE.
-- Remaining build item: brief 4 (AlphaSense workflow), waiting on the
-  owner's skill file.
-- Owner actions now unblocked: tear down the Railway `workspace` and
-  `Postgres` services (nothing reads them any more); archive `swingtrader`
-  on GitHub.
-- Not verified: no live SEC call through the edgar CLI yet. Not started: the
-  first real research session in research-bench, which is the acceptance
-  test for the whole build.
+Progress — **build complete, QA-ready, 2026-09-19.**
+
+All six briefs are on `main`:
+
+| # | Brief | Where | PR |
+|---|---|---|---|
+| 1 | skeleton: AGENTS.md, layout, three subagent briefs, learning workspace, one-job CI | research-bench | #1 |
+| 3 | Robinhood read-only snapshot (built in Cursor) + money rounding and digit-run guard | research-bench | #2, #5 |
+| 2 | edgar CLI: facts, filings, section, insiders, peers, search; offline fixtures | research-bench | #3 |
+| 5 | the one BE dossier carried over from production Postgres (zero theses existed) | research-bench | #4 |
+| 4 | alphasense skill: prompt wrapper + self-improving `PLAYBOOK.md` | research-bench | #6 |
+| 6 | freeze: honest README, root tidy, single-shard SQLite CI | swingtrader | #107 |
+
+Also merged: this plan (#108). Railway bot service stopped. First live
+Robinhood snapshot taken (one position, BE). All worker sessions archived.
+
+**Not verified:** no live SEC call through the edgar CLI yet (fixtures
+only); no real AlphaSense run (the playbook's 12 rules are seeded, not
+tested). **Not started:** the first real research session, which is the
+acceptance test for the whole build.
+
+## 0. Next steps (owner)
+
+In order:
+
+1. **First research session on BE** in research-bench, on one of the three
+   open questions in `research/BE/questions.md`. Read `AGENTS.md`, run the
+   loop, let it teach one thing. It is the first live use of `edgar` and,
+   if the question calls for it, the first AlphaSense run — the playbook
+   gets its first real run entry. Expect small fixes; that is the point.
+2. **Confirm the rounding fix live:** `git pull`, `python -m
+   tools.rh_snapshot`, `grep -cE '[0-9]{8,}' portfolio/snapshot.json` → 0.
+3. **Railway teardown:** delete the `workspace` and `Postgres` services
+   (nothing reads them; the dossier is in git). The Postgres export was
+   verified before this was written.
+4. **GitHub:** archive `swingtrader`. Archiving keeps it public and
+   readable; it only becomes read-only. The legacy bot stays visible as the
+   portfolio piece it is.
+5. **Personal-site finance page + Muse** (deferred, detailed below).
+
+### Deferred: the private finance page
+
+Goal: a private section of the personal site showing finances overall —
+account balances kept current by Muse (Meta's agent), plus Robinhood
+positions — with Claude as the research tool alongside, not a trading
+system behind it.
+
+Design already settled here so the site work can start cold:
+
+- **Data contract.** One private JSON, `finances.json`, with two arrays:
+  `accounts: [{name, balance, as_of, source}]` and `positions: [{symbol,
+  qty, avg_cost, market_value, as_of, source}]`. `portfolio/snapshot.json`
+  from research-bench already produces the positions half in this shape
+  (source `"robinhood"`); Muse writes the accounts half however its surface
+  allows — its write surface is unverified and must be confirmed before
+  building against it. No account numbers in the file, ever; the snapshot
+  tool already refuses to write one.
+- **Where it runs.** In the personal-site repo, not here. Either the site's
+  own cron copies `tools/rh_snapshot.py` and runs it on a schedule, or a
+  small job pulls the file from a private location research-bench pushes
+  to. Decide there.
+- **Auth.** Real auth in front of the page (Cloudflare Access, the site's
+  existing login, or Vercel auth), never obscurity. Alternative worth
+  weighing first: render it locally and never host it.
+- **Order:** confirm Muse's write surface → pick where the cron runs →
+  build the page behind auth → wire Muse. Not before the first research
+  session has shaken out the snapshot tool.
 
 ## 1. Evidence
 
