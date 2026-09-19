@@ -71,7 +71,7 @@ class DiscoveryAgent(BaseAgent):
         user_prompt = self._build_user_prompt(regime_context)
 
         if getattr(self.settings, "web_search_provider", "anthropic") == "gemini":
-            model = getattr(self.settings, "gemini_discovery_model", "gemini-3.1-pro-preview")
+            model = getattr(self.settings, "gemini_discovery_model", "gemini-3.8-flash")
         else:
             model = self.settings.discovery_model
         thinking_budget = getattr(self.settings, "discovery_thinking_budget", 0)

@@ -143,7 +143,7 @@ class WebResearchAgent(BaseAgent):
     ) -> dict:
         """Run multi-dimensional grounded web research."""
         if getattr(self.settings, "web_search_provider", "anthropic") == "gemini":
-            model = getattr(self.settings, "gemini_web_research_model", "gemini-3.1-pro-preview")
+            model = getattr(self.settings, "gemini_web_research_model", "gemini-3.8-flash")
         else:
             model = get_model("web_research", self.settings)
         max_searches = max(1, int(getattr(self.settings, "web_research_max_searches", 5)))
